@@ -330,7 +330,7 @@ Run `/doctor` or `npm run doctor` for an environment check, and [open an Issue](
 ## Planned capabilities
 
 These are planned directions, not shipped features.
-Each will be tracked as an Issue and listed in the [changelog](./CHANGELOG.md) only when released.
+Each will be tracked as an Issue and described in the release notes only when released.
 
 - **Improved content workflows** for planning and iterating on a series of posts.
 - **Reusable branded templates** that carry a brand's layout system, beyond today's saved-carousel templates.
@@ -345,7 +345,7 @@ Before opening a pull request, run the full gate:
 npm run typecheck && npm run lint && npm test && npm run build
 ```
 
-[`docs/MAINTAINING.md`](./docs/MAINTAINING.md) covers branching, review, testing, changelog, and release practice.
+[`docs/MAINTAINING.md`](./docs/MAINTAINING.md) covers branching, review, testing, release notes, and release practice.
 [`CLAUDE.md`](./CLAUDE.md) covers code conventions, including the slide rendering contract between preview and export.
 
 ## Origin and license

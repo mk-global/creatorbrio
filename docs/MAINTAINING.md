@@ -81,15 +81,22 @@ The types match the conventional commit prefixes: `feat`, `fix`, `docs`, `test`,
 For example: `fix/export-timeout`, `docs/install-steps`, `chore/release-v0.1.4`.
 
 `main` is protected.
-It cannot be deleted or force-pushed, and it changes only through a pull request whose CI check has passed.
+It cannot be deleted or force-pushed, and it changes only through a pull request whose required checks have passed at its current head.
 
 ## Pull requests
 
 1. Open the pull request against `main` and reference its Issue with `Closes #N`.
 2. Use the canonical PR template. Describe objective, scope, acceptance criteria, verification evidence, risks, rollback, and decisions/deviations. The `GitHub Issue` section must include a closing reference.
-3. Wait for `typecheck / lint / test / build` and `local-ai/pr-review/main` from the pinned independent reviewer App to pass.
-4. Review the complete diff before merging, including documentation and tests.
-5. Squash-merge with a conventional title, which becomes the commit subject on `main`, for example `fix: surface export failures (#12)`.
+3. Two checks are required at the pull request's exact head: `typecheck / lint / test / build` from GitHub Actions, and `local-ai/pr-review/main` from the pinned independent reviewer App.
+   No approving review is required, and nobody can bypass the rules.
+4. Freshness is strict: a pull request must be up to date with `main` before it merges.
+   When `main` moves, update the branch; the new head needs both checks again, including a fresh independent review.
+5. Merge by squash only, with a conventional title that becomes the commit subject on `main`, for example `fix: surface export failures (#12)`.
+   The usual path is GitHub's native auto-merge, armed with the squash method as soon as the pull request is open, so GitHub merges it only when every rule above is satisfied.
+   A maintainer may still merge by hand under the same rules, never by bypassing them.
+
+The repository is certified for auto-merge under EngineeringToolsMK #256.
+A red, missing or stale check holds an armed pull request; it is never a reason to merge another way.
 
 ## Tests
 
@@ -105,10 +112,13 @@ Every behavior change needs automated coverage proportional to its risk.
 Every bug fix needs a regression test that fails on the old behavior and passes after the fix.
 Do not disable or weaken existing tests to make a change pass.
 
-## Changelog
+## Changelog and release notes
 
-Every pull request that changes behavior adds an entry under `[Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md), following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Write entries for the people who use CreatorBrio: what changed for them and why it matters.
+Pull requests never edit [`CHANGELOG.md`](../CHANGELOG.md), and nobody edits it by hand.
+It remains the historical record of the releases it already describes.
+
+What changed in a release is recorded in that release's notes, which GitHub generates from the squash-merged pull request titles since the previous tag.
+A pull request's title is therefore written for the people who use CreatorBrio: a conventional prefix and what changed for them, for example `fix: surface export failures`.
 
 ## Releases
 
@@ -116,10 +126,9 @@ CreatorBrio uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and 
 Historical tags are never moved or deleted.
 
 1. Open an Issue for the release and a `chore/release-vX.Y.Z` branch.
-2. Move the applicable `[Unreleased]` entries into a dated `[X.Y.Z]` section and update the comparison links at the bottom of the changelog.
-3. Bump the version with `npm version X.Y.Z --no-git-tag-version`, which updates `package.json` and `package-lock.json` together.
-4. Merge the release pull request once CI passes.
-5. Create an annotated tag on the merge commit and push it:
+2. Bump the version with `npm version X.Y.Z --no-git-tag-version`, which updates `package.json` and `package-lock.json` together.
+3. Merge the release pull request under the rules in [Pull requests](#pull-requests).
+4. Create an annotated tag on the merge commit and push it:
 
    ```bash
    git switch main && git pull --ff-only
@@ -127,10 +136,16 @@ Historical tags are never moved or deleted.
    git push origin vX.Y.Z
    ```
 
-6. Publish GitHub release notes derived from the changelog section:
+5. Create the release as a draft with GitHub-generated notes:
 
    ```bash
-   gh release create vX.Y.Z --title "vX.Y.Z - <summary>" --notes-file <notes.md> --verify-tag
+   gh release create vX.Y.Z --title "vX.Y.Z - <summary>" --generate-notes --draft --verify-tag
+   ```
+
+6. Review the generated notes, correct anything a reader would misunderstand in the release's description on GitHub, and publish it:
+
+   ```bash
+   gh release edit vX.Y.Z --draft=false
    ```
 
 ## Source provenance
@@ -140,7 +155,7 @@ Historical tags are never moved or deleted.
 
 Changes from the original Open Carrusel project, or from any other source, are never imported automatically.
 If one is worth considering, open an Issue that links the specific change, review it on its own merits including any license or notice implications, and adopt it through a normal pull request.
-Record anything adopted this way in the changelog and, where it affects origin or attribution, in `PROVENANCE.md`.
+Record anything adopted this way in the pull request that adopts it, which carries it into the release notes, and, where it affects origin or attribution, in `PROVENANCE.md`.
 
 ## Roadmap
 
