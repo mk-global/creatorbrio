@@ -30,7 +30,7 @@ Served by the running app, on whichever port it was started with. The origin the
 design agent is told to call is derived per request by `resolveAppOrigin()` in
 `src/lib/request-origin.ts`; never hardcode a port in the system prompt.
 
-- `POST /api/chat`: Claude CLI subprocess streaming typed SSE events (`token`, `result`, `error` with a stable `code` and a user-facing `message`, `done` with the `sessionId` to resume). Body `{ message, carouselId, sessionId? }`; `sessionId` must be a Claude session UUID and resumes that carousel's conversation, anything else is refused with 400. The contract lives in `src/lib/chat-stream.ts`
+- `POST /api/chat`: Claude CLI subprocess streaming typed SSE events (`token`, `result`, `error` with a stable `code` and a user-facing `message`, `done` with the `sessionId` to resume). Body `{ message, carouselId, sessionId? }`; `sessionId` must be a Claude session UUID and resumes that carousel's conversation, anything else is refused with 400. Answers 409 while the carousel already has an active run. The contract lives in `src/lib/chat-stream.ts`
 - `GET/POST /api/carousels` — List/create carousels
 - `GET/PUT/DELETE /api/carousels/[id]` — Single carousel
 - `POST /api/carousels/[id]/slides` — Add slide
@@ -39,7 +39,7 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - `POST /api/carousels/[id]/slides/[slideId]/undo` — Undo slide change
 - `GET/POST/DELETE /api/carousels/[id]/references`: reference images. `POST` takes `{ url, name }`, where `url` must be an image upload's `/uploads/<uuid>.png` path naming an existing PNG file; anything else is refused with 400. The server derives the file's path itself, and only references that still pass this check are listed in the agent's prompt
 - `POST /api/carousels/[id]/export` — Export all slides to PNG ZIP (default, or `?format=png`) or to one LinkedIn PDF (`?format=pdf`); a one-slide carousel also as that single PNG (`?format=single-png`). Answers 409 while a chat run is still generating the carousel, or after one was stopped, failed or timed out having changed slides
-- `GET/DELETE /api/carousels/[id]/generation` — `{ generating, interrupted }`: whether a chat run is still writing this carousel's slides, and whether the last one ended without finishing (kept in `data/generation-runs.json`). `DELETE` is the user accepting an interrupted carousel's slides as they are
+- `GET/DELETE /api/carousels/[id]/generation` — `{ generating, interrupted }`: whether a chat run is still writing this carousel's slides, and whether the last one ended without finishing after changing the slides' content or order (kept in `data/generation-runs.json`). `DELETE` is the user accepting an interrupted carousel's slides as they are
 - `GET/PUT /api/brand`: the default brand's configuration (kept for compatibility)
 - `GET/POST /api/brands`: list brands with `defaultBrandId`, or create a brand
 - `GET/PUT /api/brands/[id]`: one brand's configuration

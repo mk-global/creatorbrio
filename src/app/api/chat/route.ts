@@ -19,6 +19,7 @@ import {
 import {
   beginGeneration,
   classifyRunExit,
+  GENERATION_ALREADY_RUNNING_ERROR,
   type RunOutcome,
 } from "@/lib/generation-status";
 
@@ -70,14 +71,20 @@ export async function POST(request: NextRequest) {
   }
   const resumeSessionId = isSessionId(sessionId) ? sessionId : null;
 
+  // The carousel's run begins before any work for this request, and a
+  // carousel has one active run at a time. From here on, every way this
+  // request ends must end the run exactly once.
+  const run = typeof carouselId === "string" && carouselId ? beginGeneration(carouselId) : null;
+  if (typeof carouselId === "string" && carouselId && !run) {
+    return NextResponse.json({ error: GENERATION_ALREADY_RUNNING_ERROR }, { status: 409 });
+  }
+  const endGeneration = (outcome: RunOutcome): Promise<void> =>
+    run ? run.end(outcome) : Promise.resolve();
+
   // Build dynamic system prompt with the carousel's brand + carousel + style preset context
   let systemPrompt: string;
-  // When the carousel last changed before this run, to tell afterwards whether
-  // the run wrote anything.
-  let baseline: string | null = null;
   try {
     const carousel = carouselId ? await getCarousel(carouselId) : null;
-    baseline = carousel?.updatedAt ?? null;
     // The brand the carousel was created in; the default brand for carousels
     // made before brands existed.
     const brand = await resolveBrandForCarousel(carousel);
@@ -96,7 +103,10 @@ export async function POST(request: NextRequest) {
       carousel: promptCarousel,
       stylePreset,
     });
+    // The run's baseline is saved before anything can change the slides.
+    await run?.ready;
   } catch (err) {
+    await endGeneration("not-started");
     if (err instanceof BrandNotFoundError) {
       // Never generate with a different brand than the carousel's own.
       return NextResponse.json(
@@ -189,17 +199,13 @@ export async function POST(request: NextRequest) {
           message: e?.message,
         });
         fail("start_failed");
-        close();
+        void endGeneration("not-started").finally(close);
         return;
       }
 
       // The subprocess is what writes this carousel's slides, so export stays
       // unavailable until it has exited, however that happens, and how it
       // ended decides whether the slides count as finished.
-      const endGeneration: (outcome: RunOutcome) => Promise<void> =
-        typeof carouselId === "string" && carouselId
-          ? beginGeneration(carouselId, baseline)
-          : async () => {};
       let timedOut = false;
       let resultIsError = false;
       const outcomeFor = (code: number | null) =>

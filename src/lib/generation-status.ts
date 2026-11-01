@@ -1,31 +1,41 @@
+import { createHash } from "node:crypto";
 import { mutateData, readDataSafe } from "./data";
 import { getCarousel } from "./carousels";
+import type { Carousel } from "@/types/carousel";
 
 /**
- * Whether a carousel is being generated, and whether its last generation was
- * interrupted.
+ * The lifecycle of a carousel's creative runs: whether one is in progress, and
+ * whether the last one was interrupted. This module is its only owner.
  *
- * `/api/chat` begins a run for its carousel when the Claude CLI subprocess
- * starts and finishes it when that subprocess exits. The subprocess is what
- * adds and edits slides, so its exit is the point after which the carousel
- * stops changing.
- *
- * While a run is live the carousel is "generating", which is held in process
- * memory: a server restart kills every subprocess, so nothing can be left
- * generating. Memory lives on `globalThis` because Next.js may bundle this
+ * A carousel has at most one active run. `/api/chat` begins it before doing
+ * any work for the request and ends it exactly once, however the request
+ * ends; a second request while one is active is refused. While a run is
+ * active the carousel is "generating", which is held in process memory: a
+ * server restart kills every subprocess, so nothing can stay generating
+ * across one. Memory lives on `globalThis` because Next.js may bundle this
  * module separately for each route, and the chat and export routes must agree.
+ *
+ * Whether a run changed the carousel is decided by its slide fingerprint, a
+ * hash of the slides' IDs and HTML in slide order, taken when the run begins
+ * and compared when it ends. Notes, caption, hashtags, name, reference images
+ * and uploads are not part of it, so changing them never makes a run count as
+ * having changed the carousel.
  *
  * How the run ended is persisted in `data/generation-runs.json`, so it
  * survives a reload and a server restart:
  *
- * - A run that exits successfully, or that changed no slides, leaves the
- *   carousel as it was before the run.
+ * - A run that completes, or that changed no slide, leaves the carousel as it
+ *   was before the run. So does a "blocked" run, which declined to start its
+ *   work and never touches slides.
  * - A run that changed slides and then was stopped (the Stop button, a reload,
  *   a closed tab), failed or timed out marks the carousel "interrupted": its
  *   slides are kept, but export refuses it until the user either confirms the
  *   slides as they are or a later run completes.
- * - A run still recorded as running when no subprocess is live means the
- *   server stopped mid-run; that reads as interrupted too.
+ * - A run still recorded as running when none is active means the server
+ *   stopped mid-run. It is settled the first time it is read: interrupted if
+ *   the slides differ from its baseline, otherwise as if it had changed
+ *   nothing. Records written before fingerprints existed have none and are
+ *   treated as before, as interrupted.
  */
 
 export type InterruptionReason = "stopped" | "failed" | "timed-out" | "server-stopped";
@@ -35,15 +45,20 @@ export interface Interruption {
   endedAt: string;
 }
 
-/** How a run ended. "not-started" means the CLI never ran. */
-export type RunOutcome = "completed" | "not-started" | InterruptionReason;
+/**
+ * How a run ended. "not-started" means its work never began; "blocked" means
+ * it decided not to do its work. Neither can have changed a slide.
+ */
+export type RunOutcome = "completed" | "not-started" | "blocked" | InterruptionReason;
 
 type RunRecord =
   | {
       state: "running";
       startedAt: string;
-      /** The carousel's `updatedAt` when the run began, to tell whether it wrote anything. */
-      baseline: string | null;
+      /** The slide fingerprint when the run began; absent in records from before fingerprints. */
+      fingerprint?: string | null;
+      /** The carousel's `updatedAt` when the run began, in records from before fingerprints. */
+      baseline?: string | null;
       /** An interruption recorded before this run, restored if this run changes nothing. */
       previous: Interruption | null;
     }
@@ -56,10 +71,26 @@ interface RunsFile {
 const RUNS_FILE = "generation-runs.json";
 const emptyRuns = (): RunsFile => ({ runs: {} });
 
-/** In memory: live runs per carousel, and the write that settles the last one. */
-interface LiveRuns {
-  count: number;
-  outcome: RunOutcome | null;
+/**
+ * A hash of a carousel's slides, their IDs and HTML in slide order, or null
+ * for a carousel that does not exist. It changes when a slide is added,
+ * removed, reordered or rewritten, and for nothing else.
+ */
+export function slideFingerprint(carousel: Pick<Carousel, "slides"> | null): string | null {
+  if (!carousel) return null;
+  const ordered = [...carousel.slides]
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+    .map((slide) => [slide.id, slide.html]);
+  return createHash("sha256").update(JSON.stringify(ordered)).digest("hex");
+}
+
+async function currentFingerprint(carouselId: string): Promise<string | null> {
+  return slideFingerprint(await getCarousel(carouselId));
+}
+
+/** The active run per carousel, in memory. */
+interface ActiveRun {
+  /** Resolves once the run's start, with its baseline, is saved. */
   started: Promise<void>;
 }
 
@@ -67,21 +98,12 @@ interface LiveRuns {
 // must find the same registry, or it would lose generations in progress.
 const REGISTRY_KEY = Symbol.for("framewoven.generation-status");
 
-function registry(): Map<string, LiveRuns> {
+function registry(): Map<string, ActiveRun> {
   const store = globalThis as typeof globalThis & {
-    [REGISTRY_KEY]?: Map<string, LiveRuns>;
+    [REGISTRY_KEY]?: Map<string, ActiveRun>;
   };
   store[REGISTRY_KEY] ??= new Map();
   return store[REGISTRY_KEY];
-}
-
-const INTERRUPTING: readonly RunOutcome[] = ["stopped", "failed", "timed-out", "server-stopped"];
-
-/** The worse of two outcomes, so concurrent runs report any interruption. */
-function worse(a: RunOutcome | null, b: RunOutcome): RunOutcome {
-  if (a === null || a === "not-started") return b;
-  if (b === "not-started") return a;
-  return INTERRUPTING.includes(b) ? b : a;
 }
 
 /**
@@ -101,81 +123,100 @@ export function classifyRunExit(exit: {
   return "completed";
 }
 
-function interruptionOf(record: RunRecord | undefined): Interruption | null {
-  if (!record) return null;
-  if (record.state === "interrupted") {
-    return { reason: record.reason, endedAt: record.endedAt };
-  }
-  // Recorded as running, but no run is live: the server stopped mid-run.
-  return { reason: "server-stopped", endedAt: record.startedAt };
+/** What an interrupted record says, or null for any other record. */
+function recordedInterruption(record: RunRecord | undefined): Interruption | null {
+  return record?.state === "interrupted" ? { reason: record.reason, endedAt: record.endedAt } : null;
 }
 
 /**
- * Marks a run as started for `carouselId` and returns the function that
- * finishes it with its outcome. The carousel counts as generating until that
- * function's returned promise resolves, by which time the outcome is saved.
- * Finishing twice has no effect. `baseline` is the carousel's `updatedAt` as
- * the run began.
+ * What a run recorded as running, but no longer active, leaves behind: the
+ * server stopped mid-run. It interrupted the carousel only if the slides now
+ * differ from its baseline; a record without a fingerprint predates them and
+ * counts as interrupted, as it always did.
  */
-export function beginGeneration(
-  carouselId: string,
-  baseline: string | null
-): (outcome: RunOutcome) => Promise<void> {
+function abandonedRunResult(
+  record: Extract<RunRecord, { state: "running" }>,
+  fingerprint: string | null
+): Interruption | null {
+  const changed = record.fingerprint === undefined || record.fingerprint !== fingerprint;
+  return changed ? { reason: "server-stopped", endedAt: record.startedAt } : record.previous;
+}
+
+/** One active run: wait for its start to be saved, then end it once. */
+export interface GenerationRun {
+  /** Resolves once the run's start and baseline are saved; do the work after it. */
+  ready: Promise<void>;
+  /**
+   * Ends the run with its outcome. The carousel counts as generating until
+   * the returned promise resolves, by which time the outcome is saved. Ending
+   * again has no effect.
+   */
+  end(outcome: RunOutcome): Promise<void>;
+}
+
+/**
+ * Begins a run for `carouselId`, or returns null, changing nothing, if one is
+ * already active. The check and the reservation happen together, so two
+ * requests can never both begin a run for the same carousel.
+ */
+export function beginGeneration(carouselId: string): GenerationRun | null {
   const runs = registry();
-  let live = runs.get(carouselId);
-  if (!live) {
-    live = { count: 0, outcome: null, started: Promise.resolve() };
-    runs.set(carouselId, live);
-  }
-  if (live.count === 0) {
-    live.outcome = null;
-    live.started = mutateData(RUNS_FILE, emptyRuns, (data) => {
-      // Nothing was live, so an existing "running" record is one the server
-      // never finished; it is kept as the interruption it was.
-      const previous = interruptionOf(data.runs[carouselId]);
+  if (runs.has(carouselId)) return null;
+
+  const started = (async () => {
+    const fingerprint = await currentFingerprint(carouselId);
+    await mutateData(RUNS_FILE, emptyRuns, (data) => {
+      const record = data.runs[carouselId];
+      // No run was active, so a "running" record is one the server never
+      // finished; it is settled now, against this run's own baseline.
+      const previous =
+        record?.state === "running" ? abandonedRunResult(record, fingerprint) : recordedInterruption(record);
       data.runs[carouselId] = {
         state: "running",
         startedAt: new Date().toISOString(),
-        baseline,
+        fingerprint,
         previous,
       };
-    }).catch((err) => {
-      console.error("[generation] could not record the start of a run", err);
     });
-  }
-  live.count++;
-  const entry = live;
+  })().catch((err) => {
+    console.error("[generation] could not record the start of a run", { carouselId, err });
+  });
+  const active: ActiveRun = { started };
+  runs.set(carouselId, active);
 
-  let finished: Promise<void> | null = null;
-  return (outcome) => {
-    finished ??= (async () => {
-      entry.outcome = worse(entry.outcome, outcome);
-      if (entry.count > 1) {
-        entry.count--;
-        return;
-      }
-      await entry.started;
-      await settle(carouselId, entry.outcome).catch((err) => {
-        console.error("[generation] could not record how a run ended", err);
-      });
-      entry.count--;
-      if (entry.count === 0) runs.delete(carouselId);
-    })();
-    return finished;
+  let ended: Promise<void> | null = null;
+  return {
+    ready: started,
+    end(outcome) {
+      ended ??= (async () => {
+        await started;
+        await settle(carouselId, outcome).catch((err) => {
+          console.error("[generation] could not record how a run ended", { carouselId, outcome, err });
+        });
+        if (runs.get(carouselId) === active) runs.delete(carouselId);
+      })();
+      return ended;
+    },
   };
 }
 
-/** Saves how the last live run for a carousel ended. */
+/** Saves how the active run for a carousel ended. */
 async function settle(carouselId: string, outcome: RunOutcome): Promise<void> {
   const current = await getCarousel(carouselId).catch(() => null);
+  const fingerprint = slideFingerprint(current);
   await mutateData(RUNS_FILE, emptyRuns, (data) => {
     const record = data.runs[carouselId];
     const running = record?.state === "running" ? record : null;
-    const changed = !running || (current?.updatedAt ?? null) !== running.baseline;
-    const previous = running ? running.previous : interruptionOf(record);
+    const changed = !running
+      ? true
+      : running.fingerprint !== undefined
+        ? running.fingerprint !== fingerprint
+        : // A run begun by code from before fingerprints, settled by this code.
+          (current?.updatedAt ?? null) !== (running.baseline ?? null);
+    const previous = running ? running.previous : recordedInterruption(record);
 
     let next: Interruption | null;
-    if (!changed || outcome === "not-started") next = previous;
+    if (!changed || outcome === "not-started" || outcome === "blocked") next = previous;
     else if (outcome === "completed") next = null;
     else next = { reason: outcome, endedAt: new Date().toISOString() };
 
@@ -184,7 +225,23 @@ async function settle(carouselId: string, outcome: RunOutcome): Promise<void> {
   });
 }
 
-/** True while at least one design-agent run for this carousel has not ended. */
+/**
+ * Settles a run recorded as running whose server stopped, so its verdict is
+ * fixed at the slides as they were found, not as they are later edited.
+ */
+async function recoverAbandonedRun(carouselId: string): Promise<void> {
+  const fingerprint = await currentFingerprint(carouselId);
+  await mutateData(RUNS_FILE, emptyRuns, (data) => {
+    const record = data.runs[carouselId];
+    // A run may have begun meanwhile; it owns the record now.
+    if (record?.state !== "running" || isGenerating(carouselId)) return;
+    const result = abandonedRunResult(record, fingerprint);
+    if (result) data.runs[carouselId] = { state: "interrupted", ...result };
+    else delete data.runs[carouselId];
+  });
+}
+
+/** True while a run for this carousel has not ended. */
 export function isGenerating(carouselId: string): boolean {
   return registry().has(carouselId);
 }
@@ -195,8 +252,13 @@ export function isGenerating(carouselId: string): boolean {
  */
 export async function getInterruption(carouselId: string): Promise<Interruption | null> {
   if (isGenerating(carouselId)) return null;
-  const data = await readDataSafe<RunsFile>(RUNS_FILE, emptyRuns());
-  return interruptionOf(data.runs[carouselId]);
+  let data = await readDataSafe<RunsFile>(RUNS_FILE, emptyRuns());
+  if (data.runs[carouselId]?.state === "running") {
+    await recoverAbandonedRun(carouselId);
+    if (isGenerating(carouselId)) return null;
+    data = await readDataSafe<RunsFile>(RUNS_FILE, emptyRuns());
+  }
+  return recordedInterruption(data.runs[carouselId]);
 }
 
 /**
@@ -210,6 +272,10 @@ export async function acceptInterruptedSlides(carouselId: string): Promise<boole
   });
   return true;
 }
+
+/** What the chat route answers when the carousel already has an active run. */
+export const GENERATION_ALREADY_RUNNING_ERROR =
+  "A generation is already running for this carousel. Wait for it to finish, or stop it, then send your message again.";
 
 /** What the export route answers while a run is still writing slides. */
 export const GENERATION_IN_PROGRESS_ERROR =
