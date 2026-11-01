@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mk-global/framewoven"
+    "url": "https://github.com/mk-global/creatorbrio"
   },
   "scripts": {
     "setup": "node scripts/setup.mjs",
@@ -54,8 +54,8 @@
     "typescript": "^5",
     "vitest": "^4.1.11"
   },
-  "homepage": "https://github.com/mk-global/framewoven",
+  "homepage": "https://github.com/mk-global/creatorbrio",
   "bugs": {
-    "url": "https://github.com/mk-global/framewoven/issues"
+    "url": "https://github.com/mk-global/creatorbrio/issues"
   }
 }

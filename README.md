@@ -7,7 +7,7 @@
 **Chat with Claude. Design on-brand Instagram carousels. Export pixel-exact PNGs.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-1a1a2e.svg?style=flat-square)](./LICENSE)
-[![CI](https://github.com/mk-global/framewoven/actions/workflows/ci.yml/badge.svg)](https://github.com/mk-global/framewoven/actions/workflows/ci.yml)
+[![CI](https://github.com/mk-global/creatorbrio/actions/workflows/ci.yml/badge.svg)](https://github.com/mk-global/creatorbrio/actions/workflows/ci.yml)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000.svg?style=flat-square)](https://nextjs.org)
 [![React 19](https://img.shields.io/badge/React-19-149eca.svg?style=flat-square)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg?style=flat-square)](https://www.typescriptlang.org)
@@ -127,8 +127,8 @@ Later launches take seconds.
 ### With Claude Code (recommended)
 
 ```bash
-git clone https://github.com/mk-global/framewoven.git
-cd framewoven
+git clone https://github.com/mk-global/creatorbrio.git
+cd creatorbrio
 claude
 ```
 
@@ -145,8 +145,8 @@ Stop the server with `/stop`, which finds this checkout's server on whatever por
 ### Without Claude Code's slash commands
 
 ```bash
-git clone https://github.com/mk-global/framewoven.git
-cd framewoven
+git clone https://github.com/mk-global/creatorbrio.git
+cd creatorbrio
 npm run setup
 ```
 
@@ -282,7 +282,7 @@ flowchart LR
 ## Project structure
 
 ```
-framewoven/
+creatorbrio/
 ├── .claude/commands/     Claude Code slash commands: /start, /stop, /reset, /doctor
 ├── .github/workflows/    CI: typecheck, lint, test, build
 ├── data/                 Your data (ignored by Git)
@@ -325,7 +325,7 @@ Select that brand on the dashboard, open its settings with the pencil button, an
 Brand details reach the design agent only when a brand name is set.
 
 **Something else.**
-Run `/doctor` or `npm run doctor` for an environment check, and [open an Issue](https://github.com/mk-global/framewoven/issues) if the problem persists.
+Run `/doctor` or `npm run doctor` for an environment check, and [open an Issue](https://github.com/mk-global/creatorbrio/issues) if the problem persists.
 
 ## Planned capabilities
 

@@ -1,6 +1,6 @@
 # CreatorBrio
 
-Named Framewoven until #29; the repository keeps that name until the founder renames it (see `docs/MAINTAINING.md`).
+Named Framewoven until #29; the repository was renamed from `mk-global/framewoven` to `mk-global/creatorbrio` on 2026-10-31 (see `docs/MAINTAINING.md`).
 
 AI-powered creative studio for branded social content: design Instagram carousels by chatting with Claude. Next.js 16 + React 19 + TypeScript + Tailwind v4.
 
@@ -77,7 +77,7 @@ Slides store body-level HTML only (no `<html>`, `<head>`, `<!DOCTYPE>`). The `wr
 
 ## GitHub governance and ticket validation
 
-- Canonical repository: `mk-global/framewoven`. Public-repository exception: do not add EngineeringToolsMK's private-runner workflows or invoke normal repository onboarding here.
+- Canonical repository: `mk-global/creatorbrio`. Public-repository exception: do not add EngineeringToolsMK's private-runner workflows or invoke normal repository onboarding here.
 - Every material change starts with an OPEN GitHub issue **before implementation**, validated using EngineeringToolsMK `tools/github-policy/validate.py ticket`. Before creating a PR validate each linked issue with `linked-ticket`, and validate the PR body with `pr`. Do not copy or reimplement the validator.
 - Required ticket headings: Problem; Desired Outcome; Scope; Out of Scope; Acceptance Criteria; Verification; Dependencies / Blockers; Risks / Constraints. Acceptance Criteria requires a list item. Replace template comments with real text.
 - Required PR headings: GitHub Issue (with `Closes #N`); Objective; Scope; Acceptance Criteria; Verification Evidence; Risk Assessment; Rollback; Decisions / Deviations. Acceptance Criteria requires a list item.

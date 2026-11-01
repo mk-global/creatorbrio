@@ -96,4 +96,4 @@ See [`MAINTAINING.md`](./MAINTAINING.md).
 
 From 2026-10-27, Framewoven is developed, versioned, and released independently in https://github.com/manishkumarglobal/framewoven.
 The maintained fork is retained as a historical reference.
-The canonical repository later moved to https://github.com/mk-global/framewoven; [`MAINTAINING.md`](./MAINTAINING.md) records its current location.
+The canonical repository later moved to https://github.com/mk-global/framewoven, and on 2026-10-31 it was renamed to https://github.com/mk-global/creatorbrio; [`MAINTAINING.md`](./MAINTAINING.md) records its current location.

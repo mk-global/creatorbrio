@@ -4,51 +4,36 @@ This document describes how CreatorBrio is developed, reviewed, and released.
 
 ## Canonical repository
 
-The canonical repository is https://github.com/mk-global/framewoven.
+The canonical repository is https://github.com/mk-global/creatorbrio.
 All development, Issues, pull requests, and releases happen there.
 
 A clone needs only one remote:
 
 ```bash
 git remote -v
-# origin  https://github.com/mk-global/framewoven.git (fetch)
-# origin  https://github.com/mk-global/framewoven.git (push)
+# origin  https://github.com/mk-global/creatorbrio.git (fetch)
+# origin  https://github.com/mk-global/creatorbrio.git (push)
 ```
 
 CreatorBrio does not keep an `upstream` remote and does not routinely synchronize with any other repository.
 Where the code came from is recorded in [`PROVENANCE.md`](./PROVENANCE.md), not in remote configuration.
 
-### Renaming the repository to `mk-global/creatorbrio`
+### The rename from `mk-global/framewoven`
 
-The product is named CreatorBrio (#29), and the repository keeps the name `framewoven` until the founder renames it after that change merges.
-The rename is a staged cutover with one owner; GitHub's redirects from the old name are a convenience, never configuration.
+The repository was named `mk-global/framewoven` until 2026-10-31, when it was renamed to `mk-global/creatorbrio` under EngineeringToolsMK #294, after the CreatorBrio rebrand (#29) merged.
+The repository's ID did not change, so the GitHub App installation and ruleset `25942669` carried over unchanged.
+GitHub redirects the old name, but nothing may rely on that redirect: the `mk-github` broker refuses a checkout whose `origin` still names `mk-global/framewoven`, so point every clone at the new name with `git remote set-url origin https://github.com/mk-global/creatorbrio.git`.
 
-Until the rename, these keep `framewoven` on purpose:
+The cutover ran as one window, recorded in the CreatorBrio rename window of EngineeringToolsMK's `tools/mk-github/broker/README.md`, which is its single source.
+The two names were never configured together, because the broker's `doctor --live` and the independent reviewer's `doctor` both fail on a two-name configuration.
 
-- every `mk-global/framewoven` URL in this repository, including `package.json`, the README and this guide, and the `framewoven` checkout directory that the README's clone instructions and project tree show;
-- the provisioned image-service token at `~/.config/framewoven/image-service.token`, which moves only in a founder-coordinated migration together with the path in `src/lib/image-service.ts`.
+These keep the former name on purpose:
 
-These keep the former name permanently, because nobody sees them and renaming them has a cost: the dashboard's browser-storage key for the selected brand (renaming resets every saved selection) and the server's generation-status registry key (renaming loses generations in progress in a server that reloads).
-The changelog and `PROVENANCE.md` keep the name used at the time.
-
-Outside this repository, these name `mk-global/framewoven` exactly, and each changes only through a reviewed EngineeringToolsMK pull request:
-
-- `tools/mk-github/broker/broker-policy.json` and the App allowlist in `tools/repo-onboarding/inventory.json`;
-- the public-repository exception and its reviewer gate in `tools/repo-onboarding/inventory.json`;
-- the watched repositories and required ticket scope in `tools/local-pr-reviewer/config/reviewer.yaml`;
-- the tests and documents that assert or describe those entries, and the image-service README's token instructions.
-
-The GitHub App installation and ruleset `25942669` are bound to the repository's ID rather than its name, so they carry over; check them anyway.
-
-The recommended order of the cutover follows; the EngineeringToolsMK steps are that repository's decisions, through its own review:
-
-1. Merge the branding pull request.
-2. Admit `mk-global/creatorbrio` to the broker policy, inventory and reviewer configuration in EngineeringToolsMK, keeping `mk-global/framewoven` until step 6, and restart the broker, which reads its policy only when it starts.
-   This comes first because the broker matches a checkout's `origin` against its policy, so a checkout pointed at a name the policy does not list loses GitHub access.
-3. Rename the repository in GitHub's settings.
-4. Point every checkout and worktree at the new name with `git remote set-url origin https://github.com/mk-global/creatorbrio.git`.
-5. Verify App and broker read and write access, the ticket and PR validators, the required CI check, an exact-head independent review on a pull request, and the ruleset's required checks.
-6. Remove `mk-global/framewoven` from the EngineeringToolsMK configuration, and update this repository's URLs and this section in a follow-up pull request.
+- the provisioned image-service token at `~/.config/framewoven/image-service.token`, which moves only in a founder-coordinated migration together with the path in `src/lib/image-service.ts`;
+- local checkout directories named `framewoven`, which running local servers use as their working directory;
+- the dashboard's browser-storage key for the selected brand (renaming resets every saved selection) and the server's generation-status registry key (renaming loses generations in progress in a server that reloads), permanently, because nobody sees them;
+- the `framewoven*.log` ignore pattern, which still matches logs written before the rename;
+- the changelog and `PROVENANCE.md`, which keep the name used at the time.
 
 ## No ticket, no work
 
@@ -76,9 +61,9 @@ Before publishing tickets or PRs, run the **canonical installed** validator (do 
 
 ```bash
 # Run from the EngineeringToolsMK checkout, with GitHub access:
-gh issue view N --repo mk-global/framewoven --json body --jq .body | python3 tools/github-policy/validate.py ticket -
-gh issue view N --repo mk-global/framewoven --json state,body | python3 tools/github-policy/validate.py linked-ticket -
-gh pr view N --repo mk-global/framewoven --json body --jq .body | python3 tools/github-policy/validate.py pr -
+gh issue view N --repo mk-global/creatorbrio --json body --jq .body | python3 tools/github-policy/validate.py ticket -
+gh issue view N --repo mk-global/creatorbrio --json state,body | python3 tools/github-policy/validate.py linked-ticket -
+gh pr view N --repo mk-global/creatorbrio --json body --jq .body | python3 tools/github-policy/validate.py pr -
 ```
 
 For draft bodies not yet published, save the proposed Markdown to a temporary file and run `python3 tools/github-policy/validate.py ticket /path/to/draft.md` (or `pr` for a PR). Check **every** linked issue before opening a PR. These commands are author-side checks, not hard enforcement.
