@@ -189,6 +189,7 @@ The dashboard's selected brand is a preference kept in browser local storage; it
 
 When you send a chat message, `/api/chat` starts the Claude CLI as a subprocess with `--allowedTools Bash WebFetch Read` and streams its replies back to the browser as Server-Sent Events.
 The agent's system prompt includes the open carousel's brand configuration, its slide list (IDs and notes), its reference images, and the address of this running app.
+A reference image is always an uploaded image stored as `public/uploads/<uuid>.png`; the server derives its path itself and lists only references that are still readable PNG files inside `public/uploads/`, so a reference can never point the agent at another file.
 Carousels created before multiple brands existed belong to the default brand, the original one.
 The agent reads and writes slide content through the app's API.
 
