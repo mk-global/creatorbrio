@@ -6,16 +6,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 
-import { POST } from "@/app/api/images/generate/route";
-import { IMAGE_DIMENSIONS, MAX_IMAGE_BYTES, generateImage, type ImageAspectRatio } from "@/lib/image-service";
+import {
+  IMAGE_DIMENSIONS,
+  ImageGenerationError,
+  MAX_IMAGE_BYTES,
+  generateImage,
+  parseImageRequest,
+  type GeneratedImage,
+  type ImageAspectRatio,
+} from "@/lib/image-service";
 import { buildSystemPrompt } from "@/lib/chat-system-prompt";
-import { checkApiRequest } from "@/lib/request-guard";
 import { DEFAULT_BRAND } from "@/types/brand";
 import type { Carousel } from "@/types/carousel";
 
-// The route runs for real against a stand-in for the founder's image service on
-// a loopback port: a real HTTP exchange, real token file, real PNG checks and
-// real storage under a throwaway working directory and home.
+// The server-side image client runs for real against a stand-in for the
+// founder's image service on a loopback port: a real HTTP exchange, real token
+// file, real PNG checks and real storage under a throwaway working directory
+// and home. No app route exposes it since #35; these tests call it directly,
+// as the future server-side caller will: parse the request, then generate.
 const TOKEN = "c0ffee".repeat(10) + "abcd";
 
 type Handler = (req: IncomingMessage, body: string, res: ServerResponse) => void;
@@ -57,14 +65,20 @@ async function writeToken(content = TOKEN, mode = 0o600) {
   await chmod(file, mode);
 }
 
-function call(body: unknown) {
-  return POST(
-    new Request("http://127.0.0.1:3042/api/images/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: typeof body === "string" ? body : JSON.stringify(body),
-    })
-  );
+/** Parses then generates, as a server-side caller does. */
+function generate(body: unknown): Promise<GeneratedImage> {
+  return (async () => generateImage(parseImageRequest(body)))();
+}
+
+/** The typed refusal a call ends with; fails the test if it succeeded. */
+async function refusal(body: unknown): Promise<ImageGenerationError> {
+  try {
+    await generate(body);
+  } catch (err) {
+    if (err instanceof ImageGenerationError) return err;
+    throw err;
+  }
+  throw new Error("expected the image client to refuse");
 }
 
 const uploads = async () => readdir(path.join(workdir, "public", "uploads")).catch(() => [] as string[]);
@@ -110,21 +124,19 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  // Nothing the route logs or returns may carry the token or the prompt.
+  // Nothing the client logs may carry the token or the prompt.
   const text = JSON.stringify(logged);
   expect(text).not.toContain(TOKEN);
   expect(text).not.toContain("quiet harbour");
 });
 
-describe("POST /api/images/generate", () => {
+describe("image client: generateImage", () => {
   it.each(Object.entries(IMAGE_DIMENSIONS))(
     "stores a %s image at its native size and returns its upload path",
     async (aspectRatio, { width, height }) => {
       handler = replyPng(await png(width, height));
-      const res = await call({ prompt: "  quiet harbour at dawn, empty sky above  ", aspectRatio });
-      const body = await res.json();
+      const body = await generate({ prompt: "  quiet harbour at dawn, empty sky above  ", aspectRatio });
 
-      expect(res.status).toBe(200);
       expect(body).toEqual({ url: expect.stringMatching(/^\/uploads\/[0-9a-f-]{36}\.png$/), width, height });
 
       const saved = await readFile(path.join(workdir, "public", body.url));
@@ -139,7 +151,7 @@ describe("POST /api/images/generate", () => {
       expect(received[0].headers.host).toBe(new URL(process.env.IMAGE_SERVICE_URL!).host);
       expect(JSON.parse(received[0].body)).toEqual({ prompt: "quiet harbour at dawn, empty sky above", aspectRatio });
 
-      // The response names neither the token nor any filesystem path.
+      // The result names neither the token nor any filesystem path.
       const text = JSON.stringify(body);
       expect(text).not.toContain(TOKEN);
       expect(text).not.toContain(workdir);
@@ -148,8 +160,8 @@ describe("POST /api/images/generate", () => {
 
   it("gives every image a new unpredictable name", async () => {
     handler = replyPng(await png(1024, 1024));
-    const a = await (await call({ prompt: "quiet harbour", aspectRatio: "1:1" })).json();
-    const b = await (await call({ prompt: "quiet harbour", aspectRatio: "1:1" })).json();
+    const a = await generate({ prompt: "quiet harbour", aspectRatio: "1:1" });
+    const b = await generate({ prompt: "quiet harbour", aspectRatio: "1:1" });
     expect(a.url).not.toBe(b.url);
     expect((await uploads()).sort()).toEqual([a.url, b.url].map((u: string) => path.basename(u)).sort());
   });
@@ -170,9 +182,8 @@ describe("POST /api/images/generate", () => {
     ["a generation failure", async () => replyError(500, "generation_failed", "backend failed")],
   ])("refuses %s and stores nothing", async (_name, make) => {
     handler = await make();
-    const res = await call({ prompt: "quiet harbour", aspectRatio: "1:1" });
-    expect(res.status).toBe(502);
-    expect(await res.json()).toMatchObject({ error: "image_generation_failed" });
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "1:1" });
+    expect(err).toMatchObject({ status: 502, code: "image_generation_failed" });
     expect(await uploads()).toEqual([]);
   });
 
@@ -187,50 +198,45 @@ describe("POST /api/images/generate", () => {
     }],
   ])("refuses an oversized response %s, by its size", async (_name, make) => {
     handler = make();
-    const res = await call({ prompt: "quiet harbour", aspectRatio: "1:1" });
-    expect(res.status).toBe(502);
-    expect(await res.json()).toMatchObject({ error: "image_generation_failed", message: expect.stringContaining("oversized") });
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "1:1" });
+    expect(err).toMatchObject({ status: 502, code: "image_generation_failed", message: expect.stringContaining("oversized") });
     expect(await uploads()).toEqual([]);
   });
 
   it("reports a busy service with its retry hint, without retrying", async () => {
     handler = replyError(503, "busy", "Another generation is running", { "Retry-After": "15" });
-    const res = await call({ prompt: "quiet harbour", aspectRatio: "9:16" });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ error: "image_service_busy", retryAfterSeconds: 15 });
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "9:16" });
+    expect(err).toMatchObject({ status: 503, code: "image_service_busy", detail: { retryAfterSeconds: 15 } });
     expect(received).toHaveLength(1);
   });
 
   it("reports an admission refusal with its reason", async () => {
     handler = replyError(503, "admission_refused", "insufficient_free_memory", { "Retry-After": "30" });
-    const res = await call({ prompt: "quiet harbour", aspectRatio: "4:5" });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({
-      error: "image_generation_refused",
-      reason: "insufficient_free_memory",
-      retryAfterSeconds: 30,
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "4:5" });
+    expect(err).toMatchObject({
+      status: 503,
+      code: "image_generation_refused",
+      detail: { reason: "insufficient_free_memory", retryAfterSeconds: 30 },
     });
   });
 
   it("does not repeat free text from a refusal", async () => {
     handler = replyError(503, "admission_refused", "Something at /Users/founder/private went wrong");
-    const body = await (await call({ prompt: "quiet harbour", aspectRatio: "4:5" })).json();
-    expect(body.reason).toBeUndefined();
-    expect(JSON.stringify(body)).not.toContain("/Users/founder");
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "4:5" });
+    expect(err.detail.reason).toBeUndefined();
+    expect(JSON.stringify({ message: err.message, ...err.detail })).not.toContain("/Users/founder");
   });
 
   it("reports a service timeout", async () => {
     handler = replyError(504, "generation_timeout", "timed out");
-    const res = await call({ prompt: "quiet harbour", aspectRatio: "1:1" });
-    expect(res.status).toBe(504);
-    expect(await res.json()).toMatchObject({ error: "image_generation_timeout" });
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "1:1" });
+    expect(err).toMatchObject({ status: 504, code: "image_generation_timeout" });
   });
 
   it("reports a rejected token as missing setup, not as the token", async () => {
     handler = replyError(401, "unauthorized", "Missing or wrong token");
-    const res = await call({ prompt: "quiet harbour", aspectRatio: "1:1" });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ error: "image_service_not_configured" });
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "1:1" });
+    expect(err).toMatchObject({ status: 503, code: "image_service_not_configured" });
   });
 
   it("reports an image service that is not running", async () => {
@@ -241,9 +247,8 @@ describe("POST /api/images/generate", () => {
     const previous = process.env.IMAGE_SERVICE_URL;
     process.env.IMAGE_SERVICE_URL = `http://127.0.0.1:${port}`;
     try {
-      const res = await call({ prompt: "quiet harbour", aspectRatio: "1:1" });
-      expect(res.status).toBe(503);
-      expect(await res.json()).toMatchObject({ error: "image_service_unavailable" });
+      const err = await refusal({ prompt: "quiet harbour", aspectRatio: "1:1" });
+      expect(err).toMatchObject({ status: 503, code: "image_service_unavailable" });
     } finally {
       process.env.IMAGE_SERVICE_URL = previous;
     }
@@ -256,9 +261,8 @@ describe("POST /api/images/generate", () => {
   ])("refuses to call the service when the token file %s", async (_name, setUp) => {
     await setUp();
     handler = replyPng(await png(1024, 1024));
-    const res = await call({ prompt: "quiet harbour", aspectRatio: "1:1" });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ error: "image_service_not_configured" });
+    const err = await refusal({ prompt: "quiet harbour", aspectRatio: "1:1" });
+    expect(err).toMatchObject({ status: 503, code: "image_service_not_configured" });
     expect(received).toEqual([]);
   });
 
@@ -266,9 +270,9 @@ describe("POST /api/images/generate", () => {
     const previous = process.env.IMAGE_SERVICE_URL;
     process.env.IMAGE_SERVICE_URL = "http://images.example.test:8791";
     try {
-      const res = await call({ prompt: "quiet harbour", aspectRatio: "1:1" });
-      expect(res.status).toBe(503);
-      expect(await res.json()).toMatchObject({ error: "image_service_not_configured" });
+      const err = await refusal({ prompt: "quiet harbour", aspectRatio: "1:1" });
+      expect(err).toMatchObject({ status: 503, code: "image_service_not_configured" });
+      expect(received).toEqual([]);
     } finally {
       process.env.IMAGE_SERVICE_URL = previous;
     }
@@ -281,28 +285,17 @@ describe("POST /api/images/generate", () => {
     ["a control character", { prompt: "bad\u0007byte", aspectRatio: "1:1" }, "invalid_prompt"],
     ["a carriage return", { prompt: "bad\rbyte", aspectRatio: "1:1" }, "invalid_prompt"],
     ["an unsupported aspect ratio", { prompt: "quiet harbour", aspectRatio: "3:2" }, "invalid_aspect_ratio"],
-    ["a body that is not JSON", "not json", "invalid_json"],
   ])("refuses %s before calling the service", async (_name, body, error) => {
     handler = replyPng(await png(1024, 1024));
-    const res = await call(body);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error });
+    const err = await refusal(body);
+    expect(err).toMatchObject({ status: 400, code: error });
     expect(received).toEqual([]);
   });
 
   it("accepts newlines and tabs in a brief and forwards only prompt and aspectRatio", async () => {
     handler = replyPng(await png(1024, 1280));
-    const res = await call({ prompt: "quiet harbour\n\tempty sky", aspectRatio: "4:5", seed: 7, model: "x" });
-    expect(res.status).toBe(200);
+    await generate({ prompt: "quiet harbour\n\tempty sky", aspectRatio: "4:5", seed: 7, model: "x" });
     expect(Object.keys(JSON.parse(received[0].body))).toEqual(["prompt", "aspectRatio"]);
-  });
-
-  it("is covered by the API's loopback and same-site checks", () => {
-    const post = (headers: Record<string, string>) =>
-      checkApiRequest(new Request("http://127.0.0.1:3042/api/images/generate", { method: "POST", headers }));
-    expect(post({ host: "127.0.0.1:3042" })).toBe("allow");
-    expect(post({ host: "evil.example" })).toBe("non-loopback-host");
-    expect(post({ host: "127.0.0.1:3042", origin: "https://evil.example" })).toBe("cross-site-origin");
   });
 });
 
@@ -331,15 +324,10 @@ describe("design agent instructions", () => {
   } as Carousel;
   const prompt = buildSystemPrompt({ baseUrl: "http://127.0.0.1:3042", brand: DEFAULT_BRAND, carousel });
 
-  it("offers image generation through this app, at the carousel's ratio", () => {
-    expect(prompt).toContain("curl -s -m 200 -X POST http://127.0.0.1:3042/api/images/generate");
-    expect(prompt).toContain('"aspectRatio": "9:16"');
-  });
-
-  it("keeps images optional and the CSS-only path the default", () => {
-    expect(prompt).toContain("Most designs need no generated image");
-    expect(prompt).toContain("never invent or guess an image path");
-    expect(prompt).toContain("Finish the design with HTML/CSS only");
+  it("no longer offers image generation", () => {
+    expect(prompt).not.toContain("/api/images");
+    expect(prompt).not.toMatch(/generate an image/i);
+    expect(prompt).not.toContain("IMAGE BRIEF");
   });
 
   it("keeps the existing slide workflow", () => {
