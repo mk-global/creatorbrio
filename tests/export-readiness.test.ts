@@ -226,7 +226,9 @@ describe("export while the design agent is generating", () => {
 
     await finishRun(1);
     const streamed = await res.text();
-    expect(streamed).toContain("Claude CLI exited with code 1");
+    // The failure reaches the user as a typed error; the exit code stays in the server log.
+    expect(streamed).toContain('"type":"error","code":"agent_failed"');
+    expect(streamed).not.toContain("exited with code");
     expect(streamed).toContain("event: done");
 
     const status = await statusOf(carousel.id);

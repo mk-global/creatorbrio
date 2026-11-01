@@ -6,6 +6,17 @@ import { ChatInput } from "./ChatInput";
 import { ReferenceImages } from "./ReferenceImages";
 import { AlertCircle, Plug } from "lucide-react";
 import type { ReferenceImage } from "@/types/carousel";
+import {
+  createChatStreamParser,
+  INITIAL_CHAT_RUN,
+  reduceChatRun,
+  sessionAfterRun,
+} from "@/lib/chat-stream";
+import { readChatSession, writeChatSession } from "@/lib/chat-session";
+
+/** Shown when the stream closes without the run reporting how it ended. */
+const CONNECTION_LOST =
+  "The connection to the design agent was lost before it finished. Send your message again to retry.";
 
 interface Message {
   id: string;
@@ -37,16 +48,19 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Load session ID and chat history from localStorage
+  // Load this carousel's session and chat history. Both are replaced, not
+  // merged, so nothing from a previously shown carousel carries over.
   useEffect(() => {
-    const storedSession = localStorage.getItem(`chat-session-${carouselId}`);
-    if (storedSession) setSessionId(storedSession);
+    setSessionId(readChatSession(localStorage, carouselId));
+    setError(null);
+    let stored: Message[] = [];
     try {
       const storedMessages = localStorage.getItem(`chat-messages-${carouselId}`);
-      if (storedMessages) setMessages(JSON.parse(storedMessages));
+      if (storedMessages) stored = JSON.parse(storedMessages);
     } catch {
       // ignore corrupted data
     }
+    setMessages(Array.isArray(stored) ? stored : []);
   }, [carouselId]);
 
   // Persist messages to localStorage
@@ -64,8 +78,9 @@ export function ChatPanel({
   const handleClearChat = useCallback(() => {
     setMessages([]);
     setSessionId(null);
+    setError(null);
     localStorage.removeItem(`chat-messages-${carouselId}`);
-    localStorage.removeItem(`chat-session-${carouselId}`);
+    writeChatSession(localStorage, carouselId, null);
   }, [carouselId]);
 
   const handleStopGenerating = useCallback(() => {
@@ -126,83 +141,41 @@ export function ChatPanel({
         if (!reader) throw new Error("No response stream");
 
         const decoder = new TextDecoder();
-        let accumulated = "";
-        let buffer = "";
+        const parser = createChatStreamParser();
+        let run = INITIAL_CHAT_RUN;
+        const apply = (events: ReturnType<typeof parser.push>) => {
+          const before = run.content;
+          for (const event of events) run = reduceChatRun(run, event);
+          if (run.content !== before) {
+            const content = run.content;
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantId ? { ...m, content } : m))
+            );
+          }
+        };
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          apply(parser.push(decoder.decode(value, { stream: true })));
+        }
+        apply(parser.end());
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.type === "token" && typeof data.text === "string") {
-                  accumulated += data.text;
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, content: accumulated }
-                        : m
-                    )
-                  );
-                } else if (data.type === "result" && typeof data.text === "string") {
-                  accumulated = data.text; // result is the final complete text
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, content: accumulated }
-                        : m
-                    )
-                  );
-                }
-              } catch {
-                // skip unparseable
-              }
-            } else if (line.startsWith("event: done")) {
-              // Next line has the done data
-            } else if (
-              line.startsWith("data: ") &&
-              line.includes("sessionId")
-            ) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.sessionId) {
-                  setSessionId(data.sessionId);
-                  localStorage.setItem(
-                    `chat-session-${carouselId}`,
-                    data.sessionId
-                  );
-                }
-              } catch {
-                // skip
-              }
-            }
-          }
+        // Resume the session the run reported next time, keep the one it was
+        // sent with if it reported none, or drop one the CLI could not resume.
+        const next = sessionAfterRun(run, sessionId);
+        if (next !== sessionId) {
+          setSessionId(next);
+          writeChatSession(localStorage, carouselId, next);
         }
 
-        // Parse any remaining buffer for the done event
-        if (buffer.trim()) {
-          for (const line of buffer.split("\n")) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.sessionId) {
-                  setSessionId(data.sessionId);
-                  localStorage.setItem(
-                    `chat-session-${carouselId}`,
-                    data.sessionId
-                  );
-                }
-              } catch {
-                // skip
-              }
-            }
-          }
+        const failure = run.error?.message ?? (run.finished ? null : CONNECTION_LOST);
+        if (failure) {
+          // Any reply text already streamed stays visible above the error.
+          setError(failure);
+          setMessages((prev) =>
+            prev.filter((m) => m.id !== assistantId || m.content.length > 0)
+          );
         }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") return;

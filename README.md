@@ -175,7 +175,7 @@ Git tracks only the source; everything you create stays local and is ignored by 
 | `public/uploads/` | Uploaded logos and reference images, and generated images |
 | `.env.local` | Local configuration, such as `CLAUDE_CLI_PATH`, or `IMAGE_SERVICE_URL` to reach the image service on another loopback port (default `http://127.0.0.1:8791`; any address other than `127.0.0.1` or `localhost` is refused) |
 
-Chat transcripts are stored in your browser's local storage for each carousel.
+Chat transcripts, and the session ID that lets the next message continue the conversation, are stored in your browser's local storage for each carousel.
 Claude Code also keeps its own record of each design-agent session in its data directory, outside this project.
 Exports are not stored; each export is built in memory and downloaded as a ZIP of PNGs or a PDF.
 
@@ -188,6 +188,9 @@ The dashboard's selected brand is a preference kept in browser local storage; it
 ## How the design agent works
 
 When you send a chat message, `/api/chat` starts the Claude CLI as a subprocess with `--allowedTools Bash WebFetch Read` and streams its replies back to the browser as Server-Sent Events.
+Each carousel's chat is one continuing conversation: the browser keeps that carousel's Claude session ID next to its transcript and sends it with the next message, so the agent resumes with everything said before.
+Clear starts a new conversation, and a session Claude Code can no longer find is reset automatically, with a message asking you to send again.
+If the agent fails after it has started replying, the chat panel keeps the partial reply and says what went wrong; diagnostic details stay in the server log.
 The agent's system prompt includes the open carousel's brand configuration, its slide list (IDs and notes), its reference images, and the address of this running app.
 A reference image is always an uploaded image stored as `public/uploads/<uuid>.png`; the server derives its path itself and lists only references that are still readable PNG files inside `public/uploads/`, so a reference can never point the agent at another file.
 Carousels created before multiple brands existed belong to the default brand, the original one.
