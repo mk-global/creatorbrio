@@ -6,6 +6,7 @@ import { ChatInput } from "./ChatInput";
 import { ReferenceImages } from "./ReferenceImages";
 import { AlertCircle, Plug } from "lucide-react";
 import type { ReferenceImage } from "@/types/carousel";
+import { createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
 
 interface Message {
   id: string;
@@ -126,84 +127,31 @@ export function ChatPanel({
         if (!reader) throw new Error("No response stream");
 
         const decoder = new TextDecoder();
+        const parser = createChatStreamParser();
         let accumulated = "";
-        let buffer = "";
+        const apply = (events: ChatStreamEvent[]) => {
+          for (const event of events) {
+            if (event.type === "token" || event.type === "result") {
+              // A result is the final complete text; tokens accumulate.
+              accumulated = event.type === "token" ? accumulated + event.text : event.text;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, content: accumulated } : m
+                )
+              );
+            } else if (event.type === "done" && event.sessionId) {
+              setSessionId(event.sessionId);
+              localStorage.setItem(`chat-session-${carouselId}`, event.sessionId);
+            }
+          }
+        };
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.type === "token" && typeof data.text === "string") {
-                  accumulated += data.text;
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, content: accumulated }
-                        : m
-                    )
-                  );
-                } else if (data.type === "result" && typeof data.text === "string") {
-                  accumulated = data.text; // result is the final complete text
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, content: accumulated }
-                        : m
-                    )
-                  );
-                }
-              } catch {
-                // skip unparseable
-              }
-            } else if (line.startsWith("event: done")) {
-              // Next line has the done data
-            } else if (
-              line.startsWith("data: ") &&
-              line.includes("sessionId")
-            ) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.sessionId) {
-                  setSessionId(data.sessionId);
-                  localStorage.setItem(
-                    `chat-session-${carouselId}`,
-                    data.sessionId
-                  );
-                }
-              } catch {
-                // skip
-              }
-            }
-          }
+          apply(parser.push(decoder.decode(value, { stream: true })));
         }
-
-        // Parse any remaining buffer for the done event
-        if (buffer.trim()) {
-          for (const line of buffer.split("\n")) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.sessionId) {
-                  setSessionId(data.sessionId);
-                  localStorage.setItem(
-                    `chat-session-${carouselId}`,
-                    data.sessionId
-                  );
-                }
-              } catch {
-                // skip
-              }
-            }
-          }
-        }
+        apply(parser.end());
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") return;
         const message = err instanceof Error ? err.message : "An unexpected error occurred";
