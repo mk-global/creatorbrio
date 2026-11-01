@@ -30,7 +30,7 @@ Served by the running app, on whichever port it was started with. The origin the
 design agent is told to call is derived per request by `resolveAppOrigin()` in
 `src/lib/request-origin.ts`; never hardcode a port in the system prompt.
 
-- `POST /api/chat` — Claude CLI subprocess + SSE streaming
+- `POST /api/chat`: Claude CLI subprocess streaming typed SSE events (`token`, `result`, `error` with a stable `code` and a user-facing `message`, `done` with the `sessionId` to resume). Body `{ message, carouselId, sessionId? }`; `sessionId` must be a Claude session UUID and resumes that carousel's conversation, anything else is refused with 400. The contract lives in `src/lib/chat-stream.ts`
 - `GET/POST /api/carousels` — List/create carousels
 - `GET/PUT/DELETE /api/carousels/[id]` — Single carousel
 - `POST /api/carousels/[id]/slides` — Add slide

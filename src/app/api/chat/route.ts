@@ -10,6 +10,13 @@ import { resolveReferenceImages } from "@/lib/reference-images";
 import { dataErrorResponse } from "@/lib/api-errors";
 import { resolveAppOrigin } from "@/lib/request-origin";
 import {
+  CHAT_ERROR_MESSAGES,
+  encodeChatEvent,
+  isSessionId,
+  type ChatErrorCode,
+  type ChatStreamEvent,
+} from "@/lib/chat-stream";
+import {
   beginGeneration,
   classifyRunExit,
   type RunOutcome,
@@ -35,7 +42,7 @@ export async function POST(request: NextRequest) {
 
   let body: {
     message?: string;
-    sessionId?: string;
+    sessionId?: unknown;
     carouselId?: string;
     stylePresetId?: string;
   };
@@ -55,6 +62,13 @@ export async function POST(request: NextRequest) {
   ) {
     return NextResponse.json({ error: "Invalid message" }, { status: 400 });
   }
+
+  // The session becomes a CLI argument, so only a Claude session ID is accepted;
+  // anything else could be read by the CLI as an option.
+  if (sessionId !== undefined && sessionId !== null && sessionId !== "" && !isSessionId(sessionId)) {
+    return NextResponse.json({ error: "Invalid session" }, { status: 400 });
+  }
+  const resumeSessionId = isSessionId(sessionId) ? sessionId : null;
 
   // Build dynamic system prompt with the carousel's brand + carousel + style preset context
   let systemPrompt: string;
@@ -119,8 +133,8 @@ export async function POST(request: NextRequest) {
     "creatorbrio-chat",
   ];
 
-  if (sessionId) {
-    args.push("--resume", sessionId);
+  if (resumeSessionId) {
+    args.push("--resume", resumeSessionId);
   }
 
   const encoder = new TextEncoder();
@@ -130,6 +144,29 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     start(controller) {
       let childProcess: ReturnType<typeof spawn>;
+
+      const send = (event: ChatStreamEvent) => {
+        try {
+          controller.enqueue(encoder.encode(encodeChatEvent(event)));
+        } catch {
+          // stream already closed
+        }
+      };
+      // Only the first failure is reported: it is the cause, and anything
+      // after it (a non-zero exit following an error result) is a consequence.
+      let errorCode: ChatErrorCode | null = null;
+      const fail = (code: ChatErrorCode) => {
+        if (errorCode || cancelled) return;
+        errorCode = code;
+        send({ type: "error", code, message: CHAT_ERROR_MESSAGES[code] });
+      };
+      const close = () => {
+        try {
+          controller.close();
+        } catch {
+          // stream already closed
+        }
+      };
 
       const isWindowsShim =
         process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
@@ -151,17 +188,8 @@ export async function POST(request: NextRequest) {
           code: e?.code,
           message: e?.message,
         });
-        controller.enqueue(
-          encoder.encode(
-            `event: error\ndata: ${JSON.stringify({
-              error: "Failed to start Claude CLI",
-              code: e?.code,
-              path: claudePath,
-              message: e?.message,
-            })}\n\n`
-          )
-        );
-        controller.close();
+        fail("start_failed");
+        close();
         return;
       }
 
@@ -176,30 +204,77 @@ export async function POST(request: NextRequest) {
       let resultIsError = false;
       const outcomeFor = (code: number | null) =>
         classifyRunExit({ cancelled, timedOut, code, resultIsError });
-      const noteResult = (event: Record<string, unknown>) => {
-        if (event.type === "result" && event.is_error === true) resultIsError = true;
+
+      // A resumed session the CLI cannot find fails before the CLI reports
+      // the session it started, which is how it is told apart from a failure
+      // inside a running conversation.
+      let sessionStarted = false;
+      let resolvedSessionId: string | null = null;
+      const noteSession = (id: unknown) => {
+        if (isSessionId(id)) resolvedSessionId = id;
+      };
+      const resumeFailed = () => resumeSessionId !== null && !sessionStarted;
+
+      const handleEvent = (event: Record<string, unknown>) => {
+        if (event.type === "system" && event.subtype === "init") {
+          sessionStarted = true;
+          noteSession(event.session_id);
+          return;
+        }
+
+        // Streaming text tokens
+        if (event.type === "assistant" && event.message) {
+          const msg = event.message as Record<string, unknown>;
+          if (msg.type === "message" && Array.isArray(msg.content)) {
+            for (const block of msg.content) {
+              const b = block as Record<string, unknown>;
+              if (b.type === "text" && typeof b.text === "string") {
+                send({ type: "token", text: b.text });
+              }
+            }
+          }
+          return;
+        }
+
+        if (event.type === "result") {
+          if (event.is_error === true) {
+            // An error result is not a reply; it is reported as a failure.
+            resultIsError = true;
+            fail(
+              resumeFailed()
+                ? "session_not_found"
+                : event.subtype === "error_max_budget_usd"
+                  ? "budget_exceeded"
+                  : "agent_failed"
+            );
+            return;
+          }
+          if (sessionStarted) noteSession(event.session_id);
+          if (typeof event.result === "string" && event.result) {
+            send({ type: "result", text: event.result });
+          }
+        }
       };
 
       let buffer = "";
-      let resolvedSessionId = sessionId ?? "";
+      const handleLine = (line: string) => {
+        if (!line.trim()) return;
+        let event: unknown;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return; // skip unparseable lines
+        }
+        if (typeof event === "object" && event !== null) {
+          handleEvent(event as Record<string, unknown>);
+        }
+      };
 
       childProcess.stdout?.on("data", (chunk: Buffer) => {
         buffer += chunk.toString();
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line);
-            noteResult(event);
-            handleEvent(event, controller, encoder, (id) => {
-              resolvedSessionId = id;
-            });
-          } catch {
-            // skip unparseable lines
-          }
-        }
+        for (const line of lines) handleLine(line);
       });
 
       let stderrBuf = "";
@@ -216,18 +291,20 @@ export async function POST(request: NextRequest) {
         childProcess.kill();
       }, 480_000);
 
-      childProcess.on("error", (err) => {
+      childProcess.on("error", async (err) => {
         clearTimeout(timeout);
         // A cancelled chat reports an AbortError as soon as the kill is sent,
         // while the subprocess may still be finishing a write. Release here
         // only if it never started or has already gone; otherwise "exit" will.
+        // A release made here is saved before the stream closes, as on exit.
+        let released: Promise<void> = Promise.resolve();
         if (childProcess.pid === undefined) {
-          endGeneration("not-started");
+          released = endGeneration("not-started");
         } else if (
           childProcess.exitCode !== null ||
           childProcess.signalCode !== null
         ) {
-          endGeneration(outcomeFor(childProcess.exitCode));
+          released = endGeneration(outcomeFor(childProcess.exitCode));
         } else {
           // Export stays unavailable until the subprocess exits, so one that
           // ignores the termination request is killed outright.
@@ -246,78 +323,50 @@ export async function POST(request: NextRequest) {
           message: e?.message,
           stderr: stderrBuf,
         });
-        try {
-          childProcess.kill();
-          controller.enqueue(
-            encoder.encode(
-              `event: error\ndata: ${JSON.stringify({
-                error: err.message,
-                code: e?.code,
-                syscall: e?.syscall,
-                path: e?.path,
-                stderr: stderrBuf || undefined,
-              })}\n\n`
-            )
-          );
-          controller.close();
-        } catch {
-          // stream already closed
-        }
+        childProcess.kill();
+        fail(childProcess.pid === undefined ? "start_failed" : "agent_failed");
+        await released;
+        close();
       });
 
       childProcess.on("exit", async (code) => {
         clearTimeout(timeout);
-        // process remaining buffer
-        if (buffer.trim()) {
-          try {
-            const event = JSON.parse(buffer);
-            noteResult(event);
-            handleEvent(event, controller, encoder, (id) => {
-              resolvedSessionId = id;
-            });
-          } catch {
-            // skip
-          }
-        }
+        handleLine(buffer);
+        buffer = "";
 
+        if (timedOut) {
+          fail("timed_out");
+        } else if (code !== 0 && !cancelled) {
+          // Non-zero, or killed by a signal nobody here sent.
+          fail(resumeFailed() ? "session_not_found" : "agent_failed");
+        }
         if (code && code !== 0) {
-          console.error("[chat] Claude subprocess exited non-zero", {
+          const log = errorCode === "session_not_found" ? console.warn : console.error;
+          log("[chat] Claude subprocess exited non-zero", {
             claudePath,
             platform: process.platform,
             exitCode: code,
+            errorCode,
             stderr: stderrBuf,
           });
-          try {
-            controller.enqueue(
-              encoder.encode(
-                `event: error\ndata: ${JSON.stringify({
-                  error: `Claude CLI exited with code ${code}`,
-                  exitCode: code,
-                  stderr: stderrBuf || undefined,
-                })}\n\n`
-              )
-            );
-          } catch {
-            // stream already closed
-          }
         }
 
         // Saved before "done", so the editor's next status check sees it.
-        await endGeneration(outcomeFor(code));
+        const outcome = outcomeFor(code);
+        await endGeneration(outcome);
 
-        try {
-          controller.enqueue(
-            encoder.encode(
-              `event: done\ndata: ${JSON.stringify({
-                sessionId: resolvedSessionId,
-                exitCode: code,
-              })}\n\n`
-            )
-          );
-          controller.close();
-        } catch {
-          // stream already closed
-        }
+        // A session that could not be resumed is not offered again.
+        const nextSessionId = errorCode === "session_not_found" ? null : resolvedSessionId;
+        console.info("[chat] run finished", {
+          carouselId: carouselId ?? null,
+          resumedSessionId: resumeSessionId,
+          sessionId: nextSessionId,
+          outcome,
+          exitCode: code,
+          errorCode,
+        });
+        send({ type: "done", sessionId: nextSessionId });
+        close();
       });
     },
 
@@ -334,54 +383,4 @@ export async function POST(request: NextRequest) {
       Connection: "keep-alive",
     },
   });
-}
-
-function handleEvent(
-  event: Record<string, unknown>,
-  controller: ReadableStreamDefaultController,
-  encoder: TextEncoder,
-  onSessionId: (id: string) => void
-) {
-  // Extract session ID from init event
-  if (
-    event.type === "system" &&
-    event.subtype === "init" &&
-    event.session_id
-  ) {
-    onSessionId(event.session_id as string);
-    return;
-  }
-
-  // Extract streaming text tokens
-  if (event.type === "assistant" && event.message) {
-    const msg = event.message as Record<string, unknown>;
-    if (msg.type === "message" && Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        const b = block as Record<string, unknown>;
-        if (b.type === "text" && typeof b.text === "string") {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ type: "token", text: b.text })}\n\n`
-            )
-          );
-        }
-      }
-    }
-    return;
-  }
-
-  // Extract result with session ID
-  if (event.type === "result") {
-    if (event.session_id) {
-      onSessionId(event.session_id as string);
-    }
-    if (typeof event.result === "string" && event.result) {
-      controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({ type: "result", text: event.result })}\n\n`
-        )
-      );
-    }
-    return;
-  }
 }

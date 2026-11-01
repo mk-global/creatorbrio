@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
+import {
+  createChatStreamParser,
+  encodeChatEvent,
+  INITIAL_CHAT_RUN,
+  reduceChatRun,
+  sessionAfterRun,
+  type ChatStreamEvent,
+} from "@/lib/chat-stream";
+import { readChatSession, writeChatSession, type KeyValueStorage } from "@/lib/chat-session";
 
 const SESSION = "6c1f9a52-8d3e-4b7a-9f21-0e4d5c6b7a89";
 
@@ -115,5 +123,108 @@ describe("chat stream parser: errors after streaming starts (#3)", () => {
     const events = [...parser.push(SUCCESS[0]), ...parser.push("event: done\ndata: {\"type\":\"do")];
     expect(events.map((e) => e.type)).toEqual(["token"]);
     expect(parser.end()).toEqual([]);
+  });
+});
+
+describe("chat stream encoder", () => {
+  it("writes the exact frames the parser reads back", () => {
+    const events: ChatStreamEvent[] = [
+      { type: "token", text: "line one\nline two" },
+      { type: "error", code: "timed_out", message: "Stopped." },
+      { type: "done", sessionId: null },
+    ];
+    const stream = events.map(encodeChatEvent).join("");
+    expect(stream).toBe(events.map((e) => frame(e)).join(""));
+    expect(parseChunks(rechunk(stream, 4))).toEqual(events);
+  });
+
+  it("refuses a done frame whose session is not a session ID", () => {
+    const events = parseChunks([frame({ type: "done", sessionId: "--resume" })]);
+    expect(events).toEqual([{ type: "done", sessionId: null }]);
+  });
+});
+
+describe("what the chat panel does with a run", () => {
+  const run = (events: ChatStreamEvent[]) => events.reduce(reduceChatRun, INITIAL_CHAT_RUN);
+
+  it("shows streamed tokens, then the final result in their place", () => {
+    const state = run(parseChunks(SUCCESS));
+    expect(state).toEqual({ content: "Designed 3 slides.", error: null, sessionId: SESSION, finished: true });
+  });
+
+  it("keeps reply text already streamed when a failure follows, and keeps the first failure", () => {
+    const state = run([
+      ...parseChunks(FAILURE.slice(0, 2)),
+      { type: "error", code: "timed_out", message: "later" },
+    ]);
+    expect(state.content).toBe("Starting your carousel. Designing slide 1");
+    expect(state.error?.code).toBe("agent_failed");
+  });
+
+  it("resumes the reported session, or keeps the one it was sent with when none was reported", () => {
+    expect(sessionAfterRun(run(parseChunks(SUCCESS)), null)).toBe(SESSION);
+    // Stopped by the user before the run reported anything.
+    expect(sessionAfterRun(run(parseChunks(SUCCESS.slice(0, 2))), SESSION)).toBe(SESSION);
+    // Ended without a session to offer.
+    expect(sessionAfterRun(run([{ type: "done", sessionId: null }]), SESSION)).toBe(SESSION);
+  });
+
+  it("drops a session the CLI could not resume, even if a stale ID comes back", () => {
+    const state = run([
+      { type: "error", code: "session_not_found", message: "reset" },
+      { type: "done", sessionId: SESSION },
+    ]);
+    expect(sessionAfterRun(state, SESSION)).toBeNull();
+  });
+});
+
+describe("per-carousel session memory", () => {
+  function memoryStorage(): KeyValueStorage & { data: Map<string, string> } {
+    const data = new Map<string, string>();
+    return {
+      data,
+      getItem: (k) => data.get(k) ?? null,
+      setItem: (k, v) => void data.set(k, v),
+      removeItem: (k) => void data.delete(k),
+    };
+  }
+
+  it("never gives one carousel another carousel's session", () => {
+    const storage = memoryStorage();
+    writeChatSession(storage, "carousel-a", SESSION);
+    expect(readChatSession(storage, "carousel-a")).toBe(SESSION);
+    expect(readChatSession(storage, "carousel-b")).toBeNull();
+  });
+
+  it("keeps the existing storage key, so stored sessions stay readable", () => {
+    const storage = memoryStorage();
+    storage.setItem("chat-session-carousel-a", SESSION);
+    expect(readChatSession(storage, "carousel-a")).toBe(SESSION);
+  });
+
+  it("forgets the session when the chat is cleared", () => {
+    const storage = memoryStorage();
+    writeChatSession(storage, "carousel-a", SESSION);
+    writeChatSession(storage, "carousel-a", null);
+    expect(storage.data.size).toBe(0);
+    expect(readChatSession(storage, "carousel-a")).toBeNull();
+  });
+
+  it("ignores a stored value that is not a session ID, and never stores one", () => {
+    const storage = memoryStorage();
+    storage.setItem("chat-session-carousel-a", "--dangerously-skip-permissions");
+    expect(readChatSession(storage, "carousel-a")).toBeNull();
+    writeChatSession(storage, "carousel-b", "not-a-session");
+    expect(storage.data.has("chat-session-carousel-b")).toBe(false);
+  });
+
+  it("works without resuming when storage is unavailable", () => {
+    const broken: KeyValueStorage = {
+      getItem: () => { throw new Error("denied"); },
+      setItem: () => { throw new Error("quota"); },
+      removeItem: () => { throw new Error("denied"); },
+    };
+    expect(readChatSession(broken, "carousel-a")).toBeNull();
+    expect(() => writeChatSession(broken, "carousel-a", SESSION)).not.toThrow();
   });
 });
