@@ -6,6 +6,7 @@ import { buildSystemPrompt } from "@/lib/chat-system-prompt";
 import { resolveBrandForCarousel, BrandNotFoundError } from "@/lib/brand";
 import { getCarousel } from "@/lib/carousels";
 import { getPreset } from "@/lib/style-presets";
+import { resolveReferenceImages } from "@/lib/reference-images";
 import { dataErrorResponse } from "@/lib/api-errors";
 import { resolveAppOrigin } from "@/lib/request-origin";
 import {
@@ -67,12 +68,18 @@ export async function POST(request: NextRequest) {
     // made before brands existed.
     const brand = await resolveBrandForCarousel(carousel);
     const stylePreset = stylePresetId ? await getPreset(stylePresetId) : null;
+    // Only references that still resolve to confined PNG uploads reach the
+    // prompt, each with a path derived now; the stored path is never used.
+    // buildSystemPrompt itself stays a pure function of what it is given.
+    const promptCarousel = carousel
+      ? { ...carousel, referenceImages: await resolveReferenceImages(carousel) }
+      : null;
     systemPrompt = buildSystemPrompt({
       // The agent curls this app's own API, so it must be told the origin the
       // request arrived on rather than a fixed port.
       baseUrl: resolveAppOrigin(request),
       brand,
-      carousel,
+      carousel: promptCarousel,
       stylePreset,
     });
   } catch (err) {

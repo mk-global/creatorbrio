@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import path from "path";
 import { addReferenceImage, removeReferenceImage, getCarousel } from "@/lib/carousels";
+import { confineUploadedPng, REFERENCE_REJECTION_MESSAGES } from "@/lib/reference-images";
 import { generateId, now } from "@/lib/utils";
 import { dataErrorResponse } from "@/lib/api-errors";
 
@@ -29,12 +29,20 @@ export async function POST(
       return NextResponse.json({ error: "url is required" }, { status: 400 });
     }
 
-    const absPath = path.resolve(process.cwd(), "public", url.replace(/^\//, ""));
+    // The path is derived by the server from the URL, and only for a regular
+    // PNG upload inside public/uploads; nothing else is stored or advertised.
+    const confined = await confineUploadedPng(url);
+    if (!confined.ok) {
+      return NextResponse.json(
+        { error: REFERENCE_REJECTION_MESSAGES[confined.reason], reason: confined.reason },
+        { status: 400 }
+      );
+    }
 
     const ref = {
       id: generateId(),
-      url,
-      absPath,
+      url: confined.url,
+      absPath: confined.absPath,
       name: name || "Reference image",
       addedAt: now(),
     };
