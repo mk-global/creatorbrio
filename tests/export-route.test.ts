@@ -312,7 +312,7 @@ describe("export during generation", () => {
   for (const query of ["", "?format=png", "?format=pdf", "?format=single-png"]) {
     it(`refuses with 409 before rendering (${query || "no format"})`, async () => {
       getCarouselMock.mockResolvedValue(carousel("4:5", 1));
-      const end = beginGeneration("c1", "");
+      const end = beginGeneration("c1")!.end;
       try {
         const response = await exportRequest(query);
         expect(response.status).toBe(409);
@@ -330,7 +330,7 @@ describe("export during generation", () => {
   it("exports normally once the run has ended", async () => {
     getCarouselMock.mockResolvedValue(carousel("4:5", 2));
     exportAllSlidesMock.mockResolvedValue(await renderedPngs("4:5", 2));
-    await beginGeneration("c1", "")("completed");
+    await beginGeneration("c1")!.end("completed");
 
     const response = await exportRequest();
 
@@ -340,7 +340,7 @@ describe("export during generation", () => {
   it("does not block other carousels", async () => {
     getCarouselMock.mockResolvedValue(carousel("4:5", 1));
     exportAllSlidesMock.mockResolvedValue(await renderedPngs("4:5", 1));
-    const end = beginGeneration("another-carousel", null);
+    const end = beginGeneration("another-carousel")!.end;
     try {
       expect((await exportRequest()).status).toBe(200);
     } finally {
@@ -350,12 +350,16 @@ describe("export during generation", () => {
 });
 
 describe("export after an interrupted generation", () => {
-  // The mocked carousel's updatedAt is "", so a run that began at another
-  // time is one that changed it.
   for (const reason of ["stopped", "failed", "timed-out"] as const) {
     it(`refuses a carousel whose generation ${reason} after changing slides, in every format`, async () => {
       getCarouselMock.mockResolvedValue(carousel("4:5", 1));
-      await beginGeneration("c1", "before the run")(reason);
+      const run = beginGeneration("c1")!;
+      await run.ready;
+      // The run rewrites the carousel's slide before it ends.
+      const rewritten = carousel("4:5", 1);
+      rewritten.slides[0].html = "<div>Rewritten by the agent</div>";
+      getCarouselMock.mockResolvedValue(rewritten);
+      await run.end(reason);
 
       for (const query of ["", "?format=png", "?format=pdf", "?format=single-png"]) {
         const response = await exportRequest(query);
@@ -379,7 +383,7 @@ describe("export after an interrupted generation", () => {
   it("exports normally after an interrupted run that changed nothing", async () => {
     getCarouselMock.mockResolvedValue(carousel("4:5", 1));
     exportAllSlidesMock.mockResolvedValue(await renderedPngs("4:5", 1));
-    await beginGeneration("c1", "")("stopped");
+    await beginGeneration("c1")!.end("stopped");
 
     expect((await exportRequest()).status).toBe(200);
   });

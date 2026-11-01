@@ -28,7 +28,7 @@ const { POST: exportCarousel } = await import(
 const { GET: generationStatus, DELETE: acceptSlides } = await import(
   "@/app/api/carousels/[id]/generation/route"
 );
-const { addSlide, createCarousel, getCarousel } = await import("@/lib/carousels");
+const { addReferenceImage, addSlide, createCarousel, getCarousel } = await import("@/lib/carousels");
 const { isGenerating } = await import("@/lib/generation-status");
 const { exportAllSlides } = await import("@/lib/export-slides");
 const exportAllSlidesMock = vi.mocked(exportAllSlides);
@@ -344,5 +344,50 @@ describe("export while the design agent is generating", () => {
 
     await finishRun(0);
     await res.text();
+  });
+
+  it("refuses a second chat while the carousel is generating, and starts no second CLI", async () => {
+    const carousel = await createCarousel("One run", "4:5");
+    const first = await startChat(carousel.id);
+    const pid = await fakeCliPid();
+
+    const second = await startChat(carousel.id);
+    expect(second.status).toBe(409);
+    expect(((await second.json()) as { error: string }).error).toBe(
+      "A generation is already running for this carousel. Wait for it to finish, or stop it, then send your message again."
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(await fakeCliPid()).toBe(pid);
+
+    await finishRun(0);
+    await first.text();
+    // Once the run has ended, the carousel accepts a new one.
+    await rm(path.join(fakeDir, "finish"));
+    const third = await startChat(carousel.id);
+    expect(third.status).toBe(200);
+    await finishRun(0);
+    await third.text();
+  });
+
+  it("does not block export when a failed run changed only the carousel's reference images", async () => {
+    const carousel = await createCarousel("References", "4:5");
+    await addSlide(carousel.id, "<div>Hook</div>");
+    const res = await startChat(carousel.id);
+    await fakeCliPid();
+
+    // A reference image is attached while the agent works, then the run fails.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await addReferenceImage(carousel.id, {
+      id: "ref-1",
+      url: "/uploads/11111111-2222-4333-8444-555555555555.png",
+      absPath: path.join(workdir, "public", "uploads", "11111111-2222-4333-8444-555555555555.png"),
+      name: "mood",
+      addedAt: new Date().toISOString(),
+    });
+    await finishRun(1);
+    await res.text();
+
+    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null });
+    expect((await requestExport(carousel.id)).status).toBe(200);
   });
 });
