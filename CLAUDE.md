@@ -46,7 +46,6 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - `GET /api/carousels?brandId=` and `GET /api/templates?brandId=` filter by brand; `POST /api/carousels` takes an optional `brandId`, fixed for the carousel's life
 - `GET/POST /api/templates` — Templates
 - `POST /api/upload` — Upload (images PNG/JPG/WebP, fonts WOFF2/TTF; max 10MB, type checked by magic bytes)
-- `POST /api/images/generate`: one image from the local image service (`127.0.0.1:8791`); body `{ prompt, aspectRatio }` with 1:1, 4:5, 9:16 or 16:9; stores a validated PNG at its native size in `public/uploads/` and returns `{ url, width, height }`. The token is read server-side from `~/.config/framewoven/image-service.token` and never reaches the agent
 - `GET /api/fonts` — Google Fonts list
 
 ## Conventions

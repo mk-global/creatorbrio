@@ -115,16 +115,6 @@ curl -s -X POST ${baseUrl}/api/style-presets \\
   -H "Content-Type: application/json" \\
   -d '{"name": "Style Name", "designRules": "description of visual rules...", "aspectRatio": "${carousel?.aspectRatio || "4:5"}"}'
 
-### Generate an image (optional):
-Most designs need no generated image: typography, color and gradients come first. Generate one only when a photographic image materially improves the design, such as a cover or reel cover built around a scene. Each takes 10-20 seconds, so use at most 3 per carousel.
-Write the prompt as an image brief: subject, composition and framing, lighting and mood, a style that fits the brand, and where empty space must stay clear for the slide's text (e.g. "calm empty sky across the top third"). Never ask for text, letters, logos or watermarks in the image; all text goes in the HTML.
-curl -s -m 200 -X POST ${baseUrl}/api/images/generate \\
-  -H "Content-Type: application/json" \\
-  -d '{"prompt": "IMAGE BRIEF", "aspectRatio": "${carousel?.aspectRatio || "4:5"}"}'
-aspectRatio is 1:1, 4:5, 9:16 or 16:9; use the carousel's ratio for a full-bleed background.
-Success returns {"url": "/uploads/<file>.png", "width": ..., "height": ...}. Use that exact url in the slide HTML, e.g. a full-bleed background with background-size: cover, and add an overlay or gradient so text keeps contrast above 4.5:1.
-Any other response has "error" and "message": do not retry and never invent or guess an image path. Finish the design with HTML/CSS only and say in one sentence that image generation was unavailable.
-
 ### Other endpoints:
 - GET /api/carousels/{id} — get carousel with all slides
 - PUT /api/carousels/{id}/slides — reorder (body: { "slideIds": [...] })
