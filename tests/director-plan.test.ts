@@ -403,8 +403,24 @@ describe("validatePlan: a plan that needs a missing capability", () => {
     expect(result).toMatchObject({ ok: false, unavailable: ["image-generation"] });
   });
 
-  it("reports a plan that is also malformed as malformed, not as a missing capability", () => {
-    const result = validatePlan(editPlan({ sourceIds: ["ref-of-another-carousel"] }), coverCtx);
+  // The shape the real Director returned for "Replace the background of my
+  // photo ..." in the scored evaluation: the edit also carried a generation
+  // brief and a fallback despite being required. The user must still be told
+  // editing is unavailable, not that planning failed.
+  it("names the missing capability even when the plan is also malformed, keeping every violation", () => {
+    const result = validatePlan(editPlan({ brief: brief(), ifUnavailable: "Place the original photo" }), coverCtx);
+    expect(result).toMatchObject({ ok: false, unavailable: ["image-editing"] });
+    const errors = result.ok ? [] : result.errors.join("\n");
+    expect(errors).toMatch(/editing uploaded images is not available yet/);
+    expect(errors).toMatch(/brief: does not belong to edit/);
+    expect(errors).toMatch(/ifUnavailable: only an optional asset has an alternative/);
+  });
+
+  it("reports a malformed plan that needs no missing capability as malformed", () => {
+    const result = validatePlan(
+      editPlan({ sourceIds: ["ref-of-another-carousel"] }),
+      { ...coverCtx, capabilities: capabilities({ "image-editing": true }) }
+    );
     expect(result.ok).toBe(false);
     expect(result).not.toHaveProperty("unavailable");
   });

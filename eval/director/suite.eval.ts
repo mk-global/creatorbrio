@@ -65,9 +65,7 @@ interface TrialRecord {
 
 function classify(result: DirectorResult): TrialOutcome {
   if (result.ok) return result.plan.status;
-  if (result.code === "invalid_plan" && result.errors?.some((e) => e.includes("editing uploaded images is not available yet"))) {
-    return "edit-refused";
-  }
+  if (result.code === "capability_unavailable" && result.unavailable?.includes("image-editing")) return "edit-refused";
   return `failed:${result.code}`;
 }
 

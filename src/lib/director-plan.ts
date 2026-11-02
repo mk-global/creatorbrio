@@ -197,15 +197,13 @@ const BASES: readonly SlideCountBasis[] = ["user-explicit", "single-cover", "exi
 
 class Errors {
   readonly list: string[] = [];
-  /** Capabilities the plan needs that this machine does not have, and how many violations they explain. */
+  /** Capabilities the plan needs that this machine does not have. */
   readonly unavailable = new Set<CapabilityId>();
-  capabilityViolations = 0;
   add(path: string, problem: string) {
     this.list.push(`${path}: ${problem}`);
   }
   needs(capability: CapabilityId, path: string, problem: string) {
     this.unavailable.add(capability);
-    this.capabilityViolations += 1;
     this.add(path, problem);
   }
   keys(value: Rec, allowed: readonly string[], path: string) {
@@ -474,11 +472,12 @@ function validateSlides(
 export type PlanValidation =
   | { ok: true; plan: DirectorPlan }
   /**
-   * `unavailable` is set only when every violation is the plan needing a
-   * capability this machine does not have (editing, or generation where it is
-   * not set up). Such a plan is refused like any other, but the user is told
-   * which capability is missing instead of being asked to rephrase. A plan
-   * that is also malformed in any other way is reported as malformed.
+   * `unavailable` is set whenever the plan needs a capability this machine
+   * does not have (editing, or generation where it is not set up). Such a plan
+   * is refused like any other, but the user is told which capability is
+   * missing instead of being asked to rephrase: no repair of its other fields
+   * could make it runnable. Every violation, including any others, is kept in
+   * `errors` for the server log.
    */
   | { ok: false; errors: string[]; unavailable?: CapabilityId[] };
 
@@ -517,7 +516,7 @@ export function validatePlan(input: unknown, context: PlanContext): PlanValidati
   if (!brief.ok) for (const err of brief.errors) e.list.push(err);
 
   if (e.list.length > 0) {
-    return e.capabilityViolations === e.list.length
+    return e.unavailable.size > 0
       ? { ok: false, errors: e.list, unavailable: [...e.unavailable] }
       : { ok: false, errors: e.list };
   }
