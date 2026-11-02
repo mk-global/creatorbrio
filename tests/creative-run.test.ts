@@ -130,6 +130,9 @@ beforeEach(async () => {
     return { png: bytes, ...IMAGE_DIMENSIONS[request.aspectRatio] };
   };
   creativeRunDeps.retrieveSources = async () => ({ status: "none" });
+  // Declared, never read from this machine: whether image generation is set up
+  // must not depend on the developer's or the CI runner's home folder.
+  creativeRunDeps.imageGenerationConfigured = async () => true;
   director = stubDirector();
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -410,6 +413,17 @@ describe("a creative run through the chat route", () => {
       message: expect.stringContaining("editing uploaded images is not available yet"),
     });
     expect(await designSpawned()).toBe(false);
+  });
+
+  it("tells the Director image generation is unavailable when it is not set up on this machine", async () => {
+    creativeRunDeps.imageGenerationConfigured = async () => false;
+    const carousel = await newCarousel();
+    await send({ carouselId: carousel.id, message: "Make 3 slides about focus" });
+    expect(director.requests[0].capabilities.find((c) => c.id === "image-generation")).toMatchObject({
+      available: false,
+      unavailableReason: "Image generation is not set up on this machine.",
+    });
+    expect(imageCalls).toHaveLength(0);
   });
 
   // Found end to end: a reel cover blocked at the image stage left its brief on

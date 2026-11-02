@@ -24,7 +24,13 @@ import { mergeBrief } from "./creative-brief";
 import { capabilityStatus } from "./creative-capabilities";
 import { buildDesignMessage, type ResolvedImage } from "./creative-handoff";
 import { explicitCountOverLimit, imagePrompt, validatePlan, type ReadyPlan } from "./director-plan";
-import { GENERATION_TIMEOUT_MS, ImageGenerationError, generateImage, type ImageAspectRatio } from "./image-service";
+import {
+  GENERATION_TIMEOUT_MS,
+  ImageGenerationError,
+  generateImage,
+  imageGenerationConfigured,
+  type ImageAspectRatio,
+} from "./image-service";
 import { findSourceLinks, retrieveSources, type SourceUnavailableReason } from "./source-retrieval";
 import { directorFailureMessage, planContextFor, runDirector, type DirectorRequest, type DirectorSource } from "./visual-director";
 
@@ -74,11 +80,13 @@ export interface CreativeRunEvents {
 
 /**
  * The run's external dependencies. Tests replace them to script retrieval,
- * planning and image generation without a network, a model or the image
- * service; production uses these defaults.
+ * planning and image generation without a network, a model, the image
+ * service or this machine's image setup; production uses these defaults.
  */
 export const creativeRunDeps = {
   retrieveSources: (message: string) => retrieveSources(message),
+  /** Whether image generation is set up on this machine, offered to the Director as a capability. */
+  imageGenerationConfigured: () => imageGenerationConfigured(),
   runDirector: (request: DirectorRequest, options: { signal?: AbortSignal }) => runDirector(request, options),
   generateImage: (request: Parameters<typeof generateImage>[0], options: Parameters<typeof generateImage>[1]) =>
     generateImage(request, options),
@@ -249,10 +257,13 @@ function directorRequest(
 }
 
 function carouselCapabilities(input: CreativeRunInput, assets: DirectorRequest["assets"]) {
-  return capabilityStatus({
-    referenceCount: input.references.length,
-    intactAssetCount: assets.filter((a) => a.intact).length,
-  });
+  return capabilityStatus(
+    {
+      referenceCount: input.references.length,
+      intactAssetCount: assets.filter((a) => a.intact).length,
+    },
+    creativeRunDeps.imageGenerationConfigured
+  );
 }
 
 async function plan_(
