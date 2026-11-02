@@ -125,6 +125,22 @@ async function readToken(): Promise<string> {
   }
 }
 
+/**
+ * Whether image generation is set up for this account: a loopback service URL
+ * and a valid owner-only token file. Makes no network call and never returns
+ * the token, so it can describe the capability to a planner deterministically.
+ * Whether the service is running is only known when a request is made.
+ */
+export async function imageGenerationConfigured(): Promise<boolean> {
+  try {
+    serviceUrl();
+    await readToken();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readCapped(response: Response): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length"));
   if (declared > MAX_IMAGE_BYTES) throw tooLarge();

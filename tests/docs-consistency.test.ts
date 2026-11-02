@@ -5,6 +5,7 @@ import path from "node:path";
 import { MAX_SLIDES } from "@/types/carousel";
 import { DEFAULT_BRAND } from "@/types/brand";
 import { buildSystemPrompt } from "@/lib/chat-system-prompt";
+import { DIRECTOR_BUDGET_USD, DIRECTOR_TIMEOUT_MS, DIRECTOR_TOOLS } from "@/lib/visual-director";
 import type { Carousel } from "@/types/carousel";
 
 // CLAUDE.md is read by the assistant working on this repository, so a stale
@@ -61,6 +62,21 @@ describe("README matches the product", () => {
     const stated = readme.match(/--allowedTools ([A-Za-z ]+)`/);
     expect(stated, "README should list the allowed tools").not.toBeNull();
     expect(stated![1].trim().split(/\s+/)).toEqual(allowedToolsInChatRoute());
+  });
+});
+
+describe("the Visual Director's architecture page matches the code", () => {
+  const page = readFileSync(path.join(repoRoot, "docs/architecture/visual-director.md"), "utf-8");
+
+  it("states the Director's tools, which stay distinct from the Design Agent's", () => {
+    const stated = page.match(/^Director tools: (.+)$/m);
+    expect(stated, "visual-director.md should state the Director's tools").not.toBeNull();
+    expect(stated![1].split(",").map((t) => t.trim().replace(/`/g, ""))).toEqual([...DIRECTOR_TOOLS]);
+    expect(allowedToolsInChatRoute()).not.toEqual([...DIRECTOR_TOOLS]);
+  });
+
+  it("states the Director's budget and time limit", () => {
+    expect(page).toContain(`$${DIRECTOR_BUDGET_USD.toFixed(2)} and ${DIRECTOR_TIMEOUT_MS / 1000} seconds`);
   });
 });
 

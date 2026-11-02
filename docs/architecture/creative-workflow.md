@@ -9,7 +9,8 @@ It is written for contributors and describes only what is merged.
 |---|---|
 | Design Agent chat runs, run lifecycle and export gating | Implemented and used by every chat request |
 | Typed generated assets: staging, attach, recovery, retry integrity and expiry | Implemented as a library; no request uses it yet |
-| Visual Director planning and the image stage | Planned; tracked in issues #38 and #40 |
+| Visual Director planning, plan validation and the Creative Brief | Implemented as a library; no request uses it yet (see [visual-director.md](visual-director.md)) |
+| Running the Director in a chat request and the image stage | Planned; tracked in issue #40 |
 
 ## Typed asset lifecycle
 

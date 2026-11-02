@@ -53,3 +53,6 @@ framewoven*.log
 # OS
 Thumbs.db
 .gstack/
+
+# evaluation runs against the real CLI (raw outputs; summaries are committed)
+/eval/results/
