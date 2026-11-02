@@ -1,3 +1,5 @@
+import type { CreativeBrief } from "./creative-brief";
+
 export type AspectRatio = "1:1" | "4:5" | "9:16";
 
 export interface Slide {
@@ -46,6 +48,11 @@ export interface Carousel {
   referenceImages: ReferenceImage[];
   /** Absent on carousels created before assets existed; read it as empty. */
   assets?: CarouselAsset[];
+  /**
+   * What this carousel is for, kept across revisions. Server-owned: written
+   * only from a validated Visual Director update, never from a request body.
+   */
+  creativeBrief?: CreativeBrief;
   caption?: string;
   hashtags?: string[];
   chatSessionId: string | null;

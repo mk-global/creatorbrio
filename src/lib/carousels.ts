@@ -2,6 +2,7 @@ import { readDataSafe, mutateData } from "./data";
 import { generateId, now } from "./utils";
 import { brandIdOf, getDefaultBrandId } from "./brand";
 import type { Carousel, CarouselAsset, CarouselsData, Slide, AspectRatio, ReferenceImage } from "@/types/carousel";
+import type { CreativeBrief } from "@/types/creative-brief";
 import { MAX_SLIDES, MAX_VERSIONS } from "@/types/carousel";
 
 const FILE = "carousels.json";
@@ -92,6 +93,8 @@ export async function duplicateCarousel(id: string): Promise<Carousel | null> {
       referenceImages: [...(source.referenceImages || [])],
       // The copy shares the same files, as it does for reference images.
       assets: [...carouselAssets(source)],
+      // The copy keeps what the carousel is for; its references and assets came with it.
+      ...(source.creativeBrief ? { creativeBrief: structuredClone(source.creativeBrief) } : {}),
       chatSessionId: null,
       isTemplate: false,
       createdAt: now(),
@@ -313,5 +316,20 @@ export async function removeCarouselAssets(assetIds: string[]): Promise<void> {
         carousel.updatedAt = now();
       }
     }
+  });
+}
+
+/**
+ * Replaces a carousel's Creative Brief. Only the creative pipeline calls this,
+ * with a brief merged from a validated Visual Director update. Returns false
+ * when the carousel does not exist.
+ */
+export async function setCreativeBrief(carouselId: string, brief: CreativeBrief): Promise<boolean> {
+  return mutate((data) => {
+    const carousel = data.carousels.find((c) => c.id === carouselId);
+    if (!carousel) return false;
+    carousel.creativeBrief = brief;
+    carousel.updatedAt = now();
+    return true;
   });
 }
