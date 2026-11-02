@@ -47,7 +47,7 @@ flowchart LR
 ## How a request flows
 
 1. The chat route begins the carousel's run; a second message for the same carousel is refused while it is active.
-2. The creative run reads any linked pages, asks the Visual Director for a plan, saves the plan's Creative Brief update, and generates and attaches the plan's images.
+2. The creative run reads any linked pages, asks the Visual Director for a plan, generates and attaches the plan's images, and then saves the plan's Creative Brief update.
 3. The Design Agent receives the user's message followed by the visual plan, resumes the carousel's conversation, and builds the slides.
 4. The server checks the slides against the plan and shows any differences.
 5. The user previews and exports; export waits until the run has finished.

@@ -25,14 +25,14 @@ flowchart TD
     L -- no --> P
     S -- all readable --> P[Planning visuals: Visual Director]
     S -- any unreadable --> B[Blocked]
-    P -- ready plan --> K[Brief saved on the carousel]
+    P -- ready plan --> I{Images to generate?}
     P -- source required, invalid plan, missing capability --> B
-    K --> I{Images to generate?}
     I -- yes --> G[Preparing images: one at a time]
-    I -- no --> D
+    I -- no --> K
     G -- every required image ready --> A[Attach all or nothing]
     G -- a required image failed --> B
-    A --> D[Creating the design: Design Agent]
+    A --> K[Brief saved on the carousel]
+    K --> D[Creating the design: Design Agent]
     D --> C[Conformance check]
     C --> E[Done, or Done with differences]
     E --> X[Export]
@@ -91,7 +91,7 @@ An optional image that could not be made is skipped; the handoff tells the Desig
 Retry is a button on a blocked run, never automatic.
 It sends a normal chat request with the run's ID; there is no separate endpoint.
 The server accepts it only for the carousel's most recent run, only when that run ended blocked, and only within 24 hours.
-A retry neither reads linked pages nor plans again: it re-validates the stored plan against the carousel as it is now, uses the stored message rather than anything the client sends, keeps the Creative Brief as it is, and runs only the images that are not already valid.
+A retry neither reads linked pages nor plans again: it re-validates the stored plan against the carousel as it is now, uses the stored message rather than anything the client sends, runs only the images that are not already valid, and applies the stored plan's Creative Brief update when it reaches design.
 The plan and message are stored as soon as a plan with images is accepted, so a run cut off by a server restart before design can be retried too.
 
 ### Cancellation

@@ -204,9 +204,8 @@ Each message sent from a carousel runs one creative run before the design agent 
 
 1. **Reading linked pages**, when the message contains links.
 2. **Planning visuals.** The Visual Director, a separate Claude CLI call that can only view copies of the carousel's own images, returns a plan the server validates in full: the slide count and why, each slide's treatment, which images go where, each reference image's role, and any images to generate.
-   The plan's intent is saved on the carousel as its Creative Brief.
 3. **Preparing images**, one at a time, kept private until every required image is ready and then added to the carousel together.
-4. **Creating the design.** The design agent receives your message followed by the visual plan and builds the slides as before; its own instructions do not change.
+4. **Creating the design.** The plan's intent is saved on the carousel as its Creative Brief, and the design agent receives your message followed by the visual plan and builds the slides as before; its own instructions do not change.
    Afterwards the server compares the slides with the plan and shows any differences without changing them.
 
 The details, limits and failure handling are in [docs/architecture/creative-workflow.md](./docs/architecture/creative-workflow.md), and the Director in [docs/architecture/visual-director.md](./docs/architecture/visual-director.md).

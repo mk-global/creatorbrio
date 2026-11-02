@@ -412,15 +412,22 @@ describe("a creative run through the chat route", () => {
     expect(await designSpawned()).toBe(false);
   });
 
-  it("keeps the brief once the plan is valid, even when the image stage then blocks", async () => {
+  // Found end to end: a reel cover blocked at the image stage left its brief on
+  // an empty carousel, so "Make it more dramatic" reached the Director as a
+  // revision of a cover that did not exist, and its plan was refused.
+  it("changes no brief when a run ends before design, so the next message is planned as new", async () => {
     director.restore();
     director = stubDirector((r) => imagePlan(r, [1], { aspectRatio: "9:16" }));
-    imageScript = async () => new ImageGenerationError(503, "image_service_unavailable", "The local image service is not running.");
+    imageScript = async () => new ImageGenerationError(503, "image_generation_refused", "The image service declined to start because the machine is busy with other AI work.");
     const carousel = await newCarousel("9:16");
-    await send({ carouselId: carousel.id, message: "Design a reel cover about complacency" });
-    const stored = (await getCarousel(carousel.id))?.creativeBrief;
-    expect(stored?.centralMessage).toMatchObject({ value: "Comfort is the quiet risk", source: "explicit" });
-    expect(stored?.constraints.map((c) => c.text)).toEqual(["Serious tone"]);
+    const first = await send({ carouselId: carousel.id, message: "Design a reel cover about complacency" });
+    expect(of(first.events, "blocked")[0]).toMatchObject({ code: "image_failed" });
+    expect((await getCarousel(carousel.id))?.creativeBrief).toBeUndefined();
+
+    director.restore();
+    director = stubDirector();
+    await send({ carouselId: carousel.id, message: "Make it more dramatic" });
+    expect(director.requests[0].carousel.creativeBrief).toBeUndefined();
   });
 });
 
@@ -596,6 +603,7 @@ describe("retry", () => {
     const blocked = of(first.events, "blocked")[0];
     expect(blocked).toMatchObject({ code: "image_failed", message: expect.stringContaining("2 images for slide 2; slide 4") });
     expect(imageCalls).toHaveLength(5);
+    expect((await getCarousel(carousel.id))?.creativeBrief).toBeUndefined();
 
     imageCalls = [];
     imageScript = null;
@@ -607,6 +615,8 @@ describe("retry", () => {
     expect((await getCarousel(carousel.id))?.assets).toHaveLength(5);
     expect((await taskMessage()).startsWith(message)).toBe(true);
     expect(of(retry.events, "deviations")).toEqual([]);
+    // The retried run reached design, so the stored plan's brief update applies now.
+    expect((await getCarousel(carousel.id))?.creativeBrief?.centralMessage).toMatchObject({ value: "Comfort is the quiet risk", source: "explicit" });
   });
 
   it("after a server restart during the image stage, regenerates none of the valid staged images", async () => {

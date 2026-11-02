@@ -8,7 +8,7 @@ It is written for contributors and describes only what is merged.
 | Part | Status |
 |---|---|
 | Director invocation, plan schema and server-side plan validation | Implemented (`src/lib/visual-director.ts`, `src/lib/director-plan.ts`); runs for every chat message sent from a carousel |
-| Creative Brief: types, validation, merge rules and storage on the carousel | Implemented (`src/lib/creative-brief.ts`); updated whenever a plan is accepted |
+| Creative Brief: types, validation, merge rules and storage on the carousel | Implemented (`src/lib/creative-brief.ts`); updated when a run goes on to design |
 | Capability table | Implemented (`src/lib/creative-capabilities.ts`) |
 | Intelligence evaluation suite | Implemented as a separate, opt-in harness (`eval/director/`) |
 | Running the Director inside a chat request, the image stage and the Design Agent handoff | Implemented; see [creative-workflow.md](creative-workflow.md) |
@@ -78,6 +78,10 @@ The Director reads the stored brief and proposes an update; the server validates
 
 Values a revision does not mention are kept.
 Lists are bounded; when one overflows, explicit items are kept first and the oldest inferences go.
+
+The brief changes only when a run goes on to design.
+A run that stops before design, for example because an image could not be made, leaves it as it was, so a carousel with no slides never carries the intent of a request that produced nothing.
+A retry of that run applies the stored plan's update when it reaches design.
 
 The brief is server-owned: update routes never accept it from a request body.
 It belongs to one carousel, so it cannot cross to another carousel or brand.

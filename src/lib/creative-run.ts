@@ -277,11 +277,6 @@ async function plan_(
     );
   }
   if (result.plan.status === "source-required") throw new Blocked("source_required", result.plan.message);
-
-  // The brief is kept as soon as the plan is valid, so a revision inherits it
-  // even if the image stage later blocks.
-  const current = await getCarousel(carouselId);
-  await setCreativeBrief(carouselId, mergeBrief(current?.creativeBrief, result.plan.briefUpdate, new Date().toISOString()));
   return result.plan;
 }
 
@@ -390,6 +385,12 @@ async function imagesThenHandoff(
     const id = asset.operation === "reuse" ? asset.assetId : committed.get(asset.key);
     assets.set(asset.key, id && !unavailable.has(asset.key) ? { url: `/uploads/${id}.png`, absPath: assetFilePath(id) } : null);
   }
+
+  // The brief records the intent behind the carousel's content, so it changes
+  // only when a run goes on to design. A run that ends before design changes
+  // nothing, as its message says; a retry applies its stored plan's update here.
+  const current = await getCarousel(carouselId);
+  await setCreativeBrief(carouselId, mergeBrief(current?.creativeBrief, plan.briefUpdate, new Date().toISOString()));
 
   events.stage("designing");
   await setCreativeStage(carouselId, runId, "designing");
