@@ -330,6 +330,7 @@ describe("validatePlan: conflicting or untrusted execution", () => {
     ["a generate with an unsupported ratio", firstAsset({ aspectRatio: "3:2" }), /aspectRatio/],
     ["a generate with an asset id", firstAsset({ assetId: "asset-ok" }), /does not belong to generate/],
     ["a brief with an unknown field", firstAsset({ brief: { ...brief(), seed: 42 } }), /unknown field "seed"/],
+    ["an unknown field whose name is not an identifier, without quoting it", withExecution({ "my talk about Lisbon": 1 } as never), /^execution: unknown field$/m],
     ["a brief whose composed prompt is too long", firstAsset({ brief: { ...brief(), subject: "x".repeat(500), composition: "x".repeat(500), framing: "x".repeat(500), lighting: "x".repeat(500), textSafeArea: "x".repeat(100) } }), new RegExp(`exceeds ${MAX_PROMPT_CHARS}`)],
     ["a required asset with an alternative", firstAsset({ ifUnavailable: "Typography" }), /only an optional asset/],
     ["an optional asset without an alternative", firstAsset({ required: false }), /must say what the slide does without it/],

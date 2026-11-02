@@ -1,5 +1,5 @@
 import { MAX_SLIDES } from "@/types/carousel";
-import { BRIEF_LIMITS, isBoundedText, validateBriefUpdate, type BriefUpdate } from "./creative-brief";
+import { BRIEF_LIMITS, isBoundedText, unknownFieldViolation, validateBriefUpdate, type BriefUpdate } from "./creative-brief";
 import { isAvailable, type CapabilityId, type CapabilityStatus } from "./creative-capabilities";
 import { IMAGE_DIMENSIONS, MAX_PROMPT_CHARS, type ImageAspectRatio } from "./image-service";
 
@@ -195,6 +195,11 @@ const ASSET_KEY = /^a[0-9]{1,2}$/;
 const TREATMENTS: readonly Treatment[] = ["typography", "css-visual", "uploaded-placement", "generated", "edited"];
 const BASES: readonly SlideCountBasis[] = ["user-explicit", "single-cover", "existing", "user-change", "baseline-default"];
 
+/**
+ * Collects violations. They are written to the server log, so a violation
+ * never quotes a value the model chose unless that value has already been
+ * validated as an identifier, a number or one of a fixed set.
+ */
 class Errors {
   readonly list: string[] = [];
   /** Capabilities the plan needs that this machine does not have. */
@@ -207,7 +212,7 @@ class Errors {
     this.add(path, problem);
   }
   keys(value: Rec, allowed: readonly string[], path: string) {
-    for (const key of Object.keys(value)) if (!allowed.includes(key)) this.add(path, `unknown field "${key}"`);
+    for (const key of Object.keys(value)) if (!allowed.includes(key)) this.add(path, unknownFieldViolation(key));
   }
   text(value: unknown, max: number, path: string): string {
     if (!isBoundedText(value, max)) this.add(path, `must be 1 to ${max} characters without control characters`);
@@ -459,13 +464,13 @@ function validateSlides(
   });
 
   // Every asset is placed exactly on the slides it targets.
-  for (const asset of assets) {
+  assets.forEach((asset, i) => {
     for (const target of asset.targetSlides) {
       const slide = slides.find((s) => s.index === target);
-      if (!slide) e.add(`execution.assets[${asset.key}].targetSlides`, `slide ${target} is not in the plan`);
-      else if (!slide.assetRefs.includes(asset.key)) e.add(`execution.assets[${asset.key}].targetSlides`, `slide ${target} does not place it`);
+      if (!slide) e.add(`execution.assets[${i}].targetSlides`, `slide ${target} is not in the plan`);
+      else if (!slide.assetRefs.includes(asset.key)) e.add(`execution.assets[${i}].targetSlides`, `slide ${target} does not place it`);
     }
-  }
+  });
   return slides;
 }
 

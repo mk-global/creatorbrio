@@ -317,6 +317,19 @@ describe("runDirector", () => {
     expect(directorFailureMessage(result.code)).not.toContain("ref-of-another-carousel");
   });
 
+  it("logs why a plan was refused without quoting what the model wrote", async () => {
+    const bad = coverPlan() as Record<string, unknown> & ReturnType<typeof coverPlan>;
+    bad.execution.slides[0].assetRefs = ["ref-of-another-carousel"];
+    (bad as Record<string, unknown>)["Lisbon founder confidence talk"] = "x";
+    await play("plan", bad);
+    await runDirector(await request());
+    const logged = JSON.stringify((console.warn as unknown as { mock: { calls: unknown[] } }).mock.calls);
+    expect(logged).toContain("violationList");
+    expect(logged).toContain("execution.slides[0].assetRefs: names something that is not a plan asset or a reference of this carousel");
+    expect(logged).toContain("plan: unknown field");
+    expect(logged).not.toMatch(/Lisbon|ref-of-another-carousel/);
+  });
+
   it("refuses a plan that needs editing and tells the user editing is not available yet", async () => {
     const edit = coverPlan();
     edit.execution.slides[0] = { index: 1, visualIntent: "Founder, new background", treatment: "edited", assetRefs: ["a1"], styleReferenceIds: [] };

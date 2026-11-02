@@ -173,6 +173,9 @@ const retirement = {
 // The API requires a plain object at the top level, so both plan forms share
 // one object: "source-required" sets only `message`; "ready" sets the other
 // three. The validator enforces which fields belong to which status.
+/** How many plan violations one log line carries. */
+const MAX_LOGGED_VIOLATIONS = 20;
+
 export const DIRECTOR_PLAN_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -577,7 +580,12 @@ export async function runDirector(
     sources: request.sources.length,
     ...(outcome.ok
       ? planSummary(outcome.plan)
-      : { violations: outcome.errors?.length ?? 0, ...(outcome.unavailable ? { unavailable: outcome.unavailable } : {}) }),
+      : {
+          violations: outcome.errors?.length ?? 0,
+          // Validator wording and field paths only; see the Errors class in director-plan.ts.
+          ...(outcome.errors?.length ? { violationList: outcome.errors.slice(0, MAX_LOGGED_VIOLATIONS) } : {}),
+          ...(outcome.unavailable ? { unavailable: outcome.unavailable } : {}),
+        }),
   };
   // A missing capability is an expected outcome, not a system error.
   if (outcome.ok || outcome.code === "cancelled" || outcome.code === "capability_unavailable") console.info("[director] plan finished", fields);

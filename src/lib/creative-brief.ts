@@ -66,8 +66,17 @@ export function isBoundedText(value: unknown, max: number): value is string {
 const isProvenance = (v: unknown): v is Provenance => v === "explicit" || v === "inferred";
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/**
+ * The violation for a field the model added. Violations are logged, so a
+ * model-chosen name is quoted only when it is a short identifier that cannot
+ * carry a user's words.
+ */
+export function unknownFieldViolation(key: string): string {
+  return /^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(key) ? `unknown field "${key}"` : "unknown field";
+}
+
 function onlyKeys(value: Record<string, unknown>, allowed: readonly string[], at: string, errors: string[]): void {
-  for (const key of Object.keys(value)) if (!allowed.includes(key)) errors.push(`${at}: unknown field "${key}"`);
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) errors.push(`${at}: ${unknownFieldViolation(key)}`);
 }
 
 /**
