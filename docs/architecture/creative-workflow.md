@@ -116,6 +116,19 @@ A run can therefore hold the chat request open for about 23 minutes in the worst
 The route declares a matching `maxDuration`, which a self-hosted Next.js server does not enforce; these limits are the real bound.
 The Director runs on every message, including small edits, which adds its planning time and cost to each message.
 
+### Verifying the workflow end to end
+
+`eval/acceptance/` is an opt-in harness that runs real requests through real CreatorBrio servers it starts on its own ports, using the public API and the real Claude CLI.
+Its scenarios cover a typography-only carousel, a generated cover, five generated images, an uploaded photo, a revision, a linked page, the image service being unavailable, cancellation during the image stage, and a server restart followed by Retry.
+For each it records the stream's stages with timings, the Director's and Design Agent's cost, the run's outcome, the conformance result and the export.
+A bounded, read-only model judge then scores the exported slides on whether the central message, constraints, imagery, priorities, brand and text come through, and a blind pairwise judge compares selected scenarios with the Design Agent working alone.
+It never changes a design, and a test fails only when the harness itself fails.
+
+It costs real model usage and is not part of `npm test`.
+Build first, then run it with `npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts`, selecting scenarios with `EVAL_ONLY`.
+Scenarios that generate images need the local image service, and are declined, correctly, while the machine is busy with other AI work.
+Raw results go to `eval/results/`, which is not committed.
+
 ## Typed asset lifecycle
 
 ### Why generated images are not reference images

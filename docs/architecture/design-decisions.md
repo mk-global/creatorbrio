@@ -97,7 +97,7 @@ Cost: planning time and cost on every message; measured figures are in the pull 
 ## Evaluation is a separate harness
 
 The Director's judgment is measured by an opt-in suite of synthetic scenarios scored by deterministic checks and a model judge, with thresholds committed before the scored run.
-Creative-outcome review of finished slides happens in an acceptance harness, not in the product.
+Creative-outcome review of finished slides happens in an acceptance harness (`eval/acceptance/`), not in the product.
 
 Why: valid output is not good output, so quality needs its own measurement.
 Running a review model on every request would exceed the latency and cost budgets, and a review that could change a design would undermine the user's control.
