@@ -7,9 +7,6 @@ import { getInlinedFontCSS } from "./fonts";
 import type { Slide, AspectRatio } from "@/types/carousel";
 import { DIMENSIONS } from "@/types/carousel";
 
-// Singleton browser with lifecycle management
-let browser: Browser | null = null;
-let exportCount = 0;
 const MAX_EXPORTS_BEFORE_RESTART = 50;
 
 // Every wait below is bounded. A slide that cannot finish loading still yields
@@ -18,20 +15,109 @@ const PAGE_LOAD_TIMEOUT_MS = 20_000;
 const FONT_READY_TIMEOUT_MS = 10_000;
 const IMAGE_DECODE_TIMEOUT_MS = 10_000;
 
-async function getBrowser(): Promise<Browser> {
-  if (browser && exportCount >= MAX_EXPORTS_BEFORE_RESTART) {
-    await browser.close().catch(() => {});
-    browser = null;
-    exportCount = 0;
-  }
-  if (!browser || !browser.isConnected()) {
-    browser = await puppeteer.launch({
+/**
+ * The one headless browser this server process renders exports with.
+ *
+ * At most one browser is ever alive. Puppeteer closes the browsers a process
+ * launched when that process exits, but with two or more alive it misses one,
+ * which then keeps running with no owner after the server stops. Every slide
+ * export shares the same launch, so slides rendered concurrently cannot each
+ * start a browser.
+ *
+ * The state lives on globalThis rather than in module variables because
+ * `next dev` can evaluate this module again in the same process, and a fresh
+ * copy would otherwise launch a second browser.
+ */
+interface ExportBrowserState {
+  /** The launch of the current browser, shared by every caller; null when there is none. */
+  browser: Promise<Browser> | null;
+  /** Slides the current browser has rendered. */
+  exportCount: number;
+  /** Slide exports between taking the browser and closing their page. */
+  inFlight: number;
+}
+
+const EXPORT_BROWSER_KEY = Symbol.for("creatorbrio.export-browser");
+
+function exportBrowserState(): ExportBrowserState {
+  const store = globalThis as typeof globalThis & {
+    [EXPORT_BROWSER_KEY]?: ExportBrowserState;
+  };
+  store[EXPORT_BROWSER_KEY] ??= { browser: null, exportCount: 0, inFlight: 0 };
+  return store[EXPORT_BROWSER_KEY];
+}
+
+/**
+ * Starts a new browser in place of `previous`, which is closed first so the two
+ * are never alive together. A launch that fails is forgotten, so the next
+ * export tries again instead of reusing the failure.
+ */
+function replaceBrowser(
+  state: ExportBrowserState,
+  previous: Promise<Browser> | null
+): Promise<Browser> {
+  const closed = previous
+    ? previous.then((old) => old.close()).catch(() => {})
+    : Promise.resolve();
+  const next = closed.then(() =>
+    puppeteer.launch({
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
-    });
-    exportCount = 0;
+    })
+  );
+  state.browser = next;
+  state.exportCount = 0;
+  next.catch(() => {
+    if (state.browser === next) state.browser = null;
+  });
+  return next;
+}
+
+/**
+ * The browser for the next slide, decided without waiting so that concurrent
+ * callers see each other's choice.
+ *
+ * The periodic restart only happens when no slide export is in flight, so it
+ * never closes a browser another export still has a page open in, and only one
+ * replacement starts. While exports overlap the restart waits, and `exportCount`
+ * keeps growing past the limit. A single carousel export goes idle between
+ * batches, because `exportAllSlides` finishes each batch before starting the
+ * next, but exports of several carousels at once can interleave so that nothing
+ * is ever idle; the restart is then put off until that load stops. Rendering is
+ * unaffected, since the restart only recycles the browser's memory.
+ */
+function currentBrowser(state: ExportBrowserState): Promise<Browser> {
+  if (
+    state.browser &&
+    state.inFlight === 0 &&
+    state.exportCount >= MAX_EXPORTS_BEFORE_RESTART
+  ) {
+    return replaceBrowser(state, state.browser);
   }
-  return browser;
+  return state.browser ?? replaceBrowser(state, null);
+}
+
+/**
+ * Runs `render` with the shared browser and counts it as one rendered slide when
+ * it succeeds. A browser found disconnected is replaced once, by whichever
+ * caller notices first; the others wait for that same replacement.
+ */
+async function withBrowser<T>(render: (browser: Browser) => Promise<T>): Promise<T> {
+  const state = exportBrowserState();
+  const launch = currentBrowser(state);
+  state.inFlight++;
+  try {
+    let browser = await launch;
+    if (!browser.isConnected()) {
+      if (state.browser === launch) replaceBrowser(state, launch);
+      browser = await currentBrowser(state);
+    }
+    const result = await render(browser);
+    state.exportCount++;
+    return result;
+  } finally {
+    state.inFlight--;
+  }
 }
 
 /**
@@ -133,76 +219,75 @@ export async function exportSlide(
     inlineFontCss: inlinedFontCss,
   });
 
-  const br = await getBrowser();
-  const page = await br.newPage();
+  const screenshotBuffer = await withBrowser(async (br) => {
+    const page = await br.newPage();
 
-  try {
-    await page.setViewport({ width, height, deviceScaleFactor: 1 });
+    try {
+      await page.setViewport({ width, height, deviceScaleFactor: 1 });
 
-    // `load` rather than `domcontentloaded`: it waits for stylesheets and image
-    // bytes. Previously the page was screenshotted as soon as the DOM parsed,
-    // and images only made it in because the font wait below always stalled for
-    // its full timeout. Removing that accidental delay without waiting for
-    // images explicitly would have introduced a race.
-    await page.setContent(fullHtml, {
-      waitUntil: "load",
-      timeout: PAGE_LOAD_TIMEOUT_MS,
-    });
-
-    // Wait until the font loads the page actually started have settled.
-    // The previous check required every *declared* face to reach "loaded",
-    // which never happens: Google ships dozens of faces per family across
-    // weights and unicode subsets, and the ones this slide does not use stay
-    // unloaded forever. That check therefore ran to its full timeout on every
-    // slide. `document.fonts.status` reports exactly the pending-loads state.
-    await page
-      .waitForFunction(() => document.fonts.status === "loaded", {
-        timeout: FONT_READY_TIMEOUT_MS,
-      })
-      .catch(() => {
-        console.warn(
-          `[export] fonts did not settle within ${FONT_READY_TIMEOUT_MS}ms; capturing anyway`
-        );
+      // `load` rather than `domcontentloaded`: it waits for stylesheets and image
+      // bytes. Previously the page was screenshotted as soon as the DOM parsed,
+      // and images only made it in because the font wait below always stalled for
+      // its full timeout. Removing that accidental delay without waiting for
+      // images explicitly would have introduced a race.
+      await page.setContent(fullHtml, {
+        waitUntil: "load",
+        timeout: PAGE_LOAD_TIMEOUT_MS,
       });
 
-    // `load` guarantees image bytes arrived, not that they are decoded and
-    // paintable. Decoding explicitly makes the capture deterministic.
-    await page
-      .evaluate(
-        (timeoutMs: number) =>
-          Promise.race([
-            Promise.all(
-              Array.from(document.images).map((img) =>
-                img.decode().catch(() => undefined)
-              )
-            ).then(() => undefined),
-            new Promise<undefined>((resolve) =>
-              setTimeout(() => resolve(undefined), timeoutMs)
-            ),
-          ]),
-        IMAGE_DECODE_TIMEOUT_MS
-      )
-      .catch(() => {
-        console.warn("[export] image decode wait failed; capturing anyway");
+      // Wait until the font loads the page actually started have settled.
+      // The previous check required every *declared* face to reach "loaded",
+      // which never happens: Google ships dozens of faces per family across
+      // weights and unicode subsets, and the ones this slide does not use stay
+      // unloaded forever. That check therefore ran to its full timeout on every
+      // slide. `document.fonts.status` reports exactly the pending-loads state.
+      await page
+        .waitForFunction(() => document.fonts.status === "loaded", {
+          timeout: FONT_READY_TIMEOUT_MS,
+        })
+        .catch(() => {
+          console.warn(
+            `[export] fonts did not settle within ${FONT_READY_TIMEOUT_MS}ms; capturing anyway`
+          );
+        });
+
+      // `load` guarantees image bytes arrived, not that they are decoded and
+      // paintable. Decoding explicitly makes the capture deterministic.
+      await page
+        .evaluate(
+          (timeoutMs: number) =>
+            Promise.race([
+              Promise.all(
+                Array.from(document.images).map((img) =>
+                  img.decode().catch(() => undefined)
+                )
+              ).then(() => undefined),
+              new Promise<undefined>((resolve) =>
+                setTimeout(() => resolve(undefined), timeoutMs)
+              ),
+            ]),
+          IMAGE_DECODE_TIMEOUT_MS
+        )
+        .catch(() => {
+          console.warn("[export] image decode wait failed; capturing anyway");
+        });
+
+      return await page.screenshot({
+        type: "png",
+        clip: { x: 0, y: 0, width, height },
       });
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
 
-    const screenshotBuffer = await page.screenshot({
-      type: "png",
-      clip: { x: 0, y: 0, width, height },
-    });
+  // Post-process with Sharp: enforce sRGB
+  const processed = await sharp(screenshotBuffer)
+    .toColorspace("srgb")
+    .png()
+    .toBuffer();
 
-    exportCount++;
-
-    // Post-process with Sharp: enforce sRGB
-    const processed = await sharp(screenshotBuffer)
-      .toColorspace("srgb")
-      .png()
-      .toBuffer();
-
-    return processed;
-  } finally {
-    await page.close().catch(() => {});
-  }
+  return processed;
 }
 
 /**
