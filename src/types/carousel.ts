@@ -16,12 +16,36 @@ export interface ReferenceImage {
   addedAt: string;
 }
 
+/**
+ * An image the creative pipeline prepared for this carousel, placed on slides
+ * as content. Unlike a reference image it is never a style source. Every
+ * field is server-generated: records are appended only by the asset module's
+ * attach protocol, never taken from a request body.
+ */
+export interface CarouselAsset {
+  id: string;
+  /** Always `/uploads/<id>.png`. */
+  url: string;
+  origin: "generated" | "edited";
+  /** For edited assets, the reference image or asset IDs it was made from. */
+  sourceIds: string[];
+  width: number;
+  height: number;
+  /** Hex SHA-256 of the file's bytes, checked before any reuse. */
+  sha256: string;
+  /** The creative run that produced it. */
+  runId: string;
+  createdAt: string;
+}
+
 export interface Carousel {
   id: string;
   name: string;
   aspectRatio: AspectRatio;
   slides: Slide[];
   referenceImages: ReferenceImage[];
+  /** Absent on carousels created before assets existed; read it as empty. */
+  assets?: CarouselAsset[];
   caption?: string;
   hashtags?: string[];
   chatSessionId: string | null;

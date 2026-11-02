@@ -1,8 +1,7 @@
-import { mkdir, open, writeFile } from "fs/promises";
+import { open } from "fs/promises";
 import os from "os";
 import path from "path";
 import sharp from "sharp";
-import { generateId } from "@/lib/utils";
 
 /**
  * Client for the founder-run local image service (EngineeringToolsMK
@@ -28,7 +27,6 @@ export const GENERATION_TIMEOUT_MS = 150_000;
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 const DEFAULT_SERVICE_URL = "http://127.0.0.1:8791";
-const UPLOAD_DIR = () => path.resolve(process.cwd(), "public/uploads");
 // The service allows newline and tab; carriage return is refused here too.
 const CONTROL_CHARS = /[\x00-\x08\x0b-\x1f\x7f]/;
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
@@ -51,8 +49,14 @@ export interface ImageRequest {
   aspectRatio: ImageAspectRatio;
 }
 
+/**
+ * A validated image: fully decoded, re-encoded as PNG without metadata, at
+ * the exact size the aspect ratio requires. Where it is written is the
+ * caller's decision; the creative pipeline stages it privately before it is
+ * attached to a carousel.
+ */
 export interface GeneratedImage {
-  url: string;
+  png: Buffer;
   width: number;
   height: number;
 }
@@ -182,8 +186,8 @@ async function serviceError(response: Response): Promise<ImageGenerationError> {
 }
 
 /**
- * Asks the image service for one image and stores it as a new upload.
- * Never returns a path for an image that was not validated and saved.
+ * Asks the image service for one image and returns it once validated.
+ * Never returns bytes that did not pass every check; writes nothing.
  */
 export async function generateImage(
   request: ImageRequest,
@@ -246,10 +250,5 @@ export async function generateImage(
     throw failed();
   }
 
-  const dir = UPLOAD_DIR();
-  await mkdir(dir, { recursive: true });
-  const filename = `${generateId()}.png`;
-  await writeFile(path.join(dir, filename), png, { flag: "wx" });
-
-  return { url: `/uploads/${filename}`, width: expected.width, height: expected.height };
+  return { png, width: expected.width, height: expected.height };
 }

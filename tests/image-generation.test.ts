@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -132,18 +132,20 @@ afterEach(() => {
 
 describe("image client: generateImage", () => {
   it.each(Object.entries(IMAGE_DIMENSIONS))(
-    "stores a %s image at its native size and returns its upload path",
+    "returns a validated %s image at its native size and writes no file",
     async (aspectRatio, { width, height }) => {
       handler = replyPng(await png(width, height));
-      const body = await generate({ prompt: "  quiet harbour at dawn, empty sky above  ", aspectRatio });
+      const result = await generate({ prompt: "  quiet harbour at dawn, empty sky above  ", aspectRatio });
 
-      expect(body).toEqual({ url: expect.stringMatching(/^\/uploads\/[0-9a-f-]{36}\.png$/), width, height });
+      expect(result).toEqual({ png: expect.any(Buffer), width, height });
 
-      const saved = await readFile(path.join(workdir, "public", body.url));
-      const meta = await sharp(saved).metadata();
+      const meta = await sharp(result.png).metadata();
       expect([meta.format, meta.width, meta.height]).toEqual(["png", width, height]);
       expect(meta.exif).toBeUndefined();
-      expect(saved.includes("secret prompt text")).toBe(false);
+      expect(result.png.includes("secret prompt text")).toBe(false);
+
+      // Where the image goes is the caller's decision; the client writes nothing.
+      expect(await uploads()).toEqual([]);
 
       // The service saw exactly one authenticated request with only the two fields.
       expect(received).toHaveLength(1);
@@ -152,18 +154,19 @@ describe("image client: generateImage", () => {
       expect(JSON.parse(received[0].body)).toEqual({ prompt: "quiet harbour at dawn, empty sky above", aspectRatio });
 
       // The result names neither the token nor any filesystem path.
-      const text = JSON.stringify(body);
+      const text = JSON.stringify({ ...result, png: undefined }) + result.png.toString("latin1");
       expect(text).not.toContain(TOKEN);
       expect(text).not.toContain(workdir);
     }
   );
 
-  it("gives every image a new unpredictable name", async () => {
+  it("returns each image's own bytes and still writes nothing", async () => {
     handler = replyPng(await png(1024, 1024));
     const a = await generate({ prompt: "quiet harbour", aspectRatio: "1:1" });
     const b = await generate({ prompt: "quiet harbour", aspectRatio: "1:1" });
-    expect(a.url).not.toBe(b.url);
-    expect((await uploads()).sort()).toEqual([a.url, b.url].map((u: string) => path.basename(u)).sort());
+    expect(a.png).not.toBe(b.png);
+    expect(a.png.equals(b.png)).toBe(true);
+    expect(await uploads()).toEqual([]);
   });
 
   it.each([

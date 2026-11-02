@@ -43,7 +43,7 @@ export type CarouselUpdate = Partial<
 
 /**
  * Server-owned and therefore never taken from the request: `id`, `slides`,
- * `referenceImages`, `isTemplate`, `brandId`, `createdAt`, `updatedAt`.
+ * `referenceImages`, `assets`, `isTemplate`, `brandId`, `createdAt`, `updatedAt`.
  * `brandId` is set when the carousel is created and never changes.
  *
  * Overwriting `slides` deleted a carousel's entire contents, and flipping

@@ -1,7 +1,7 @@
 import { readDataSafe, mutateData } from "./data";
 import { generateId, now } from "./utils";
 import { brandIdOf, getDefaultBrandId } from "./brand";
-import type { Carousel, CarouselsData, Slide, AspectRatio, ReferenceImage } from "@/types/carousel";
+import type { Carousel, CarouselAsset, CarouselsData, Slide, AspectRatio, ReferenceImage } from "@/types/carousel";
 import { MAX_SLIDES, MAX_VERSIONS } from "@/types/carousel";
 
 const FILE = "carousels.json";
@@ -90,6 +90,8 @@ export async function duplicateCarousel(id: string): Promise<Carousel | null> {
         previousVersions: [],
       })),
       referenceImages: [...(source.referenceImages || [])],
+      // The copy shares the same files, as it does for reference images.
+      assets: [...carouselAssets(source)],
       chatSessionId: null,
       isTemplate: false,
       createdAt: now(),
@@ -262,5 +264,54 @@ export async function removeReferenceImage(
     carousel.referenceImages.splice(idx, 1);
     carousel.updatedAt = now();
     return true;
+  });
+}
+
+/** A carousel's committed assets; carousels from before assets existed have none. */
+export function carouselAssets(carousel: Pick<Carousel, "assets">): CarouselAsset[] {
+  return carousel.assets ?? [];
+}
+
+/**
+ * Appends asset records to a carousel, skipping any whose ID it already has,
+ * so repeating the call after a crash adds nothing twice. Returns false when
+ * the carousel does not exist. Only the asset module's attach protocol calls
+ * this.
+ */
+export async function appendCarouselAssets(carouselId: string, records: CarouselAsset[]): Promise<boolean> {
+  return mutate((data) => {
+    const carousel = data.carousels.find((c) => c.id === carouselId);
+    if (!carousel) return false;
+    const assets = carouselAssets(carousel);
+    const known = new Set(assets.map((a) => a.id));
+    const added = records.filter((r) => !known.has(r.id));
+    if (added.length > 0) {
+      carousel.assets = [...assets, ...added];
+      carousel.updatedAt = now();
+    }
+    return true;
+  });
+}
+
+/**
+ * Removes asset records with these IDs from every carousel, including copies
+ * made by duplication, so no record is left pointing at a file an attach roll-
+ * back removes. Only the asset module calls this, for asset IDs it generated.
+ */
+export async function removeCarouselAssets(assetIds: string[]): Promise<void> {
+  if (assetIds.length === 0) return;
+  const ids = new Set(assetIds);
+  // Nothing to remove means nothing to write, so a roll-back after a failed
+  // carousel write does not depend on writing that file again.
+  const stored = await readDataSafe<CarouselsData>(FILE, emptyData());
+  if (!stored.carousels.some((c) => carouselAssets(c).some((a) => ids.has(a.id)))) return;
+  await mutate((data) => {
+    for (const carousel of data.carousels) {
+      const assets = carouselAssets(carousel);
+      if (assets.some((a) => ids.has(a.id))) {
+        carousel.assets = assets.filter((a) => !ids.has(a.id));
+        carousel.updatedAt = now();
+      }
+    }
   });
 }
