@@ -476,7 +476,8 @@ export const SCENARIOS: Scenario[] = [
     id: "conflict-minimal-vs-detail",
     category: "conflicting-requirements",
     setup: { aspectRatio: "4:5" },
-    message: "6 slides on our 12-step onboarding process. Keep it super minimal, one word per slide, but include every step in detail.",
+    message:
+      "6 slides on our 12-step onboarding process: create an account, verify your email, choose a plan, add payment, invite your team, connect your calendar, import contacts, set up your profile, pick notification settings, take the product tour, create your first project, and book a kickoff call. Keep it super minimal, one word per slide, but include every step in detail.",
     expect: { accept: ["ready"], basis: "user-explicit", imageUse: { min: 0, max: 1 } },
     whatGoodLooksLike: "Recognizes the conflict (12 detailed steps versus one word per slide in 6 slides), records it in reasoning, and proposes a defensible resolution such as grouping steps.",
   },
