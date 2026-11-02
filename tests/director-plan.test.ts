@@ -325,11 +325,21 @@ describe("validatePlan: conflicting or untrusted execution", () => {
     ["an asset that targets no slide", firstAsset({ targetSlides: [] }), /at least one slide/],
     ["an asset whose target slide does not place it", firstAsset({ targetSlides: [1, 2] }), /slide 2 does not place it/],
     ["an asset that targets a missing slide", firstAsset({ targetSlides: [1, 12] }), /slide 12 is not in the plan/],
-    ["a slide that places an asset not targeting it", (() => { const p = firstAsset({ targetSlides: [2] }); p.execution.slides[1] = { ...p.execution.slides[1], treatment: "generated", assetRefs: ["a1"] }; return p; })(), /a1 does not target this slide/],
+    ["a slide that places an asset not targeting it", (() => { const p = firstAsset({ targetSlides: [2] }); p.execution.slides[1] = { ...p.execution.slides[1], treatment: "generated", assetRefs: ["a1"] }; return p; })(), /slides\[0\]\.assetRefs: places a plan asset that does not target this slide/],
     ["a generate without a brief", firstAsset({ brief: undefined }), /brief: must be an object/],
     ["a generate with an unsupported ratio", firstAsset({ aspectRatio: "3:2" }), /aspectRatio/],
     ["a generate with an asset id", firstAsset({ assetId: "asset-ok" }), /does not belong to generate/],
     ["a brief with an unknown field", firstAsset({ brief: { ...brief(), seed: 42 } }), /unknown field "seed"/],
+    [
+      "a slide placing an asset with an invalid key, without quoting the key",
+      (() => {
+        const p = plan();
+        p.execution.assets[0] = { ...p.execution.assets[0], key: "my talk about Lisbon", targetSlides: [2] } as never;
+        p.execution.slides[0] = { ...p.execution.slides[0], assetRefs: ["my talk about Lisbon"] };
+        return p;
+      })(),
+      /^(?![\s\S]*Lisbon)[\s\S]*places a plan asset that does not target this slide/,
+    ],
     ["an unknown field whose name is not an identifier, without quoting it", withExecution({ "my talk about Lisbon": 1 } as never), /^execution: unknown field$/m],
     ["a brief whose composed prompt is too long", firstAsset({ brief: { ...brief(), subject: "x".repeat(500), composition: "x".repeat(500), framing: "x".repeat(500), lighting: "x".repeat(500), textSafeArea: "x".repeat(100) } }), new RegExp(`exceeds ${MAX_PROMPT_CHARS}`)],
     ["a required asset with an alternative", firstAsset({ ifUnavailable: "Typography" }), /only an optional asset/],

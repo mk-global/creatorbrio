@@ -5,7 +5,7 @@ The rubric and its thresholds were committed before this run and were not change
 
 ## The run
 
-- Run: `2026-11-02T03-28-46-988Z`, on the code merged with this report, using the real Claude CLI with the product's Director flags and budget.
+- Run: `2026-11-02T03-28-46-988Z`, on commit `6d0ba72` (the Director as first proposed, before the fixes described below), using the real Claude CLI with the product's Director flags and budget.
 - Scope: 36 synthetic scenarios, 56 trials; ten scenarios ran three times to measure variance.
 - Judge: a separate Claude call per trial, read-only, which never saw the deterministic results; no judge call failed.
 - Raw results (`trials.jsonl`, `results.json`, `summary.md`) are written to `eval/results/`, which is not committed.

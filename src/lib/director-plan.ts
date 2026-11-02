@@ -435,7 +435,7 @@ function validateSlides(
     for (const ref of assetRefs) {
       const asset = byKey.get(ref);
       if (asset) {
-        if (!asset.targetSlides.includes(index as number)) e.add(`${path}.assetRefs`, `${ref} does not target this slide`);
+        if (!asset.targetSlides.includes(index as number)) e.add(`${path}.assetRefs`, "places a plan asset that does not target this slide");
       } else if (!references.has(ref)) e.add(`${path}.assetRefs`, "names something that is not a plan asset or a reference of this carousel");
     }
     for (const id of styleReferenceIds) {
