@@ -5,7 +5,7 @@ The rubric and its thresholds were committed before this run and were not change
 
 ## The run
 
-- Run: `2026-11-02T03-28-46-988Z`, on commit `6d0ba72` (the Director as first proposed, before the fixes described below), using the real Claude CLI with the product's Director flags and budget.
+- Run: `2026-11-02T03-28-46-988Z`, on the Director as first implemented, before the fixes described below, using the real Claude CLI with the product's Director flags and budget.
 - Scope: 36 synthetic scenarios, 56 trials; ten scenarios ran three times to measure variance.
 - Judge: a separate Claude call per trial, read-only, which never saw the deterministic results; no judge call failed.
 - Raw results (`trials.jsonl`, `results.json`, `summary.md`) are written to `eval/results/`, which is not committed.
@@ -115,6 +115,28 @@ In a filtered run of the corrected scenario (`2026-11-02T04-34-12-648Z`, 3 trial
 This is the only change to the suite after the scored run; no threshold or anchor changed.
 
 The scored figures above are not recomputed: they measure the code as it was when the run started, and the rubric's thresholds apply only to full-suite runs.
+
+## Full run after the fixes
+
+A second full run (`2026-11-02T04-53-47-975Z`, on the final code of this pull request, all 36 scenarios and 56 trials, the corrected conflict scenario included) measured the code proposed for merge.
+It is reported beside the scored run, not instead of it: the scored run above is the pre-registered result.
+
+| Threshold | Bar | Scored run (before the fixes) | After the fixes |
+| --- | --- | --- | --- |
+| Plan validity | at least 95% | 94.6%, missed | 98.2% (55 of 56) |
+| Deterministic expectations | at least 90% | 91.1% | 94.6% |
+| Mean judged score | at least 4.0 | 4.42 | 4.38 |
+| Lowest dimension mean | at least 3.5 | 4.04 (handoff) | 4.02 (handoff) |
+| Lowest scenario mean | at least 3.0 | 4.00 | 3.86 (`ref-dashboard-screenshot`) |
+| Fabrication flagged by both checks | none | none | none |
+
+No plan put an asset field on the wrong operation, the editing request was refused as editing unavailable, and the corrected conflict scenario was resolved.
+The one validity miss is new: in `unavailable-mountain-photos`, where image generation is not set up, the Director planned four generated photos, so the request ended with "image generation is not set up on this machine" instead of a design with CSS visuals.
+In the scored run the same scenario planned CSS mountain scenes.
+The user is told plainly and nothing is substituted, but this shows the Director can still ignore an unavailable capability in its input; one trial cannot say how often.
+`reel-cover-complacency` again varied across its three trials, and two pattern-only fabrication hits were percentages the judge did not flag.
+Director cost was $4.38 ($0.078 a plan; median 28.1 s, 90th percentile 43.4 s, maximum 69.4 s); judge cost $4.37.
+The human spot-check applies to this run's judged scores too.
 
 ## Cost and latency
 
