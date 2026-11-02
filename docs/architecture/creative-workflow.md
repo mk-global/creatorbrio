@@ -152,9 +152,14 @@ Update routes never accept `assets` from a request body.
 | A creative run's task states, attach intent and retry data | `src/lib/generation-status.ts`, in `data/generation-runs.json` |
 | Staging, attach, recovery, sweep and retry checks | `src/lib/assets.ts` |
 | Validating an image from the image service | `src/lib/image-service.ts`, which returns validated bytes and writes nothing |
+| Serving uploads and attached images written after the app was built | `src/lib/upload-files.ts` and the `/uploads/[...path]` route |
 
 Everything uses the existing local storage: JSON files written through `src/lib/data.ts` (one lock per file, a temporary file, then a rename) and plain files.
 There is no database, queue or scheduler.
+
+A production server (`npm start`) serves only the files that were in `public/` when the app was built.
+Uploaded and generated images are written while the app runs, so a route serves them, and only in the shapes the app writes: `<uuid>.png` in `public/uploads/` and `<uuid>.woff2` or `<uuid>.ttf` in `public/uploads/fonts/`, as regular files that are not links.
+Files present at build time are still served by Next.js directly.
 
 ### Staging
 
