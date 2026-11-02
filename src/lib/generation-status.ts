@@ -66,6 +66,8 @@ type RunRecord =
 
 interface RunsFile {
   runs: Record<string, RunRecord>;
+  /** The most recent creative run per carousel; see {@link CreativeRunRecord}. */
+  creative?: Record<string, CreativeRunRecord>;
 }
 
 const RUNS_FILE = "generation-runs.json";
@@ -271,6 +273,71 @@ export async function acceptInterruptedSlides(carouselId: string): Promise<boole
     delete data.runs[carouselId];
   });
   return true;
+}
+
+/**
+ * The stages of a creative run, in order. Source retrieval runs only when the
+ * message has links.
+ */
+export type CreativeStage = "reading-sources" | "planning" | "preparing-images" | "designing";
+
+/** One image task of a creative run's plan, keyed by its plan-local key. */
+export interface AssetTask {
+  key: string;
+  required: boolean;
+  /** The aspect ratio the plan asked for; a staged file must match it. */
+  aspectRatio: string;
+  state: "pending" | "running" | "staged" | "failed" | "committed" | "abandoned";
+  /** Set once the task's file is fully staged. */
+  sha256?: string;
+  width?: number;
+  height?: number;
+  /** Set once the task is committed as a carousel asset. */
+  assetId?: string;
+}
+
+/**
+ * A creative run's asset work, kept beside the interruption records above so
+ * the two never contend: those are deleted when a run ends cleanly, while a
+ * blocked run must keep its plan, message and task states for an explicit
+ * retry. One record per carousel, for its most recent run, so the file stays
+ * bounded. The asset module (`src/lib/assets.ts`) reads and writes it through
+ * {@link mutateCreativeRuns}; nothing else does.
+ */
+export interface CreativeRunRecord {
+  runId: string;
+  stage: CreativeStage;
+  startedAt: string;
+  ended: { outcome: RunOutcome; at: string; reason?: string } | null;
+  tasks: AssetTask[];
+  /** The attach protocol's progress: intent first, then commit. */
+  attach: {
+    state: "intent" | "committed";
+    items: { taskKey: string; assetId: string; sha256: string }[];
+  } | null;
+  /** The validated plan and original message, kept only while a blocked run can be retried. */
+  retry: { plan: unknown; message: string } | null;
+  /** When the retry window's data was purged. */
+  purgedAt?: string;
+}
+
+/**
+ * Reads, changes and saves the creative-run records under the runs file's
+ * lock. The asset module is the only caller.
+ */
+export async function mutateCreativeRuns<R>(
+  mutate: (records: Record<string, CreativeRunRecord>) => R | Promise<R>
+): Promise<R> {
+  return mutateData(RUNS_FILE, emptyRuns, (data) => {
+    data.creative ??= {};
+    return mutate(data.creative);
+  });
+}
+
+/** The creative-run records as stored, without taking the lock. */
+export async function readCreativeRuns(): Promise<Record<string, CreativeRunRecord>> {
+  const data = await readDataSafe<RunsFile>(RUNS_FILE, emptyRuns());
+  return data.creative ?? {};
 }
 
 /** What the chat route answers when the carousel already has an active run. */
