@@ -7,11 +7,11 @@ It is written for contributors and describes only what is merged.
 
 | Part | Status |
 |---|---|
-| Director invocation, plan schema and server-side plan validation | Implemented as a library (`src/lib/visual-director.ts`, `src/lib/director-plan.ts`); no chat request calls it yet |
-| Creative Brief: types, validation, merge rules and storage on the carousel | Implemented (`src/lib/creative-brief.ts`); written by chat requests once orchestration lands |
+| Director invocation, plan schema and server-side plan validation | Implemented (`src/lib/visual-director.ts`, `src/lib/director-plan.ts`); runs for every chat message sent from a carousel |
+| Creative Brief: types, validation, merge rules and storage on the carousel | Implemented (`src/lib/creative-brief.ts`); updated whenever a plan is accepted |
 | Capability table | Implemented (`src/lib/creative-capabilities.ts`) |
 | Intelligence evaluation suite | Implemented as a separate, opt-in harness (`eval/director/`) |
-| Running the Director inside a chat request, the image stage and the Design Agent handoff | Planned; tracked in issue #40 |
+| Running the Director inside a chat request, the image stage and the Design Agent handoff | Implemented; see [creative-workflow.md](creative-workflow.md) |
 | Editing uploaded images | Not available; a plan that needs it is refused with a clear message |
 
 ## Why there is a Director
@@ -41,7 +41,7 @@ The split is deliberate and enforced by the code that carries a plan out.
 | The slide count, under fixed precedence rules | |
 
 The Design Agent's system prompt is frozen and does not mention the Director.
-Once orchestration lands (issue #40), the Director's guidance will reach it only as task-specific instructions in the message for that request.
+The Director's guidance reaches it only as a delimited "Visual plan for this request" section after the user's message, built from a fixed template (`src/lib/creative-handoff.ts`).
 A test pins the Design Agent's prompt to a recorded baseline so this boundary cannot erode silently.
 
 ## How the Director reasons

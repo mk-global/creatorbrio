@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readdir, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import type { CarouselAsset } from "@/types/carousel";
+import type { Carousel, CarouselAsset } from "@/types/carousel";
 import { appendCarouselAssets, carouselAssets, getCarousel, removeCarouselAssets } from "./carousels";
 import {
   mutateCreativeRuns,
@@ -243,15 +243,21 @@ function taskOf(record: CreativeRunRecord, key: string): AssetTask {
   return task;
 }
 
-/** Sets the run's tasks, for a run whose plan is known only after it began. */
+/**
+ * Sets the run's tasks, for a run whose plan is known only after it began.
+ * With `retry`, the validated plan and the user's message are kept from now
+ * on, so a run cut off by a restart before design can still be retried.
+ */
 export async function setCreativeTasks(
   carouselId: string,
   runId: string,
-  tasks: { key: string; required: boolean; aspectRatio: ImageAspectRatio }[]
+  tasks: { key: string; required: boolean; aspectRatio: ImageAspectRatio }[],
+  retry?: { plan: unknown; message: string }
 ): Promise<void> {
   requireIds(runId, tasks.map((t) => t.key));
   await updateRun(carouselId, runId, (record) => {
     record.tasks = tasks.map((t) => ({ ...t, state: "pending" }));
+    if (retry) record.retry = retry;
   });
 }
 
@@ -286,11 +292,13 @@ export async function endCreativeRun(
   carouselId: string,
   runId: string,
   outcome: RunOutcome,
-  options: { reason?: string; retry?: { plan: unknown; message: string } } = {}
+  /** `retry`: the data a blocked run keeps; omitted keeps what was stored, null keeps nothing. */
+  options: { reason?: string; retry?: { plan: unknown; message: string } | null; deviations?: string[] } = {}
 ): Promise<void> {
   await updateRun(carouselId, runId, (record) => {
     record.ended = { outcome, at: new Date().toISOString(), ...(options.reason ? { reason: options.reason } : {}) };
-    record.retry = outcome === "blocked" ? (options.retry ?? null) : null;
+    if (options.deviations && options.deviations.length > 0) record.deviations = options.deviations;
+    record.retry = outcome === "blocked" ? (options.retry === undefined ? record.retry : options.retry) : null;
     for (const task of record.tasks) if (task.state === "running") task.state = "abandoned";
   });
   processState().live.delete(runId);
@@ -551,6 +559,8 @@ async function recoverRecord(carouselId: string): Promise<void> {
       r.stage === "designing"
         ? { outcome: "server-stopped", at: new Date().toISOString() }
         : { outcome: "blocked", at: new Date().toISOString(), reason: "restart-before-design" };
+    // Only a blocked run can be retried; nothing else keeps the user's message.
+    if (r.stage === "designing") r.retry = null;
   });
 }
 
@@ -670,7 +680,7 @@ async function decodesAs(file: string, aspectRatio: string): Promise<boolean> {
 export async function prepareRetry(
   carouselId: string,
   runId: string,
-  revalidate: (plan: unknown) => boolean,
+  revalidate: (plan: unknown, message: string) => boolean,
   now = Date.now()
 ): Promise<PreparedRetry> {
   requireIds(runId, []);
@@ -682,7 +692,7 @@ export async function prepareRetry(
   if (expired(record, now) || !record.retry) {
     throw new AssetError("retry_expired", "This attempt has expired; send the request again.");
   }
-  if (!revalidate(record.retry.plan)) {
+  if (!revalidate(record.retry.plan, record.retry.message)) {
     throw new AssetError("plan_invalid", "The carousel changed since this attempt; send the request again.");
   }
 
@@ -722,4 +732,35 @@ export async function prepareRetry(
 export function stagingDirectoryFor(runId: string): string {
   requireIds(runId, []);
   return runDir(runId);
+}
+
+// ---------------------------------------------------------------------------
+// Integrity of committed assets.
+
+/**
+ * Each committed asset of a carousel with whether its file still matches its
+ * recorded hash. Only intact assets may be offered for reuse or placed.
+ */
+export async function carouselAssetIntegrity(
+  carousel: Pick<Carousel, "assets">
+): Promise<{ asset: CarouselAsset; intact: boolean }[]> {
+  const result: { asset: CarouselAsset; intact: boolean }[] = [];
+  for (const asset of carouselAssets(carousel)) {
+    const intact = RUN_ID.test(asset.id) && (await fileSha(uploadPath(asset.id))) === asset.sha256;
+    result.push({ asset, intact });
+  }
+  return result;
+}
+
+/** The asset ID each committed task of a run produced, by task key. */
+export async function committedTaskAssets(carouselId: string, runId: string): Promise<Map<string, string>> {
+  const record = (await readCreativeRuns())[carouselId];
+  if (record?.runId !== runId) return new Map();
+  return new Map(record.tasks.filter((t) => t.state === "committed" && t.assetId).map((t) => [t.key, t.assetId!]));
+}
+
+/** The absolute path of a committed asset's file, derived from its ID. */
+export function assetFilePath(assetId: string): string {
+  if (!RUN_ID.test(assetId)) throw new AssetError("plan_invalid", "Not an asset ID.");
+  return uploadPath(assetId);
 }

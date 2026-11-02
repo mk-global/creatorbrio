@@ -14,10 +14,8 @@ import type { Carousel } from "@/types/carousel";
 const repoRoot = path.resolve(__dirname, "..");
 const claudeMd = readFileSync(path.join(repoRoot, "CLAUDE.md"), "utf-8");
 const readme = readFileSync(path.join(repoRoot, "README.md"), "utf-8");
-const chatRoute = readFileSync(
-  path.join(repoRoot, "src/app/api/chat/route.ts"),
-  "utf-8"
-);
+// The Design Agent's CLI arguments, which the chat route uses.
+const chatRoute = readFileSync(path.join(repoRoot, "src/lib/design-agent.ts"), "utf-8");
 const startCommand = readFileSync(path.join(repoRoot, ".claude/commands/start.md"), "utf-8");
 const layout = readFileSync(path.join(repoRoot, "src/app/layout.tsx"), "utf-8");
 

@@ -7,10 +7,114 @@ It is written for contributors and describes only what is merged.
 
 | Part | Status |
 |---|---|
-| Design Agent chat runs, run lifecycle and export gating | Implemented and used by every chat request |
-| Typed generated assets: staging, attach, recovery, retry integrity and expiry | Implemented as a library; no request uses it yet |
-| Visual Director planning, plan validation and the Creative Brief | Implemented as a library; no request uses it yet (see [visual-director.md](visual-director.md)) |
-| Running the Director in a chat request and the image stage | Planned; tracked in issue #40 |
+| Design Agent chat runs, run lifecycle and export gating | Implemented |
+| Creative run: linked pages, Visual Director, image stage, handoff and conformance check | Implemented; runs for every chat message sent from a carousel |
+| Typed generated assets: staging, attach, recovery, retry integrity and expiry | Implemented and used by the image stage |
+| Image generation | Implemented as a client of an optional local image service that is not part of this repository; without it, plans use no generated images |
+| Editing uploaded images | Not available; a request that needs it stops with a clear message |
+
+## From request to export
+
+Every chat message sent from a carousel runs one creative run inside the existing chat request.
+The chat route still owns the carousel's single active run and the event stream; `src/lib/creative-run.ts` sequences the stages before design, and the route ends the run exactly once however it finishes.
+
+```mermaid
+flowchart TD
+    M[Chat message] --> L{Links in the message?}
+    L -- yes --> S[Reading linked pages]
+    L -- no --> P
+    S -- all readable --> P[Planning visuals: Visual Director]
+    S -- any unreadable --> B[Blocked]
+    P -- ready plan --> K[Brief saved on the carousel]
+    P -- source required, invalid plan, missing capability --> B
+    K --> I{Images to generate?}
+    I -- yes --> G[Preparing images: one at a time]
+    I -- no --> D
+    G -- every required image ready --> A[Attach all or nothing]
+    G -- a required image failed --> B
+    A --> D[Creating the design: Design Agent]
+    D --> C[Conformance check]
+    C --> E[Done, or Done with differences]
+    E --> X[Export]
+```
+
+### Stages
+
+The chat panel shows each stage as it starts: "Reading linked pages", "Planning visuals", "Preparing images" with a count such as "2 of 5", and "Creating the design".
+They reach the browser as `stage` events in the typed stream contract (`src/lib/chat-stream.ts`), which older clients ignore.
+
+1. **Reading linked pages** runs only when the message contains links, at most three.
+   Each page is fetched through the source-retrieval boundary (`src/lib/source-retrieval.ts`).
+   Any page that cannot be read stops the run before planning, naming the host and the kind of failure and suggesting the user paste the text.
+   Page text goes to the Director as untrusted content and is never stored; the handoff lists the pages by URL.
+2. **Planning visuals** runs the Visual Director (see [visual-director.md](visual-director.md)).
+   A ready plan's brief update is merged into the carousel's Creative Brief immediately, so a revision inherits it even if a later stage stops.
+3. **Preparing images** runs the plan's image tasks one at a time and stages each validated image privately.
+   When every required image is ready, all staged images are attached to the carousel in one all-or-nothing step.
+4. **Creating the design** runs the Design Agent exactly as before, resuming the carousel's session, with the user's message followed by a delimited "Visual plan for this request".
+   That section states the plan's facts only: who decides what, the slide count and why, each slide's treatment and the images to place with where to view them, each reference image's role, the linked pages, and the Director's advisory notes.
+   The Design Agent's system prompt does not change; a test pins it to its recorded baseline.
+
+### After design: the conformance check
+
+When the Design Agent finishes, the server compares the slides with the plan's binding parts (`checkConformance` in `src/lib/creative-handoff.ts`):
+
+- the slide count equals the plan's, unless the user asked to change it, when the new count is only reported;
+- every required image and every placed reference appears in its slide's HTML;
+- no reference meant only as a style source appears in any slide;
+- optional images that could not be made are listed.
+
+Differences are shown as "Done, with differences from the visual plan", recorded on the run and logged as `plan_deviation`.
+They never trigger a correction, a re-prompt or a retry, and they do not block export: the slides are finished, and the user decides whether to ask for a revision.
+
+### Run outcomes
+
+| Outcome | When | Slides | Export |
+|---|---|---|---|
+| Completed | The Design Agent finished | Changed by the design | Allowed |
+| Blocked | A stage before design stopped the run | Unchanged | Unchanged |
+| Stopped, failed or timed out before design | Cancelled, or an unexpected error before design | Unchanged | Unchanged |
+| Stopped, failed or timed out during design | As before this workflow | Possibly partly changed | Held until the user accepts the slides |
+
+A blocked run says why, in words the user can act on, and offers Retry when its stored plan can be retried.
+Blocking reasons: too many slides requested, too many links, an unreadable link, a request that needs a page the user did not give, a plan that could not be made or used, a capability this machine lacks (editing, or generation where it is not set up), a required image that could not be made, the image stage time limit, and storage problems.
+
+### Image failures
+
+Failures that every later image would meet too (the service not running, not set up, busy, or declining for lack of machine resources) stop the image stage at once.
+A failure that belongs to one image (an unusable result, or one image taking too long) does not: the remaining images are still made, so a retry only remakes what failed.
+A required image that could not be made blocks the run once the stage ends.
+An optional image that could not be made is skipped; the handoff tells the Design Agent the alternative the Director planned, and the conformance check lists it.
+
+### Retry
+
+Retry is a button on a blocked run, never automatic.
+It sends a normal chat request with the run's ID; there is no separate endpoint.
+The server accepts it only for the carousel's most recent run, only when that run ended blocked, and only within 24 hours.
+A retry neither reads linked pages nor plans again: it re-validates the stored plan against the carousel as it is now, uses the stored message rather than anything the client sends, keeps the Creative Brief as it is, and runs only the images that are not already valid.
+The plan and message are stored as soon as a plan with images is accepted, so a run cut off by a server restart before design can be retried too.
+
+### Cancellation
+
+Stopping a run, closing the tab or reloading cancels the request.
+Before design, the run stops waiting for linked pages, stops the Director's process, aborts the image request in progress and attaches nothing; the slides are unchanged and staged images are removed.
+During design, the Design Agent is stopped as before.
+The image service may keep generating an image it already started until it finishes or times out, so an immediate retry can find it busy.
+
+### Limits
+
+| Limit | Value |
+|---|---|
+| Linked pages per message | 3, read within 30 seconds in total |
+| Director | $0.25 and 120 seconds per message |
+| Generated images per message | 5, and never more than the slide count |
+| One image | 150 seconds, or less when the stage has less time left |
+| Image stage | 12 minutes |
+| Design Agent | $1.00 and 8 minutes, unchanged |
+
+A run can therefore hold the chat request open for about 23 minutes in the worst case.
+The route declares a matching `maxDuration`, which a self-hosted Next.js server does not enforce; these limits are the real bound.
+The Director runs on every message, including small edits, which adds its planning time and cost to each message.
 
 ## Typed asset lifecycle
 

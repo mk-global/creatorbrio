@@ -2,14 +2,21 @@
 
 import { cn } from "@/lib/utils";
 import { Bot, User } from "lucide-react";
+import type { ChatStage } from "@/lib/chat-stream";
+import { RunNotice, StageLine, type RunNoticeData } from "./RunNotice";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
   content: string;
   isStreaming?: boolean;
+  /** The creative stage in progress, while this reply is streaming. */
+  stage?: { stage: ChatStage; detail?: string } | null;
+  notice?: RunNoticeData;
+  onRetry?: (runId: string) => void;
+  retryDisabled?: boolean;
 }
 
-export function ChatMessage({ role, content, isStreaming }: ChatMessageProps) {
+export function ChatMessage({ role, content, isStreaming, stage, notice, onRetry, retryDisabled }: ChatMessageProps) {
   return (
     <div
       className={cn(
@@ -41,6 +48,8 @@ export function ChatMessage({ role, content, isStreaming }: ChatMessageProps) {
             <span className="oc-caret inline-block w-1.5 h-4 bg-accent ml-0.5 align-text-bottom" />
           )}
         </div>
+        {isStreaming && stage && <StageLine stage={stage.stage} detail={stage.detail} />}
+        {notice && <RunNotice notice={notice} onRetry={onRetry} retryDisabled={retryDisabled} />}
       </div>
     </div>
   );

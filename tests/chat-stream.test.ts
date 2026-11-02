@@ -149,7 +149,7 @@ describe("what the chat panel does with a run", () => {
 
   it("shows streamed tokens, then the final result in their place", () => {
     const state = run(parseChunks(SUCCESS));
-    expect(state).toEqual({ content: "Designed 3 slides.", error: null, sessionId: SESSION, finished: true });
+    expect(state).toEqual({ content: "Designed 3 slides.", error: null, sessionId: SESSION, finished: true, stage: null, blocked: null, deviations: [] });
   });
 
   it("keeps reply text already streamed when a failure follows, and keeps the first failure", () => {
@@ -226,5 +226,59 @@ describe("per-carousel session memory", () => {
     };
     expect(readChatSession(broken, "carousel-a")).toBeNull();
     expect(() => writeChatSession(broken, "carousel-a", SESSION)).not.toThrow();
+  });
+});
+
+describe("creative run events (#40)", () => {
+  const RUN = "0b6f1d1e-2a3c-4d5e-8f90-a1b2c3d4e5f6";
+  const parse = (...events: Record<string, unknown>[]) => {
+    const parser = createChatStreamParser();
+    return [...parser.push(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("")), ...parser.end()];
+  };
+
+  it("round-trips stage, blocked and deviations events through the encoder", () => {
+    const events: ChatStreamEvent[] = [
+      { type: "stage", stage: "planning" },
+      { type: "stage", stage: "preparing-images", detail: "2 of 5" },
+      { type: "blocked", code: "image_failed", message: "The image for slide 1 could not be made.", retryRunId: RUN },
+      { type: "deviations", items: ["Slide 2 does not show the planned image."] },
+    ];
+    const parser = createChatStreamParser();
+    expect(parser.push(events.map(encodeChatEvent).join(""))).toEqual(events);
+  });
+
+  it("drops malformed creative events without affecting their neighbours", () => {
+    expect(
+      parse(
+        { type: "stage", stage: "rendering" },
+        { type: "blocked", code: "made_up", message: "x", retryRunId: null },
+        { type: "blocked", code: "image_failed", message: "" },
+        { type: "deviations", items: [1] },
+        { type: "token", text: "kept" }
+      )
+    ).toEqual([{ type: "token", text: "kept" }]);
+  });
+
+  it("accepts a retry handle only when it is a run ID", () => {
+    expect(parse({ type: "blocked", code: "image_failed", message: "m", retryRunId: "../../etc" })).toEqual([
+      { type: "blocked", code: "image_failed", message: "m", retryRunId: null },
+    ]);
+  });
+
+  it("tracks the stage until done, keeps the first block, and collects deviations", () => {
+    let run = INITIAL_CHAT_RUN;
+    for (const event of [
+      { type: "stage", stage: "planning" },
+      { type: "blocked", code: "plan_failed", message: "first", retryRunId: null },
+      { type: "blocked", code: "image_failed", message: "second", retryRunId: null },
+      { type: "deviations", items: ["a"] },
+      { type: "deviations", items: ["b"] },
+    ] as ChatStreamEvent[]) {
+      run = reduceChatRun(run, event);
+    }
+    expect(run.stage).toEqual({ stage: "planning" });
+    expect(run.blocked?.message).toBe("first");
+    expect(run.deviations).toEqual(["a", "b"]);
+    expect(reduceChatRun(run, { type: "done", sessionId: null }).stage).toBeNull();
   });
 });

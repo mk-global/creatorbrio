@@ -13,6 +13,7 @@ import {
   sessionAfterRun,
 } from "@/lib/chat-stream";
 import { readChatSession, writeChatSession } from "@/lib/chat-session";
+import type { RunNoticeData } from "./RunNotice";
 
 /** Shown when the stream closes without the run reporting how it ended. */
 const CONNECTION_LOST =
@@ -22,6 +23,7 @@ interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  notice?: RunNoticeData;
 }
 
 interface ChatPanelProps {
@@ -45,6 +47,7 @@ export function ChatPanel({
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [stage, setStage] = useState<ReturnType<typeof reduceChatRun>["stage"]>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -95,19 +98,30 @@ export function ChatPanel({
   }, [messages]);
 
   const handleSend = useCallback(
-    async (message: string) => {
+    async (message: string, retryRunId?: string) => {
       if (isStreaming) return;
       setError(null);
+      setStage(null);
       setIsStreaming(true);
       onStreamStart?.();
 
-      // Add user message
-      const userMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "user",
-        content: message,
-      };
-      setMessages((prev) => [...prev, userMsg]);
+      if (retryRunId) {
+        // A retry runs the stored request again; its button is spent.
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.notice?.kind === "blocked" && m.notice.retryRunId === retryRunId
+              ? { ...m, notice: { ...m.notice, retryRunId: null } }
+              : m
+          )
+        );
+      } else {
+        const userMsg: Message = {
+          id: crypto.randomUUID(),
+          role: "user",
+          content: message,
+        };
+        setMessages((prev) => [...prev, userMsg]);
+      }
 
       // Add empty assistant message for streaming
       const assistantId = crypto.randomUUID();
@@ -126,6 +140,7 @@ export function ChatPanel({
             message,
             sessionId,
             carouselId,
+            ...(retryRunId ? { retryRunId } : {}),
           }),
           signal: abortRef.current.signal,
         });
@@ -145,7 +160,9 @@ export function ChatPanel({
         let run = INITIAL_CHAT_RUN;
         const apply = (events: ReturnType<typeof parser.push>) => {
           const before = run.content;
+          const stageBefore = run.stage;
           for (const event of events) run = reduceChatRun(run, event);
+          if (run.stage !== stageBefore) setStage(run.stage);
           if (run.content !== before) {
             const content = run.content;
             setMessages((prev) =>
@@ -169,12 +186,21 @@ export function ChatPanel({
           writeChatSession(localStorage, carouselId, next);
         }
 
+        const notice: RunNoticeData | undefined = run.blocked
+          ? { kind: "blocked", message: run.blocked.message, retryRunId: run.blocked.retryRunId }
+          : run.deviations.length > 0
+            ? { kind: "deviations", items: run.deviations }
+            : undefined;
+        if (notice) {
+          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, notice } : m)));
+        }
+
         const failure = run.error?.message ?? (run.finished ? null : CONNECTION_LOST);
         if (failure) {
           // Any reply text already streamed stays visible above the error.
           setError(failure);
           setMessages((prev) =>
-            prev.filter((m) => m.id !== assistantId || m.content.length > 0)
+            prev.filter((m) => m.id !== assistantId || m.content.length > 0 || m.notice)
           );
         }
       } catch (err) {
@@ -189,6 +215,7 @@ export function ChatPanel({
         );
       } finally {
         setIsStreaming(false);
+        setStage(null);
         abortRef.current = null;
         // Persist messages after stream completes
         setMessages((prev) => {
@@ -265,6 +292,10 @@ export function ChatPanel({
               msg.role === "assistant" &&
               msg.id === messages[messages.length - 1]?.id
             }
+            stage={stage}
+            notice={msg.notice}
+            onRetry={(runId) => void handleSend("Retry", runId)}
+            retryDisabled={isStreaming}
           />
         ))}
         {error && (

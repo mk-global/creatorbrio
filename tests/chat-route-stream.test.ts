@@ -11,6 +11,10 @@ import {
   sessionAfterRun,
   type ChatStreamEvent,
 } from "@/lib/chat-stream";
+import { stubDirector } from "./helpers/stub-director";
+
+// These tests cover the Design Agent run; the Visual Director is stubbed with an image-free plan.
+let director: ReturnType<typeof stubDirector>;
 
 // Through the real chat route and a real subprocess. The Claude CLI is replaced
 // by a script that records its arguments and plays one scripted run, so every
@@ -86,6 +90,7 @@ let originalCwd: string;
 let fakeDir: string;
 
 beforeEach(async () => {
+  director = stubDirector();
   originalCwd = process.cwd();
   workdir = await mkdtemp(path.join(tmpdir(), "creatorbrio-chat-stream-"));
   await mkdir(path.join(workdir, "data"), { recursive: true });
@@ -103,6 +108,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  director.restore();
   vi.useRealTimers();
   vi.restoreAllMocks();
   try {
@@ -139,6 +145,12 @@ async function readEvents(res: Response): Promise<{ raw: string; events: ChatStr
 const argv = async (): Promise<string[]> =>
   JSON.parse(await readFile(path.join(fakeDir, "argv.json"), "utf8"));
 
+/** Every run with a carousel plans first; the stub Director's plan has no images. */
+const STAGES: ChatStreamEvent[] = [
+  { type: "stage", stage: "planning" },
+  { type: "stage", stage: "designing" },
+];
+
 /** Diagnostics that belong in the server log and never in the stream. */
 function expectNoDiagnostics(raw: string) {
   expect(raw).not.toContain(workdir);
@@ -155,9 +167,13 @@ describe("chat sessions through the route (#2)", () => {
 
     expect(await argv()).not.toContain("--resume");
     expect(events).toEqual([
+      ...STAGES,
       { type: "token", text: "Designing your " },
       { type: "token", text: "carousel." },
       { type: "result", text: "Designed 3 slides." },
+      // The fake agent saves no slides, so the three-slide plan is not met;
+      // the difference is reported, not corrected.
+      { type: "deviations", items: ["The plan called for 3 slides; the carousel has 0."] },
       { type: "done", sessionId: SESSION },
     ]);
     const run = events.reduce(reduceChatRun, INITIAL_CHAT_RUN);
@@ -200,10 +216,10 @@ describe("chat sessions through the route (#2)", () => {
     const carousel = await createCarousel("Session", "4:5");
     const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id, sessionId: OTHER_SESSION }));
 
-    expect(events.map((e) => e.type)).toEqual(["error", "done"]);
-    expect(events[0]).toMatchObject({ type: "error", code: "session_not_found" });
+    expect(events.map((e) => e.type)).toEqual(["stage", "stage", "error", "done"]);
+    expect(events[2]).toMatchObject({ type: "error", code: "session_not_found" });
     // The CLI echoes the requested ID in its error result; it is not offered back.
-    expect(events[1]).toEqual({ type: "done", sessionId: null });
+    expect(events[3]).toEqual({ type: "done", sessionId: null });
     expect(sessionAfterRun(events.reduce(reduceChatRun, INITIAL_CHAT_RUN), OTHER_SESSION)).toBeNull();
     expectNoDiagnostics(raw);
   });
@@ -215,8 +231,8 @@ describe("chat errors after streaming starts (#3)", () => {
     const carousel = await createCarousel("Errors", "4:5");
     const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
 
-    expect(events.map((e) => e.type)).toEqual(["token", "error", "done"]);
-    expect(events[1]).toEqual({
+    expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
+    expect(events[3]).toEqual({
       type: "error",
       code: "agent_failed",
       message: "The design agent stopped unexpectedly before finishing. Send your message again to retry.",
@@ -237,8 +253,8 @@ describe("chat errors after streaming starts (#3)", () => {
     const carousel = await createCarousel("Errors", "4:5");
     const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
 
-    expect(events.map((e) => e.type)).toEqual(["token", "error", "done"]);
-    expect(events[1]).toMatchObject({ type: "error", code: "budget_exceeded" });
+    expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
+    expect(events[3]).toMatchObject({ type: "error", code: "budget_exceeded" });
     expectNoDiagnostics(raw);
   });
 
@@ -268,8 +284,8 @@ describe("chat errors after streaming starts (#3)", () => {
       events.push(...parser.push(text));
     }
 
-    expect(events.map((e) => e.type)).toEqual(["token", "error", "done"]);
-    expect(events[1]).toMatchObject({ type: "error", code: "timed_out" });
+    expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
+    expect(events[3]).toMatchObject({ type: "error", code: "timed_out" });
     expectNoDiagnostics(raw);
   });
 
@@ -279,6 +295,7 @@ describe("chat errors after streaming starts (#3)", () => {
     const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
 
     expect(events).toEqual([
+      ...STAGES,
       expect.objectContaining({ type: "error", code: "start_failed" }),
     ]);
     expectNoDiagnostics(raw);
@@ -293,6 +310,7 @@ describe("chat errors after streaming starts (#3)", () => {
     const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
 
     expect(events).toEqual([
+      ...STAGES,
       expect.objectContaining({ type: "error", code: "start_failed" }),
     ]);
     expectNoDiagnostics(raw);
