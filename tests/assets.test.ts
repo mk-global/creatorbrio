@@ -14,6 +14,7 @@ import {
   prepareCarouselRun,
   prepareRetry,
   setAssetFaultHookForTests,
+  setTaskState,
   simulateRestartForTests,
   stageImage,
   stagingDirectoryFor,
@@ -606,6 +607,29 @@ describe("assets: retry integrity and expiry", () => {
     const record = (await readCreativeRuns())[carouselId];
     expect(record.ended).toBeNull();
     expect(record.tasks.find((t) => t.key === "a2")!.state).toBe("pending");
+  });
+
+  it("keeps a refusal code only on a failed task, and a retry that runs the task again removes it", async () => {
+    const { carouselId } = await world();
+    const runId = randomUUID();
+    await beginCreativeRun(carouselId, runId, TASKS);
+    await stageImage(carouselId, runId, "a1", await png(10));
+    const task = async (key: string) => (await readCreativeRuns())[carouselId].tasks.find((t) => t.key === key)!;
+
+    await setTaskState(carouselId, runId, "a2", "failed", { failureReason: "example_reason" });
+    expect(await task("a2")).toMatchObject({ state: "failed", failureReason: "example_reason" });
+    await setTaskState(carouselId, runId, "a2", "running");
+    expect(await task("a2")).not.toHaveProperty("failureReason");
+    await setTaskState(carouselId, runId, "a3", "abandoned", { failureReason: "example_reason" });
+    expect(await task("a3")).not.toHaveProperty("failureReason");
+
+    await setTaskState(carouselId, runId, "a2", "failed", { failureReason: "example_reason" });
+    await endCreativeRun(carouselId, runId, "blocked", { reason: "image_failed", retry: { plan: { status: "ready" }, message: "m" } });
+    expect(await task("a2")).toMatchObject({ failureReason: "example_reason" });
+    const retry = await prepareRetry(carouselId, runId, () => true);
+    expect(retry.pending).toContain("a2");
+    expect(await task("a2")).toMatchObject({ state: "pending" });
+    expect(await task("a2")).not.toHaveProperty("failureReason");
   });
 
   it("regenerates a staged file that is not a PNG of the planned ratio", async () => {

@@ -267,15 +267,23 @@ export async function setCreativeStage(carouselId: string, runId: string, stage:
   });
 }
 
+/**
+ * Sets a task's state. `failureReason`, the image service's refusal code, is
+ * kept only on a failed task; any other state removes it, so a task that runs
+ * again never shows an earlier refusal.
+ */
 export async function setTaskState(
   carouselId: string,
   runId: string,
   key: string,
-  state: "pending" | "running" | "failed" | "abandoned"
+  state: "pending" | "running" | "failed" | "abandoned",
+  options: { failureReason?: string } = {}
 ): Promise<void> {
   await updateRun(carouselId, runId, (record) => {
     const task = taskOf(record, key);
     task.state = state;
+    if (state === "failed" && options.failureReason) task.failureReason = options.failureReason;
+    else delete task.failureReason;
     if (state !== "pending") return;
     delete task.sha256;
     delete task.width;
@@ -338,6 +346,7 @@ export async function stageImage(
   const recorded = await updateRun(carouselId, runId, (record) => {
     const task = taskOf(record, key);
     task.state = "staged";
+    delete task.failureReason;
     task.sha256 = digest;
     task.width = image.width;
     task.height = image.height;
@@ -720,6 +729,7 @@ export async function prepareRetry(
       task.state = "pending";
       delete task.sha256;
       delete task.assetId;
+      delete task.failureReason;
     }
     // Tasks that run again are attached by a new attach.
     if (pending.length > 0) r.attach = null;

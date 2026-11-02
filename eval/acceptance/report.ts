@@ -1,5 +1,7 @@
 import type { ChatResult, ServerCosts } from "./app";
 import type { BaselineResult } from "./baseline";
+import type { AdmissionResult, BusyObservation, HealthSample } from "./image-service";
+import type { PlannedAsset, PlanSummary, StagedSnapshot } from "./verify";
 import { MIN_READ_TURNS, OUTCOME_DIMENSIONS, type Arm, type JudgeCall, type OutcomeVerdict, type PairwiseVerdict } from "./judge";
 import type { ScenarioId } from "./scenarios";
 
@@ -21,6 +23,32 @@ export interface ChatRecord {
   sessionId?: string | null;
   result: ChatResult;
   stages: StageDurations;
+  /**
+   * The run's stored plan, read when design began: the only time it exists,
+   * and only for plans with generated images. Null when design never began.
+   */
+  planAtDesign: { assets: PlannedAsset[] | null; summary: PlanSummary | null } | null;
+}
+
+/**
+ * What the image service reported around a scenario. Its reason codes are
+ * kept here, in results.json, and never written to summary.md.
+ */
+export interface ImageServiceEvidence {
+  /** The wait for admission before the scenario. */
+  admission?: AdmissionResult;
+  /** Health taken at once after an image failed. */
+  afterFailure?: HealthSample[];
+  /** The "image failed" log entries' key, code and refusal reason. */
+  failureReasons?: { key: string | null; code: string | null; reason: string | null }[];
+  /** Health polled after a cancellation, to see whether the service finished an image already started. */
+  afterCancel?: BusyObservation;
+  /** Health polled after the restart scenario stopped the server, for the same question. */
+  afterServerStop?: BusyObservation;
+  /** The wait for admission before an explicit retry. */
+  retryAdmission?: AdmissionResult;
+  /** The wait for the service to admit work again after the scenario. */
+  cooldown?: AdmissionResult;
 }
 
 export interface ScenarioRecord {
@@ -38,8 +66,16 @@ export interface ScenarioRecord {
   runRecord: Record<string, unknown> | null;
   costs: Omit<ServerCosts, "entries"> | null;
   logEntries: number;
-  export: { ok: boolean; pngs: number; error?: string; durationMs: number } | null;
+  export: { ok: boolean; pngs: number; files?: string[]; error?: string; durationMs: number } | null;
   judge: JudgeCall<OutcomeVerdict> | null;
+  /** The image service's health and refusal codes around this scenario; results.json only. */
+  imageService: ImageServiceEvidence | null;
+  /** For a completed run: the stored Creative Brief and the Director's plan, for the founder's review. */
+  review: { creativeBrief: unknown; plan: PlanSummary | null; planNote: string | null; directorPlan: Record<string, unknown> | null } | null;
+  /** The staged images a retry was expected to reuse, as recorded before it. */
+  reuse: { snapshot: StagedSnapshot; attempted: boolean } | null;
+  /** The restart scenario's state right after the server stopped. */
+  afterStop: { signal: string; ended: unknown; tasks: { key: string; state: string; sha256: string | null }[]; staging: StagedSnapshot } | null;
   checks: Check[];
   observations: string[];
   wallMs: number;

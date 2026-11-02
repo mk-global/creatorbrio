@@ -294,6 +294,11 @@ export interface AssetTask {
   height?: number;
   /** Set once the task is committed as a carousel asset. */
   assetId?: string;
+  /**
+   * Set only while the task is failed because the image service declined it:
+   * the service's short refusal code, for diagnosis. Never free text.
+   */
+  failureReason?: string;
 }
 
 /**

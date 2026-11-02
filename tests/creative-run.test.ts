@@ -30,7 +30,7 @@ const { POST: chat } = await import("@/app/api/chat/route");
 const { addReferenceImage, appendCarouselAssets, createCarousel, getCarousel, setCreativeBrief } = await import("@/lib/carousels");
 const { isGenerating, getInterruption, readCreativeRuns, slideFingerprint } = await import("@/lib/generation-status");
 const { creativeRunDeps } = await import("@/lib/creative-run");
-const { simulateRestartForTests } = await import("@/lib/assets");
+const { setAssetFaultHookForTests, simulateRestartForTests } = await import("@/lib/assets");
 
 const SESSION = "6c1f9a52-8d3e-4b7a-9f21-0e4d5c6b7a89";
 
@@ -46,6 +46,7 @@ const task = argv[argv.indexOf("-p") + 1];
 const emit = (e) => process.stdout.write(JSON.stringify(e) + "\\n");
 emit({ type: "system", subtype: "init", session_id: "${SESSION}" });
 if (scenario === "hang") { process.on("SIGTERM", () => process.exit(143)); setInterval(() => {}, 1000); return; }
+if (scenario === "fail") { process.exit(1); }
 
 // Read the plan the way a designer would: the count, and each slide's images.
 const count = Number((task.match(/Slides to produce: (\\d+)/) || [])[1] || 0);
@@ -140,6 +141,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setAssetFaultHookForTests(null);
   director.restore();
   Object.assign(creativeRunDeps, original);
   vi.restoreAllMocks();
@@ -443,6 +445,42 @@ describe("a creative run through the chat route", () => {
     await send({ carouselId: carousel.id, message: "Make it more dramatic" });
     expect(director.requests[0].carousel.creativeBrief).toBeUndefined();
   });
+
+  // Where the brief is saved: after the images are attached, as design begins.
+  // A design that then fails keeps it, even with no slide written.
+  it("saves the plan's brief as design begins, so a design that fails before writing a slide keeps it", async () => {
+    director.restore();
+    director = stubDirector((r) => imagePlan(r, [1], { aspectRatio: "9:16" }));
+    const carousel = await newCarousel("9:16");
+    const { events } = await send({ carouselId: carousel.id, message: "Design a reel cover about complacency" }, "fail");
+
+    expect(stages(events)).toContain("designing");
+    expect(of(events, "error")[0]).toMatchObject({ code: "agent_failed" });
+    const after = await getCarousel(carousel.id);
+    expect(after?.slides).toEqual([]);
+    expect(after?.assets).toHaveLength(1);
+    expect(after?.creativeBrief?.centralMessage).toMatchObject({ value: "Comfort is the quiet risk", source: "explicit" });
+    expect((await readCreativeRuns())[carousel.id].ended?.outcome).toBe("failed");
+  });
+
+  // The other side of the save point: an attach that fails ends the run before
+  // design, so the brief must still be as it was.
+  it("changes no brief when the images cannot be added to the carousel", async () => {
+    director.restore();
+    director = stubDirector((r) => imagePlan(r, [1], { aspectRatio: "9:16" }));
+    setAssetFaultHookForTests((step) => (step === "attach:linked" ? "fail" : undefined));
+    const carousel = await newCarousel("9:16");
+    const { events } = await send({ carouselId: carousel.id, message: "Design a reel cover about complacency" });
+
+    expect(of(events, "blocked")[0]).toMatchObject({ code: "storage_failed" });
+    expect(stages(events)).not.toContain("designing");
+    expect(await designSpawned()).toBe(false);
+    const after = await getCarousel(carousel.id);
+    expect(after?.creativeBrief).toBeUndefined();
+    expect(after?.assets ?? []).toEqual([]);
+    expect(await readdir(path.join(workdir, "public", "uploads"))).toEqual([]);
+    expect((await readCreativeRuns())[carousel.id].ended?.outcome).toBe("blocked");
+  });
 });
 
 describe("required images and the export gate", () => {
@@ -463,6 +501,44 @@ describe("required images and the export gate", () => {
     expect(await designSpawned()).toBe(false);
     expect(await getInterruption(carousel.id)).toBeNull();
     expect(events.at(-1)).toEqual({ type: "done", sessionId: null });
+  });
+
+  it.each(["example_reason", "another_example_code"])(
+    "records the image service's refusal code %s in the log and on the failed task, as it is and without prompt text",
+    async (reason) => {
+      director.restore();
+      director = stubDirector((r) => imagePlan(r, [1], { aspectRatio: "9:16" }));
+      imageScript = async () =>
+        new ImageGenerationError(503, "image_generation_refused", "The image service declined to start because the machine is busy with other AI work.", { reason });
+      const carousel = await newCarousel("9:16");
+      const { events } = await send({ carouselId: carousel.id, message: "Design a reel cover about complacency" });
+
+      // What the user reads does not change.
+      expect(of(events, "blocked")[0].message).toBe(
+        "The image for slide 1 could not be made. The image service declined to start because the machine is busy with other AI work. Try again later. Nothing was changed."
+      );
+      const logged = vi.mocked(console.warn).mock.calls.filter(([tag]) => tag === "[creative-run] image failed");
+      expect(logged).toEqual([
+        ["[creative-run] image failed", expect.objectContaining({ key: "a1", code: "image_generation_refused", reason })],
+      ]);
+      const tasks = (await readCreativeRuns())[carousel.id].tasks;
+      expect(tasks).toEqual([expect.objectContaining({ key: "a1", state: "failed", failureReason: reason })]);
+      for (const recorded of [JSON.stringify(logged), JSON.stringify(tasks)]) {
+        expect(recorded).not.toContain(imageCalls[0].prompt);
+        expect(recorded).not.toContain(brief.subject);
+      }
+    }
+  );
+
+  it("records no refusal code for a failure that carries none", async () => {
+    director.restore();
+    director = stubDirector((r) => imagePlan(r, [1], { aspectRatio: "9:16" }));
+    imageScript = async () => new ImageGenerationError(503, "image_service_unavailable", "The local image service is not running.");
+    const carousel = await newCarousel("9:16");
+    await send({ carouselId: carousel.id, message: "Design a reel cover about complacency" });
+    const logged = vi.mocked(console.warn).mock.calls.find(([tag]) => tag === "[creative-run] image failed");
+    expect(logged?.[1]).not.toHaveProperty("reason");
+    expect((await readCreativeRuns())[carousel.id].tasks[0]).not.toHaveProperty("failureReason");
   });
 
   it("stops the stage at a service-wide failure instead of trying every image", async () => {
@@ -612,6 +688,7 @@ describe("cancellation before design", () => {
     expect(slideFingerprint(await getCarousel(carousel.id))).toBe(before);
     expect((await readCreativeRuns())[carousel.id].ended?.outcome).toBe("stopped");
     expect((await readCreativeRuns())[carousel.id].stage).toBe(stage);
+    expect((await getCarousel(carousel.id))?.creativeBrief).toBeUndefined();
     expect(await readdir(path.join(workdir, "public", "uploads"))).toEqual([]);
     if (where === "sources") expect(director.requests).toEqual([]);
   });
@@ -643,6 +720,26 @@ describe("retry", () => {
     expect(of(retry.events, "deviations")).toEqual([]);
     // The retried run reached design, so the stored plan's brief update applies now.
     expect((await getCarousel(carousel.id))?.creativeBrief?.centralMessage).toMatchObject({ value: "Comfort is the quiet risk", source: "explicit" });
+  });
+
+  it("clears a failed task's refusal code when a retry makes the image", async () => {
+    director.restore();
+    director = stubDirector((r) => imagePlan(r, [1, 2]));
+    imageScript = async (call) =>
+      call === 2 ? new ImageGenerationError(503, "image_generation_refused", "The image service declined to start.", { reason: "example_reason" }) : "ok";
+    const carousel = await newCarousel();
+    const first = await send({ carouselId: carousel.id, message: "Make 2 slides with photos" });
+    const blocked = of(first.events, "blocked")[0];
+    expect(blocked).toMatchObject({ code: "image_failed", retryRunId: expect.any(String) });
+    expect((await readCreativeRuns())[carousel.id].tasks.find((t) => t.key === "a2")).toMatchObject({ state: "failed", failureReason: "example_reason" });
+
+    imageCalls = [];
+    imageScript = null;
+    await send({ carouselId: carousel.id, message: "Retry", retryRunId: blocked.retryRunId });
+    expect(imageCalls).toHaveLength(1);
+    const tasks = (await readCreativeRuns())[carousel.id].tasks;
+    expect(tasks.map((t) => t.state)).toEqual(["committed", "committed"]);
+    for (const task of tasks) expect(task).not.toHaveProperty("failureReason");
   });
 
   it("after a server restart during the image stage, regenerates none of the valid staged images", async () => {

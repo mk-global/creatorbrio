@@ -320,9 +320,10 @@ export async function removeCarouselAssets(assetIds: string[]): Promise<void> {
 }
 
 /**
- * Replaces a carousel's Creative Brief. Only the creative pipeline calls this,
- * with a brief merged from a validated Visual Director update. Returns false
- * when the carousel does not exist.
+ * Replaces a carousel's Creative Brief. In the app only the creative run calls
+ * this, as design begins, with a brief merged from a validated Visual Director
+ * update; the Director evaluation harness also uses it to seed scenarios.
+ * Returns false when the carousel does not exist.
  */
 export async function setCreativeBrief(carouselId: string, brief: CreativeBrief): Promise<boolean> {
   return mutate((data) => {
