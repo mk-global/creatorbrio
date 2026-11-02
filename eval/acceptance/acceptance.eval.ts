@@ -383,10 +383,11 @@ async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
 // Comparison: the Design Agent alone on a fresh carousel, then a blind pairwise judgment.
 
 async function runComparison(scenario: Scenario): Promise<ComparisonRecord> {
-  const record: ComparisonRecord = { id: scenario.id, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, harnessError: null };
+  const record: ComparisonRecord = { id: scenario.id, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, skipped: null, harnessError: null };
   const director = directorPngs.get(scenario.id);
   if (!director) {
-    record.harnessError = "the Director arm produced no export to compare";
+    // For example, the Director arm was blocked because an image could not be made.
+    record.skipped = "the Director arm produced no export to compare";
     return record;
   }
   const server = await serverFor("main");
@@ -436,7 +437,7 @@ describe.sequential(`creative run acceptance (${MODE})`, () => {
         try {
           comparison = await runComparison(scenario);
         } catch (err) {
-          comparison = { id: scenario.id, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, harnessError: (err as Error).stack ?? String(err) };
+          comparison = { id: scenario.id, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, skipped: null, harnessError: (err as Error).stack ?? String(err) };
         }
         results.comparisons.push(comparison);
         await save();

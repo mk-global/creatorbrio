@@ -53,6 +53,8 @@ export interface ComparisonRecord {
   baselineExport: { ok: boolean; pngs: number; error?: string } | null;
   baselineJudge: JudgeCall<OutcomeVerdict> | null;
   pairwise: { mapping: { A: Arm; B: Arm }; winner: Arm | "tie" | null; result: JudgeCall<PairwiseVerdict> } | null;
+  /** Why no comparison was made when that is a legitimate outcome, such as a blocked Director arm. */
+  skipped: string | null;
   harnessError: string | null;
 }
 
@@ -193,6 +195,10 @@ export function renderSummary(results: RunResults): string {
     lines.push(`| Scenario | Labels (un-blinded) | Preferred | Confidence | Director mean | Baseline mean | Baseline slides | Baseline cost | Judge turns | Reasons |`);
     lines.push(`|---|---|---|---|---|---|---|---|---|---|`);
     for (const c of results.comparisons) {
+      if (c.skipped) {
+        lines.push(`| ${c.id} | - | SKIPPED | - | - | - | - | - | - | ${cell(c.skipped)} |`);
+        continue;
+      }
       if (c.harnessError) {
         lines.push(`| ${c.id} | - | ERROR | - | - | - | - | - | - | ${cell(c.harnessError)} |`);
         continue;
