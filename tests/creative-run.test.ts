@@ -549,14 +549,21 @@ describe("revisions", () => {
 
 describe("cancellation before design", () => {
   it.each([
+    ["reading-sources", "sources"],
     ["planning", "director"],
     ["preparing-images", "image"],
-  ])("during %s attaches nothing, changes no slide and releases the carousel", async (_stage, where) => {
+  ])("during %s attaches nothing, changes no slide and releases the carousel", async (stage, where) => {
     const carousel = await newCarousel("9:16");
     const controller = new AbortController();
     director.restore();
     director = stubDirector((r) => imagePlan(r, [1], { aspectRatio: "9:16" }));
-    if (where === "director") {
+    if (where === "sources") {
+      // The page never arrives: only cancellation can end this stage.
+      creativeRunDeps.retrieveSources = () => {
+        setTimeout(() => controller.abort(), 20);
+        return new Promise(() => {});
+      };
+    } else if (where === "director") {
       const planned = creativeRunDeps.runDirector;
       creativeRunDeps.runDirector = async (request, options) => {
         controller.abort();
@@ -574,7 +581,10 @@ describe("cancellation before design", () => {
       new Request("http://localhost:3000/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", host: "localhost:3000" },
-        body: JSON.stringify({ carouselId: carousel.id, message: "Design a reel cover" }),
+        body: JSON.stringify({
+          carouselId: carousel.id,
+          message: where === "sources" ? "Design a reel cover from https://example.com/post" : "Design a reel cover",
+        }),
       }) as never
     );
     const reader = res.body!.getReader();
@@ -587,7 +597,9 @@ describe("cancellation before design", () => {
     expect((await getCarousel(carousel.id))?.assets ?? []).toEqual([]);
     expect(slideFingerprint(await getCarousel(carousel.id))).toBe(before);
     expect((await readCreativeRuns())[carousel.id].ended?.outcome).toBe("stopped");
+    expect((await readCreativeRuns())[carousel.id].stage).toBe(stage);
     expect(await readdir(path.join(workdir, "public", "uploads"))).toEqual([]);
+    if (where === "sources") expect(director.requests).toEqual([]);
   });
 });
 
@@ -653,6 +665,24 @@ describe("retry", () => {
     if (result.status === 400) return expect(result.raw).toContain("Invalid retry");
     expect(of(result.events, "blocked")[0]).toMatchObject({ code: "retry_refused", retryRunId: null });
     expect(await designSpawned()).toBe(false);
+  });
+
+  it("refuses a retry of a blocked run that a newer run has superseded", async () => {
+    director.restore();
+    director = stubDirector((r) => imagePlan(r, [1], { aspectRatio: "9:16" }));
+    imageScript = async () => new ImageGenerationError(503, "image_service_unavailable", "The local image service is not running.");
+    const carousel = await newCarousel("9:16");
+    const first = await send({ carouselId: carousel.id, message: "Design a reel cover" });
+    const stale = of(first.events, "blocked")[0].retryRunId;
+    expect(stale).toEqual(expect.any(String));
+
+    director.restore();
+    director = stubDirector();
+    await send({ carouselId: carousel.id, message: "Make it typographic instead" });
+    imageCalls = [];
+    const retry = await send({ carouselId: carousel.id, message: "Retry", retryRunId: stale });
+    expect(of(retry.events, "blocked")[0]).toMatchObject({ code: "retry_refused", retryRunId: null });
+    expect(imageCalls).toEqual([]);
   });
 
   it("refuses a retry past its 24-hour window", async () => {
