@@ -12,10 +12,14 @@ import { resolveAppOrigin } from "@/lib/request-origin";
 import {
   CHAT_ERROR_MESSAGES,
   encodeChatEvent,
+  isRunId,
   isSessionId,
   type ChatErrorCode,
   type ChatStreamEvent,
 } from "@/lib/chat-stream";
+import { finishCreativeRun, prepareCreativeRun, type CreativeRunInput } from "@/lib/creative-run";
+import { checkConformance } from "@/lib/creative-handoff";
+import { designAgentArgs } from "@/lib/design-agent";
 import {
   beginGeneration,
   classifyRunExit,
@@ -25,7 +29,12 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+// The longest creative run: linked pages (30 s), planning (120 s), images
+// (12 min) and design (8 min), about 23 minutes. A self-hosted Next.js server
+// does not enforce this value; the stage limits above are the real bound.
+export const maxDuration = 1500;
+
+type DesignRun = Extract<Awaited<ReturnType<typeof prepareCreativeRun>>, { kind: "design" }>;
 
 /** How long a cancelled Claude CLI gets to exit before it is killed. */
 const FORCE_KILL_AFTER_MS = 5_000;
@@ -46,6 +55,7 @@ export async function POST(request: NextRequest) {
     sessionId?: unknown;
     carouselId?: string;
     stylePresetId?: string;
+    retryRunId?: unknown;
   };
   try {
     body = await request.json();
@@ -53,7 +63,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { message, sessionId, carouselId, stylePresetId } = body;
+  const { message, sessionId, carouselId, stylePresetId, retryRunId } = body;
 
   if (
     !message ||
@@ -71,6 +81,12 @@ export async function POST(request: NextRequest) {
   }
   const resumeSessionId = isSessionId(sessionId) ? sessionId : null;
 
+  // A retry names one earlier run of this carousel; anything else is refused
+  // before any lookup.
+  if (retryRunId !== undefined && retryRunId !== null && (!isRunId(retryRunId) || typeof carouselId !== "string" || !carouselId)) {
+    return NextResponse.json({ error: "Invalid retry" }, { status: 400 });
+  }
+
   // The carousel's run begins before any work for this request, and a
   // carousel has one active run at a time. From here on, every way this
   // request ends must end the run exactly once.
@@ -83,6 +99,8 @@ export async function POST(request: NextRequest) {
 
   // Build dynamic system prompt with the carousel's brand + carousel + style preset context
   let systemPrompt: string;
+  // Everything the creative run needs; null for a chat without a carousel.
+  let creative: CreativeRunInput | null = null;
   try {
     const carousel = carouselId ? await getCarousel(carouselId) : null;
     // The brand the carousel was created in; the default brand for carousels
@@ -95,6 +113,16 @@ export async function POST(request: NextRequest) {
     const promptCarousel = carousel
       ? { ...carousel, referenceImages: await resolveReferenceImages(carousel) }
       : null;
+    if (carousel && promptCarousel) {
+      creative = {
+        carousel,
+        brand,
+        stylePreset,
+        message,
+        references: promptCarousel.referenceImages,
+        retryRunId: isRunId(retryRunId) ? retryRunId : null,
+      };
+    }
     systemPrompt = buildSystemPrompt({
       // The agent curls this app's own API, so it must be told the origin the
       // request arrived on rather than a fixed port.
@@ -122,30 +150,7 @@ export async function POST(request: NextRequest) {
   const claudePath = getClaudePath();
   const abortController = new AbortController();
 
-  const args = [
-    "-p",
-    message,
-    "--output-format",
-    "stream-json",
-    "--include-partial-messages",
-    "--verbose",
-    "--append-system-prompt",
-    systemPrompt,
-    "--allowedTools",
-    "Bash",
-    "--allowedTools",
-    "WebFetch",
-    "--allowedTools",
-    "Read",
-    "--max-budget-usd",
-    "1.00",
-    "--name",
-    "creatorbrio-chat",
-  ];
-
-  if (resumeSessionId) {
-    args.push("--resume", resumeSessionId);
-  }
+  const designArgs = (taskMessage: string) => designAgentArgs({ taskMessage, systemPrompt, resumeSessionId });
 
   const encoder = new TextEncoder();
   // Set by the client going away (Stop, a reload, a closed tab).
@@ -153,8 +158,6 @@ export async function POST(request: NextRequest) {
 
   const stream = new ReadableStream({
     start(controller) {
-      let childProcess: ReturnType<typeof spawn>;
-
       const send = (event: ChatStreamEvent) => {
         try {
           controller.enqueue(encoder.encode(encodeChatEvent(event)));
@@ -178,12 +181,67 @@ export async function POST(request: NextRequest) {
         }
       };
 
+      void (async () => {
+        // The creative run comes first: linked pages, the plan and its images.
+        // It either hands the Design Agent its task message or ends the run
+        // here, before anything can change the slides.
+        let taskMessage = message;
+        let creativeRun: DesignRun | null = null;
+        if (creative) {
+          let prepared;
+          try {
+            prepared = await prepareCreativeRun(
+              creative,
+              { stage: (stage, detail) => send(detail ? { type: "stage", stage, detail } : { type: "stage", stage }) },
+              abortController.signal
+            );
+          } catch (err) {
+            console.error("[chat] creative run failed before design", {
+              carouselId: carouselId ?? null,
+              message: (err as Error)?.message,
+            });
+            fail("run_failed");
+            await endGeneration("not-started");
+            send({ type: "done", sessionId: null });
+            close();
+            return;
+          }
+          if (prepared.kind !== "design") {
+            if (prepared.kind === "blocked") {
+              send({ type: "blocked", code: prepared.code, message: prepared.message, retryRunId: prepared.retryRunId });
+            }
+            // Nothing changed the slides; the Design Agent's session is kept as it was.
+            await endGeneration(prepared.kind === "blocked" ? "blocked" : "stopped");
+            console.info("[chat] run finished", {
+              carouselId: carouselId ?? null,
+              outcome: prepared.kind === "blocked" ? "blocked" : "stopped",
+              ...(prepared.kind === "blocked" ? { blockedCode: prepared.code } : {}),
+            });
+            send({ type: "done", sessionId: null });
+            close();
+            return;
+          }
+          creativeRun = prepared;
+          taskMessage = prepared.designMessage;
+        }
+        if (cancelled) {
+          if (creativeRun) await finishCreativeRun(carouselId!, creativeRun.runId, "stopped");
+          await endGeneration("stopped");
+          send({ type: "done", sessionId: null });
+          close();
+          return;
+        }
+        design(taskMessage, creativeRun);
+      })();
+
+      function design(taskMessage: string, creativeRun: DesignRun | null) {
+      let childProcess: ReturnType<typeof spawn>;
       const isWindowsShim =
         process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
       const spawner = isWindowsShim ? crossSpawn : spawn;
 
       try {
-        childProcess = spawner(claudePath, args, {
+        childProcess = spawner(claudePath, designArgs(taskMessage), {
           cwd: process.cwd(),
           signal: abortController.signal,
           stdio: ["pipe", "pipe", "pipe"],
@@ -199,7 +257,9 @@ export async function POST(request: NextRequest) {
           message: e?.message,
         });
         fail("start_failed");
-        void endGeneration("not-started").finally(close);
+        void (creativeRun ? finishCreativeRun(carouselId!, creativeRun.runId, "failed") : Promise.resolve())
+          .then(() => endGeneration("not-started"))
+          .finally(close);
         return;
       }
 
@@ -215,6 +275,9 @@ export async function POST(request: NextRequest) {
       // the session it started, which is how it is told apart from a failure
       // inside a running conversation.
       let sessionStarted = false;
+      // The Design Agent's reported cost, for the run log.
+      let designCostUsd: number | null = null;
+      const designStarted = Date.now();
       let resolvedSessionId: string | null = null;
       const noteSession = (id: unknown) => {
         if (isSessionId(id)) resolvedSessionId = id;
@@ -243,6 +306,7 @@ export async function POST(request: NextRequest) {
         }
 
         if (event.type === "result") {
+          if (typeof event.total_cost_usd === "number") designCostUsd = event.total_cost_usd;
           if (event.is_error === true) {
             // An error result is not a reply; it is reported as a failure.
             resultIsError = true;
@@ -359,6 +423,7 @@ export async function POST(request: NextRequest) {
 
         // Saved before "done", so the editor's next status check sees it.
         const outcome = outcomeFor(code);
+        if (creativeRun) await finishDesign(creativeRun, outcome);
         await endGeneration(outcome);
 
         // A session that could not be resumed is not offered again.
@@ -370,10 +435,36 @@ export async function POST(request: NextRequest) {
           outcome,
           exitCode: code,
           errorCode,
+          designDurationMs: Date.now() - designStarted,
+          designCostUsd,
         });
         send({ type: "done", sessionId: nextSessionId });
         close();
       });
+      }
+
+      /**
+       * After design: compare the slides with the plan, show and record any
+       * differences, and end the creative run. Never corrects the design.
+       */
+      async function finishDesign(creativeRun: DesignRun, outcome: RunOutcome) {
+        let deviations: string[] = [];
+        if (outcome === "completed") {
+          const after = await getCarousel(carouselId!).catch(() => null);
+          const result = checkConformance(creativeRun.plan, after?.slides ?? [], creativeRun.assets, creative?.references ?? []);
+          for (const deviation of result.deviations) {
+            console.info("[chat] plan_deviation", { carouselId, runId: creativeRun.runId, kind: deviation.kind });
+          }
+          deviations = [...result.deviations.map((d) => d.message), ...result.notes];
+          if (result.deviations.length > 0) send({ type: "deviations", items: deviations });
+        }
+        const recorded = outcome === "completed" || outcome === "stopped" || outcome === "failed" || outcome === "timed-out"
+          ? outcome
+          : "failed";
+        await finishCreativeRun(carouselId!, creativeRun.runId, recorded, deviations).catch((err) => {
+          console.error("[chat] could not record the end of a creative run", { carouselId, message: (err as Error)?.message });
+        });
+      }
     },
 
     cancel() {

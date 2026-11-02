@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
+import { stubDirector } from "./helpers/stub-director";
 
 // The Claude CLI is replaced by a stub that records its arguments, so the real
 // chat route builds and passes its system prompt without spawning anything.
@@ -59,7 +60,11 @@ async function uploadPng(): Promise<string> {
   return `/uploads/${name}`;
 }
 
+// The chat route plans first; the Visual Director is stubbed with an image-free plan.
+let director: ReturnType<typeof stubDirector>;
+
 beforeEach(async () => {
+  director = stubDirector();
   spawned.length = 0;
   originalCwd = process.cwd();
   workdir = await mkdtemp(path.join(tmpdir(), "creatorbrio-references-"));
@@ -74,6 +79,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  director.restore();
   process.chdir(originalCwd);
   await rm(workdir, { recursive: true, force: true });
 });

@@ -7,11 +7,11 @@ It is written for contributors and describes only what is merged.
 
 | Part | Status |
 |---|---|
-| Director invocation, plan schema and server-side plan validation | Implemented as a library (`src/lib/visual-director.ts`, `src/lib/director-plan.ts`); no chat request calls it yet |
-| Creative Brief: types, validation, merge rules and storage on the carousel | Implemented (`src/lib/creative-brief.ts`); written by chat requests once orchestration lands |
+| Director invocation, plan schema and server-side plan validation | Implemented (`src/lib/visual-director.ts`, `src/lib/director-plan.ts`); runs for every chat message sent from a carousel |
+| Creative Brief: types, validation, merge rules and storage on the carousel | Implemented (`src/lib/creative-brief.ts`); updated when a run goes on to design |
 | Capability table | Implemented (`src/lib/creative-capabilities.ts`) |
 | Intelligence evaluation suite | Implemented as a separate, opt-in harness (`eval/director/`) |
-| Running the Director inside a chat request, the image stage and the Design Agent handoff | Planned; tracked in issue #40 |
+| Running the Director inside a chat request, the image stage and the Design Agent handoff | Implemented; see [creative-workflow.md](creative-workflow.md) |
 | Editing uploaded images | Not available; a plan that needs it is refused with a clear message |
 
 ## Why there is a Director
@@ -41,7 +41,7 @@ The split is deliberate and enforced by the code that carries a plan out.
 | The slide count, under fixed precedence rules | |
 
 The Design Agent's system prompt is frozen and does not mention the Director.
-Once orchestration lands (issue #40), the Director's guidance will reach it only as task-specific instructions in the message for that request.
+The Director's guidance reaches it only as a delimited "Visual plan for this request" section after the user's message, built from a fixed template (`src/lib/creative-handoff.ts`).
 A test pins the Design Agent's prompt to a recorded baseline so this boundary cannot erode silently.
 
 ## How the Director reasons
@@ -78,6 +78,10 @@ The Director reads the stored brief and proposes an update; the server validates
 
 Values a revision does not mention are kept.
 Lists are bounded; when one overflows, explicit items are kept first and the oldest inferences go.
+
+The brief changes only when a run goes on to design.
+A run that stops before design, for example because an image could not be made, leaves it as it was, so a carousel with no slides never carries the intent of a request that produced nothing.
+A retry of that run applies the stored plan's update when it reaches design.
 
 The brief is server-owned: update routes never accept it from a request body.
 It belongs to one carousel, so it cannot cross to another carousel or brand.

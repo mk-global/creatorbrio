@@ -319,6 +319,8 @@ export interface CreativeRunRecord {
   retry: { plan: unknown; message: string } | null;
   /** When the retry window's data was purged. */
   purgedAt?: string;
+  /** Differences between the finished design and the visual plan, as shown to the user. */
+  deviations?: string[];
 }
 
 /**

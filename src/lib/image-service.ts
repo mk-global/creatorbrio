@@ -4,10 +4,14 @@ import path from "path";
 import sharp from "sharp";
 
 /**
- * Client for the founder-run local image service (EngineeringToolsMK
- * tools/image-service). The service runs under another account and returns PNG
- * bytes only; this module is the single place that holds its token, so the
- * token never reaches the design agent, the browser or the logs.
+ * Client for the optional local image service, a separate program that is not
+ * part of this repository. Its public contract: `POST /generate` on a loopback
+ * address with a bearer token, a JSON body of `prompt` and `aspectRatio`, and
+ * PNG bytes in reply. This module is the single place that holds the token, so
+ * it never reaches the design agent, the browser or the logs.
+ *
+ * Error messages are user-facing and state only what happened; the creative
+ * run decides what follows (a required image stops the run before design).
  */
 
 /** Aspect ratios the image service accepts, with the exact size it returns. */
@@ -84,8 +88,8 @@ export function parseImageRequest(body: unknown): ImageRequest {
   return { prompt, aspectRatio: aspectRatio as ImageAspectRatio };
 }
 
-const NOT_CONFIGURED =
-  "Image generation is not set up for this account, so continue without a generated image.";
+const NOT_CONFIGURED = "Image generation is not set up on this machine.";
+const TIMED_OUT = "Generating the image took too long and was stopped.";
 
 /** The service is reached on loopback only, or the token could leave the machine. */
 function serviceUrl(): URL {
@@ -165,6 +169,10 @@ function tooLarge() {
   return new ImageGenerationError(502, "image_generation_failed", "The image service returned an oversized response.");
 }
 
+function cancelled() {
+  return new ImageGenerationError(499, "image_generation_cancelled", "Image generation was cancelled.");
+}
+
 function failed(message = "The image service did not return a usable image.") {
   return new ImageGenerationError(502, "image_generation_failed", message);
 }
@@ -184,11 +192,11 @@ async function serviceError(response: Response): Promise<ImageGenerationError> {
 
   if (response.status === 503 && code === "busy") {
     return new ImageGenerationError(503, "image_service_busy",
-      "The image service is generating another image. Continue without a generated image.", { retryAfterSeconds });
+      "The image service is generating another image.", { retryAfterSeconds });
   }
   if (response.status === 503 && code === "admission_refused") {
     return new ImageGenerationError(503, "image_generation_refused",
-      "The image service declined to start a generation right now. Continue without a generated image.",
+      "The image service declined to start because the machine is busy with other AI work.",
       { reason, retryAfterSeconds });
   }
   if (response.status === 401) {
@@ -196,7 +204,7 @@ async function serviceError(response: Response): Promise<ImageGenerationError> {
   }
   if (response.status === 504) {
     return new ImageGenerationError(504, "image_generation_timeout",
-      "Image generation took too long and was stopped. Continue without a generated image.");
+      TIMED_OUT);
   }
   return failed();
 }
@@ -207,8 +215,9 @@ async function serviceError(response: Response): Promise<ImageGenerationError> {
  */
 export async function generateImage(
   request: ImageRequest,
-  { timeoutMs = GENERATION_TIMEOUT_MS }: { timeoutMs?: number } = {}
+  { timeoutMs = GENERATION_TIMEOUT_MS, signal }: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<GeneratedImage> {
+  if (signal?.aborted) throw cancelled();
   const url = new URL("/generate", serviceUrl());
   const token = await readToken();
 
@@ -218,16 +227,17 @@ export async function generateImage(
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: request.prompt, aspectRatio: request.aspectRatio }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
       redirect: "error",
     });
   } catch (err) {
+    if (signal?.aborted) throw cancelled();
     if ((err as Error)?.name === "TimeoutError") {
       throw new ImageGenerationError(504, "image_generation_timeout",
-        "Image generation took too long and was stopped. Continue without a generated image.");
+        TIMED_OUT);
     }
     throw new ImageGenerationError(503, "image_service_unavailable",
-      "The local image service is not running. Continue without a generated image.");
+      "The local image service is not running.");
   }
 
   if (response.status !== 200) throw await serviceError(response);
@@ -240,10 +250,11 @@ export async function generateImage(
   try {
     bytes = await readCapped(response);
   } catch (err) {
+    if (signal?.aborted) throw cancelled();
     if (err instanceof ImageGenerationError) throw err;
     if ((err as Error)?.name === "TimeoutError") {
       throw new ImageGenerationError(504, "image_generation_timeout",
-        "Image generation took too long and was stopped. Continue without a generated image.");
+        TIMED_OUT);
     }
     throw failed();
   }

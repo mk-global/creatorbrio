@@ -6,6 +6,10 @@ import path from "node:path";
 import sharp from "sharp";
 import type { BrandConfig } from "@/types/brand";
 import { readZipEntries } from "./helpers/export-files";
+import { stubDirector } from "./helpers/stub-director";
+
+// These tests cover the Design Agent run; the Visual Director is stubbed with an image-free plan.
+let director: ReturnType<typeof stubDirector>;
 
 // End to end through the real chat and export routes, real storage and a real
 // subprocess. The Claude CLI is replaced by a small script that stays running
@@ -66,6 +70,7 @@ let originalCwd: string;
 let fakeDir: string;
 
 beforeEach(async () => {
+  director = stubDirector();
   originalCwd = process.cwd();
   workdir = await mkdtemp(path.join(tmpdir(), "creatorbrio-export-readiness-"));
   await mkdir(path.join(workdir, "data"), { recursive: true });
@@ -94,6 +99,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  director.restore();
   // Never leave a stand-in CLI running, whatever the test did.
   await finishRun(0).catch(() => {});
   try {

@@ -3,6 +3,10 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { stubDirector } from "./helpers/stub-director";
+
+// These tests cover the Design Agent run; the Visual Director is stubbed with an image-free plan.
+let director: ReturnType<typeof stubDirector>;
 
 // The Claude CLI is replaced by a stub that records its arguments and exits at
 // once, so the real chat route runs end to end without spawning anything.
@@ -51,6 +55,7 @@ const ORIGINAL_BRAND: BrandConfig = {
 };
 
 beforeEach(async () => {
+  director = stubDirector();
   spawned.length = 0;
   originalCwd = process.cwd();
   workdir = await mkdtemp(path.join(tmpdir(), "creatorbrio-chat-brand-"));
@@ -60,6 +65,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  director.restore();
   process.chdir(originalCwd);
   await rm(workdir, { recursive: true, force: true });
 });

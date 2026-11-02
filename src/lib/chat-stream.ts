@@ -14,7 +14,8 @@ export type ChatErrorCode =
   | "agent_failed"
   | "timed_out"
   | "budget_exceeded"
-  | "session_not_found";
+  | "session_not_found"
+  | "run_failed";
 
 export type ChatStreamEvent =
   /** A piece of the agent's reply text, appended as it arrives. */
@@ -24,7 +25,44 @@ export type ChatStreamEvent =
   /** A failure after streaming started: a stable code and user-facing text. */
   | { type: "error"; code: ChatErrorCode; message: string }
   /** The run ended; `sessionId` is the Claude session to resume next, if any. */
-  | { type: "done"; sessionId: string | null };
+  | { type: "done"; sessionId: string | null }
+  /** The creative run entered a stage; `detail` is short progress text such as "2 of 5". */
+  | { type: "stage"; stage: ChatStage; detail?: string }
+  /**
+   * The run stopped before design. Nothing was changed. `retryRunId` is set
+   * when the user can retry this attempt from its stored plan.
+   */
+  | { type: "blocked"; code: BlockedCode; message: string; retryRunId: string | null }
+  /** The design finished with differences from the visual plan. */
+  | { type: "deviations"; items: string[] };
+
+/** The stages a creative run shows in the chat panel, in order. */
+export const CHAT_STAGES = ["reading-sources", "planning", "preparing-images", "designing"] as const;
+export type ChatStage = (typeof CHAT_STAGES)[number];
+
+export const CHAT_STAGE_LABELS: Record<ChatStage, string> = {
+  "reading-sources": "Reading linked pages",
+  planning: "Planning visuals",
+  "preparing-images": "Preparing images",
+  designing: "Creating the design",
+};
+
+/** Why a run stopped before design; the message carries the user-facing reason. */
+export const BLOCKED_CODES = [
+  "too_many_slides",
+  "too_many_sources",
+  "source_unavailable",
+  "source_required",
+  "plan_failed",
+  "capability_unavailable",
+  "image_failed",
+  "image_stage_timed_out",
+  "storage_failed",
+  "retry_refused",
+] as const;
+export type BlockedCode = (typeof BLOCKED_CODES)[number];
+const BLOCKED_CODE_SET = new Set<string>(BLOCKED_CODES);
+const STAGE_SET = new Set<string>(CHAT_STAGES);
 
 /**
  * What the user is told for each failure. Diagnostics (stderr, paths, exit
@@ -41,11 +79,19 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorCode, string> = {
     "The design agent reached its spending limit for this message and stopped. Slides it already saved are kept; ask it to continue.",
   session_not_found:
     "The previous conversation could not be resumed, so it has been reset. Send your message again to start a new conversation.",
+  run_failed: "Something went wrong before the design started. Nothing was changed; send your message again.",
 };
 
 const ERROR_CODES = new Set<string>(Object.keys(CHAT_ERROR_MESSAGES));
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Creative run IDs are UUIDs too. */
+const RUN_ID_PATTERN = SESSION_ID_PATTERN;
+
+/** Whether a value can be a creative run ID; anything else is refused before any lookup. */
+export function isRunId(value: unknown): value is string {
+  return typeof value === "string" && RUN_ID_PATTERN.test(value);
+}
 
 /** Claude session IDs are UUIDs; nothing else is stored, sent or resumed. */
 export function isSessionId(value: unknown): value is string {
@@ -71,6 +117,24 @@ function toEvent(payload: unknown): ChatStreamEvent | null {
         : null;
     case "done":
       return { type: "done", sessionId: isSessionId(p.sessionId) ? p.sessionId : null };
+    case "stage":
+      if (typeof p.stage !== "string" || !STAGE_SET.has(p.stage)) return null;
+      return typeof p.detail === "string" && p.detail
+        ? { type: "stage", stage: p.stage as ChatStage, detail: p.detail }
+        : { type: "stage", stage: p.stage as ChatStage };
+    case "blocked":
+      return typeof p.code === "string" && BLOCKED_CODE_SET.has(p.code) && typeof p.message === "string" && p.message
+        ? {
+            type: "blocked",
+            code: p.code as BlockedCode,
+            message: p.message,
+            retryRunId: typeof p.retryRunId === "string" && RUN_ID_PATTERN.test(p.retryRunId) ? p.retryRunId : null,
+          }
+        : null;
+    case "deviations":
+      return Array.isArray(p.items) && p.items.every((i) => typeof i === "string")
+        ? { type: "deviations", items: p.items as string[] }
+        : null;
     default:
       return null;
   }
@@ -150,6 +214,12 @@ export interface ChatRunState {
   /** The session the run reported in its `done` frame, if any. */
   sessionId: string | null;
   finished: boolean;
+  /** The creative stage in progress, until the run finishes. */
+  stage: { stage: ChatStage; detail?: string } | null;
+  /** Why the run stopped before design, if it did. */
+  blocked: { code: BlockedCode; message: string; retryRunId: string | null } | null;
+  /** Differences between the finished design and the visual plan. */
+  deviations: string[];
 }
 
 export const INITIAL_CHAT_RUN: ChatRunState = {
@@ -157,6 +227,9 @@ export const INITIAL_CHAT_RUN: ChatRunState = {
   error: null,
   sessionId: null,
   finished: false,
+  stage: null,
+  blocked: null,
+  deviations: [],
 };
 
 export function reduceChatRun(state: ChatRunState, event: ChatStreamEvent): ChatRunState {
@@ -169,7 +242,13 @@ export function reduceChatRun(state: ChatRunState, event: ChatStreamEvent): Chat
       // The first failure is the cause; later ones are its consequences.
       return state.error ? state : { ...state, error: { code: event.code, message: event.message } };
     case "done":
-      return { ...state, sessionId: event.sessionId, finished: true };
+      return { ...state, sessionId: event.sessionId, finished: true, stage: null };
+    case "stage":
+      return { ...state, stage: event.detail ? { stage: event.stage, detail: event.detail } : { stage: event.stage } };
+    case "blocked":
+      return state.blocked ? state : { ...state, blocked: { code: event.code, message: event.message, retryRunId: event.retryRunId } };
+    case "deviations":
+      return { ...state, deviations: [...state.deviations, ...event.items] };
   }
 }
 
