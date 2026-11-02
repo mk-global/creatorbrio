@@ -48,7 +48,9 @@ They reach the browser as `stage` events in the typed stream contract (`src/lib/
    Any page that cannot be read stops the run before planning, naming the host and the kind of failure and suggesting the user paste the text.
    Page text goes to the Director as untrusted content and is never stored; the handoff lists the pages by URL.
 2. **Planning visuals** runs the Visual Director (see [visual-director.md](visual-director.md)).
-   A ready plan's brief update is merged into the carousel's Creative Brief immediately, so a revision inherits it even if a later stage stops.
+   A ready plan's brief update is not saved at this stage: it is merged into the carousel's Creative Brief only when the run goes on to design, after its images are attached.
+   A run that stops before design leaves the brief unchanged.
+   A design that then fails, is stopped or fails to start keeps the updated brief, even if it wrote no slide.
 3. **Preparing images** runs the plan's image tasks one at a time and stages each validated image privately.
    When every required image is ready, all staged images are attached to the carousel in one all-or-nothing step.
 4. **Creating the design** runs the Design Agent exactly as before, resuming the carousel's session, with the user's message followed by a delimited "Visual plan for this request".
@@ -85,6 +87,9 @@ Failures that every later image would meet too (the service not running, not set
 A failure that belongs to one image (an unusable result, or one image taking too long) does not: the remaining images are still made, so a retry only remakes what failed.
 A required image that could not be made blocks the run once the stage ends.
 An optional image that could not be made is skipped; the handoff tells the Design Agent the alternative the Director planned, and the conformance check lists it.
+When the image service declines an image, it gives a short code for why, such as low free memory, a review running on the machine or other AI work.
+That code is kept for diagnosis only: in the "image failed" log entry and on the failed task in the run record, never in what the user reads.
+It is removed when the task runs again.
 
 ### Retry
 
@@ -121,13 +126,23 @@ The Director runs on every message, including small edits, which adds its planni
 `eval/acceptance/` is an opt-in harness that runs real requests through real CreatorBrio servers it starts on its own ports, using the public API and the real Claude CLI.
 Its scenarios cover a typography-only carousel, a generated cover, five generated images, an uploaded photo, a revision, a linked page, the image service being unavailable, cancellation during the image stage, and a server restart followed by Retry.
 For each it records the stream's stages with timings, the Director's and Design Agent's cost, the run's outcome, the conformance result and the export.
+For a run with generated images it also checks that every image task was committed with its hash, that each attached file matches that hash, that each image appears on every slide the plan assigned it to, that the running server serves each image with the same bytes, and that every exported file is a PNG at the carousel's size.
+A run that stops because one image could not be made after others were ready is retried, and the retry must reuse each ready image, with the same hash and the same file, rather than make it again.
+The cancellation and restart scenarios also record the run's state right after the stop, and both watch whether the image service goes on with an image it had already started.
+For every completed run it keeps the Director's plan summary and the carousel's Creative Brief for review.
 A bounded, read-only model judge then scores the exported slides on whether the central message, constraints, imagery, priorities, brand and text come through, and a blind pairwise judge compares selected scenarios with the Design Agent working alone.
 It never changes a design, and a test fails only when the harness itself fails.
 
 It costs real model usage and is not part of `npm test`.
-Build first, then run it with `npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts`, selecting scenarios with `EVAL_ONLY`.
-Scenarios that generate images need the local image service, and are declined, correctly, while the machine is busy with other AI work.
-Raw results go to `eval/results/`, which is not committed.
+Build first, then run it with `npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts`, selecting scenarios with `EVAL_ONLY`; `EVAL_MODE=dev` runs it against `next dev` instead of a production build.
+Scenarios that generate images need the local image service, which may decline work while the machine is low on free memory, a review is running or other AI work is running.
+Before each of them the harness asks the service's read-only health check whether it would take work, and waits for up to 10 minutes (`EVAL_ADMISSION_WAIT_MS`); a scenario the service does not admit in time is recorded as not run, before any planning cost.
+`EVAL_IMAGE_SERVICE_URL` (a loopback address, `http://127.0.0.1:8791` by default) is the service the harness asks, and the harness gives the same address to every server it starts except the one for the unavailable-service scenario, so an `IMAGE_SERVICE_URL` in `.env.local` does not apply to these runs.
+`EVAL_RESTART_SIGNAL` (`SIGKILL` by default, `SIGINT` or `SIGTERM`) sets how the restart scenario stops the server.
+`SIGKILL` is a crash, which tests restart recovery under both `next dev` and a production build.
+A graceful signal under `next dev` closes open requests, so the run is cancelled rather than cut off, and the scenario records that restart recovery was not exercised.
+A production build keeps the request open until the harness kills the process 5 seconds later.
+Raw results go to `eval/results/`, which is not committed; the service's reason codes appear only there, never in the summary.
 
 ## Typed asset lifecycle
 

@@ -38,6 +38,12 @@ export interface Scenario {
   revisionOf?: ScenarioId;
   /** Also run as Design-Agent-only and compare blind. */
   compare?: boolean;
+  /**
+   * Needs the image service to make images. The harness waits, within a
+   * bound, for the service to admit work first, and records the scenario as
+   * not run, with no planning cost, when it does not.
+   */
+  needsImages?: boolean;
 }
 
 export const SCENARIOS: Scenario[] = [
@@ -66,6 +72,7 @@ export const SCENARIOS: Scenario[] = [
     notes: "One 9:16 cover; the title is dominant and legible over or beside a photographic image whose subject relates to comfort or complacency.",
     expect: { slides: 1, generated: "some", generatedPlaced: true },
     compare: true,
+    needsImages: true,
   },
   {
     id: "S3",
@@ -78,6 +85,7 @@ export const SCENARIOS: Scenario[] = [
     constraints: ["exactly 5 slides", "each slide has its own photo of its moment of the day", "dawn to midnight"],
     notes: "Five slides in time order, each with a distinct photo matching its time of day, with short text that carries the story.",
     expect: { slides: 5, generated: 5, generatedPlaced: true },
+    needsImages: true,
   },
   {
     id: "S4",
@@ -105,6 +113,7 @@ export const SCENARIOS: Scenario[] = [
     notes: "The cover keeps the title and subject; drama comes from contrast, light, scale or crop.",
     expect: { slides: 1 },
     revisionOf: "S2",
+    needsImages: true,
   },
   {
     id: "S6",
@@ -142,6 +151,7 @@ export const SCENARIOS: Scenario[] = [
     constraints: ["exactly 5 slides", "each slide has its own photo"],
     notes: "Cancelled during the image stage: nothing may be attached or changed.",
     expect: {},
+    needsImages: true,
   },
   {
     id: "S9",
@@ -154,6 +164,7 @@ export const SCENARIOS: Scenario[] = [
     constraints: ["exactly 5 slides", "each slide has its own photo"],
     notes: "The server stops mid-way through the images; Retry must remake only the missing images and then design.",
     expect: { slides: 5, generated: 5, generatedPlaced: true },
+    needsImages: true,
   },
 ];
 

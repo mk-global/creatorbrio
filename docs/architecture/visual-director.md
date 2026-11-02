@@ -79,8 +79,9 @@ The Director reads the stored brief and proposes an update; the server validates
 Values a revision does not mention are kept.
 Lists are bounded; when one overflows, explicit items are kept first and the oldest inferences go.
 
-The brief changes only when a run goes on to design.
-A run that stops before design, for example because an image could not be made, leaves it as it was, so a carousel with no slides never carries the intent of a request that produced nothing.
+The brief changes only when a run goes on to design: it is saved after the run's images are attached, just before the Design Agent starts.
+A run that stops before design, for example because an image could not be made, leaves it unchanged.
+A design that then fails, is stopped or fails to start keeps the updated brief, even if it wrote no slide.
 A retry of that run applies the stored plan's update when it reaches design.
 
 The brief is server-owned: update routes never accept it from a request body.

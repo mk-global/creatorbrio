@@ -344,11 +344,18 @@ async function imagesThenHandoff(
         log("image staged", { carouselId, runId, key: asset.key, durationMs: Date.now() - taskStarted });
       } catch (err) {
         if (err instanceof Cancelled || signal.aborted) throw new Cancelled();
-        await setTaskState(carouselId, runId, asset.key, "failed");
+        // The service's refusal code, already bounded to a short lowercase
+        // token by the image client, makes a refusal diagnosable; never text.
+        const reason = err instanceof ImageGenerationError ? err.detail.reason : undefined;
+        await setTaskState(carouselId, runId, asset.key, "failed", { failureReason: reason });
         const code = err instanceof ImageGenerationError || err instanceof AssetError ? err.code : "unexpected";
         const serviceWide = err instanceof ImageGenerationError && SERVICE_WIDE.has(err.code);
         // Capacity and set-up are expected outcomes; an unusable image or storage failure is not.
-        log("image failed", { carouselId, runId, key: asset.key, required: asset.required, code, durationMs: Date.now() - taskStarted }, serviceWide ? "warn" : "error");
+        log(
+          "image failed",
+          { carouselId, runId, key: asset.key, required: asset.required, code, ...(reason ? { reason } : {}), durationMs: Date.now() - taskStarted },
+          serviceWide ? "warn" : "error"
+        );
         if (err instanceof AssetError) throw new Blocked("storage_failed", `${err.message} Nothing was changed.`, true);
         const why = imageFailureText(err);
         if (serviceWide && asset.required) {

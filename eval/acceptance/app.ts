@@ -40,6 +40,8 @@ export interface ChatOptions {
   abortWhen?: (event: TimedEvent) => boolean;
   /** Wait this long after `abortWhen` matched before closing. */
   abortDelayMs?: number;
+  /** Called just before the stream is closed, so the caller can mark the moment of the stop. */
+  onAbort?: () => void;
 }
 
 export class AppClient {
@@ -145,6 +147,7 @@ export class AppClient {
       if (!abortTimer && !result.aborted && options.abortWhen?.(timed)) {
         abortTimer = setTimeout(() => {
           result.aborted = true;
+          options.onAbort?.();
           controller.abort();
         }, options.abortDelayMs ?? 0);
       }
