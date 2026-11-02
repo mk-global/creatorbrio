@@ -34,6 +34,8 @@ const COMPARE = process.env.EVAL_COMPARE !== "0";
 const IMAGE_COOLDOWN_MS = Number(process.env.EVAL_IMAGE_COOLDOWN_MS ?? 120_000);
 
 const PORTS: Record<"main" | "no-images" | "own", HarnessPort> = { main: 3417, "no-images": 3418, own: 3419 };
+/** The conformance message for an optional image replaced by the plan's alternative. */
+const OPTIONAL_UNAVAILABLE = /^An optional image for slide \d+ could not be made/;
 /** An unused loopback port, so the image client sees "not running". */
 const NO_IMAGE_SERVICE_URL = "http://127.0.0.1:8799";
 
@@ -228,7 +230,12 @@ function designChecks(record: ScenarioRecord, scenario: Scenario, carousel: Caro
     check(record, "linked page read", read, read ? "reading-sources stage shown" : "no reading-sources stage");
   }
   check(record, "export", !!record.export?.ok && record.export.pngs === carousel.slides.length, record.export ? `${record.export.pngs} PNG(s)${record.export.error ? `; ${record.export.error}` : ""}` : "not exported");
-  check(record, "matches the plan", record.deviations.length === 0, record.deviations.length ? record.deviations.join(" ") : "no deviations reported");
+  // An optional image the service could not make, replaced by the plan's own
+  // alternative and reported to the user, is the designed outcome, not a miss.
+  const disclosed = record.deviations.filter((d) => OPTIONAL_UNAVAILABLE.test(d));
+  const unexpected = record.deviations.filter((d) => !OPTIONAL_UNAVAILABLE.test(d));
+  if (disclosed.length) record.observations.push(`disclosed optional-image fallbacks: ${disclosed.join(" ")}`);
+  check(record, "matches the plan", unexpected.length === 0, unexpected.length ? unexpected.join(" ") : disclosed.length ? "only disclosed optional-image fallbacks" : "no deviations reported");
 }
 
 // ---------------------------------------------------------------------------
@@ -242,8 +249,9 @@ async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
   if (scenario.revisionOf) {
     const prior = sessions.get(scenario.revisionOf);
     if (!prior) {
+      // A revision of a carousel whose first run did not complete tests something else.
       record.outcome = "skipped";
-      record.observations.push(`needs ${scenario.revisionOf} in the same run`);
+      record.observations.push(`needs ${scenario.revisionOf} to complete in the same run`);
       return;
     }
     carouselId = prior.carouselId;
@@ -256,8 +264,8 @@ async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
   const before = await app.getCarousel(carouselId);
   const logFrom = await logOffset(server.logPath);
   const last = await chat(record, app, "request", { carouselId, message: scenario.message, sessionId });
-  sessions.set(scenario.id, { carouselId, sessionId: last.sessionId });
   const carousel = await finish(record, scenario, app, server, carouselId, last, logFrom, { judge: true });
+  if (record.outcome === "completed") sessions.set(scenario.id, { carouselId, sessionId: last.sessionId });
   designChecks(record, scenario, carousel, last);
 
   if (scenario.kind === "revision") {
