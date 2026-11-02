@@ -166,8 +166,9 @@ export function checkConformance(
     for (const ref of slide.assetRefs) {
       const asset = byKey.get(ref);
       const url = asset ? assets.get(ref)?.url : refById.get(ref)?.url;
-      if (asset && !assets.get(ref)) continue; // an optional image that could not be made
-      if (asset && !asset.required) continue;
+      // An optional image that could not be made is listed below; every image
+      // that was made was handed over to be placed, required or not.
+      if (asset && !assets.get(ref)) continue;
       if (url && !htmlOf(slide.index).includes(url)) {
         const what = asset ? "the planned image" : `the uploaded image ${quoted(refById.get(ref)!.name)}`;
         deviations.push({ kind: "missing_placement", message: `Slide ${slide.index} does not show ${what}.` });

@@ -125,4 +125,14 @@ describe("checkConformance", () => {
       { kind: "optional_unavailable", message: "An optional image for slide 2 could not be made; the plan's alternative was used." },
     ]);
   });
+
+  // Found in review: an optional image that was made is handed over with
+  // "Place this image", so leaving it out is a difference from the plan.
+  it("reports an optional image that was made but not placed, and passes one that was placed", () => {
+    const optional = plan({ assets: [{ key: "a1", operation: "generate", required: false, targetSlides: [2], ifUnavailable: "Type" }] });
+    const missing = checkConformance(optional, slides(html(photo.url), "", ""), assets, refs);
+    expect(missing.deviations).toEqual([{ kind: "missing_placement", message: "Slide 2 does not show the planned image." }]);
+    const placed = checkConformance(optional, slides(html(photo.url), html(generated.url), ""), assets, refs);
+    expect(placed).toEqual({ deviations: [], notes: [] });
+  });
 });

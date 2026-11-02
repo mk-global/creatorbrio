@@ -60,7 +60,7 @@ They reach the browser as `stage` events in the typed stream contract (`src/lib/
 When the Design Agent finishes, the server compares the slides with the plan's binding parts (`checkConformance` in `src/lib/creative-handoff.ts`):
 
 - the slide count equals the plan's, unless the user asked to change it, when the new count is only reported;
-- every required image and every placed reference appears in its slide's HTML;
+- every image that was made, required or optional, and every placed reference appears in its slide's HTML;
 - no reference meant only as a style source appears in any slide;
 - optional images that could not be made are listed.
 
