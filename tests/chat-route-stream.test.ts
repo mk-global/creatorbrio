@@ -7,6 +7,7 @@ import type { BrandConfig } from "@/types/brand";
 import {
   createChatStreamParser,
   INITIAL_CHAT_RUN,
+  MAX_CHAT_MESSAGE_LENGTH,
   reduceChatRun,
   sessionAfterRun,
   type ChatStreamEvent,
@@ -315,4 +316,83 @@ describe("chat errors after streaming starts (#3)", () => {
     ]);
     expectNoDiagnostics(raw);
   });
+});
+
+/** A synthetic brief at exactly `length` UTF-16 units, never splitting a surrogate pair. */
+function briefOfLength(block: string, length: number): string {
+  let brief = "Create an 8 slides carousel from this brief.\n\n";
+  while (brief.length + block.length <= length) brief += block;
+  return brief + "x".repeat(length - brief.length);
+}
+
+const MARKDOWN_BLOCK = [
+  "## Slide \u2014 \u201cThe hook\u201d",
+  "- **Headline:** \u201cStop guessing\u201d \u2014 it\u2019s caf\u00e9-grade clarity \u2192 r\u00e9sum\u00e9 \u00a9 \u2122",
+  "- Diagram labels: `Input` \u2192 `Plan` \u2192 `Design`; \u00bd \u2264 \u00be; \u65e5\u672c\u8a9e \u0627\u0644\u0639\u0631\u0628\u064a\u0629 \u{1F680}\u{1F3A8}",
+  "> Keep the brand \"primary\" colour; use /uploads/synthetic.png & <b>no</b> raw HTML.",
+  "",
+].join("\n");
+
+describe("chat message limits (Invalid message incident)", () => {
+  it.each([
+    ["a Markdown brief with quotes, dashes, accents, emoji and other scripts", MARKDOWN_BLOCK],
+    // Three bytes of UTF-8 per code unit: the worst case the limit is derived from.
+    ["a brief entirely in a non-Latin script", "\u65e5\u672c\u8a9e\u306e\u6307\u793a\u3002"],
+  ])("delivers %s at the full limit, intact, to the Director and the Design Agent", async (_label, block) => {
+    await play("success");
+    const carousel = await createCarousel("Long brief", "4:5");
+    const message = briefOfLength(block, MAX_CHAT_MESSAGE_LENGTH);
+    expect(message.length).toBe(MAX_CHAT_MESSAGE_LENGTH);
+
+    const { events } = await readEvents(await postChat({ carouselId: carousel.id, message }));
+
+    expect(events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(director.requests[0].message).toBe(message);
+    const args = await argv();
+    const task = args[args.indexOf("-p") + 1];
+    // The whole message, then the plan: nothing truncated or re-encoded.
+    expect(task.startsWith(`${message}\n\n`)).toBe(true);
+    // Linux allows 128 KiB in one argument; the task message must fit.
+    expect(Buffer.byteLength(task, "utf8")).toBeLessThan(128 * 1024);
+  });
+
+  it("refuses a message one character over the limit with the lengths, and starts nothing", async () => {
+    await play("success");
+    const carousel = await createCarousel("Long brief", "4:5");
+    const message = briefOfLength(MARKDOWN_BLOCK, MAX_CHAT_MESSAGE_LENGTH + 1);
+
+    const res = await postChat({ carouselId: carousel.id, message });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error:
+        "This message is 32,001 characters long, and the limit is 32,000. " +
+        "Nothing was sent or changed. Shorten it by 1 character and send it again.",
+    });
+    expect(existsSync(path.join(fakeDir, "argv.json"))).toBe(false);
+    expect(director.requests).toHaveLength(0);
+    expect(isGenerating(carousel.id)).toBe(false);
+    // Traceable in the server log, without the content.
+    expect(console.info).toHaveBeenCalledWith("[chat] message refused", {
+      carouselId: carousel.id,
+      reason: "too_long",
+      length: MAX_CHAT_MESSAGE_LENGTH + 1,
+      limit: MAX_CHAT_MESSAGE_LENGTH,
+    });
+    expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain("Stop guessing");
+  });
+
+  it.each([["an empty string", ""], ["whitespace", "  \n\t "], ["a number", 42], ["nothing", undefined]])(
+    "still refuses %s as the message, and starts nothing",
+    async (_label, message) => {
+      await play("success");
+      const carousel = await createCarousel("Empty", "4:5");
+      const res = await postChat({ carouselId: carousel.id, message });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "The message is empty. Type what you want, then send it." });
+      expect(existsSync(path.join(fakeDir, "argv.json"))).toBe(false);
+      expect(isGenerating(carousel.id)).toBe(false);
+    }
+  );
 });
