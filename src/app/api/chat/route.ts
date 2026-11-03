@@ -11,9 +11,11 @@ import { dataErrorResponse } from "@/lib/api-errors";
 import { resolveAppOrigin } from "@/lib/request-origin";
 import {
   CHAT_ERROR_MESSAGES,
+  checkChatMessage,
   encodeChatEvent,
   isRunId,
   isSessionId,
+  MAX_CHAT_MESSAGE_LENGTH,
   type ChatErrorCode,
   type ChatStreamEvent,
 } from "@/lib/chat-stream";
@@ -51,7 +53,7 @@ export async function POST(request: NextRequest) {
   }
 
   let body: {
-    message?: string;
+    message?: unknown;
     sessionId?: unknown;
     carouselId?: string;
     stylePresetId?: string;
@@ -63,16 +65,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { message, sessionId, carouselId, stylePresetId, retryRunId } = body;
+  const { sessionId, carouselId, stylePresetId, retryRunId } = body;
 
-  if (
-    !message ||
-    typeof message !== "string" ||
-    !message.trim() ||
-    message.length > 10000
-  ) {
-    return NextResponse.json({ error: "Invalid message" }, { status: 400 });
+  const messageCheck = checkChatMessage(body.message);
+  if (!messageCheck.ok) {
+    // An expected refusal, logged so it can be traced; never the content.
+    console.info("[chat] message refused", {
+      carouselId: typeof carouselId === "string" ? carouselId.slice(0, 64) : null,
+      reason: messageCheck.reason,
+      length: messageCheck.length,
+      limit: MAX_CHAT_MESSAGE_LENGTH,
+    });
+    return NextResponse.json({ error: messageCheck.error }, { status: 400 });
   }
+  const { message } = messageCheck;
 
   // The session becomes a CLI argument, so only a Claude session ID is accepted;
   // anything else could be read by the CLI as an option.

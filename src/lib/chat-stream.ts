@@ -84,6 +84,46 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorCode, string> = {
 
 const ERROR_CODES = new Set<string>(Object.keys(CHAT_ERROR_MESSAGES));
 
+/**
+ * The longest chat message, as a JavaScript string length (UTF-16 code
+ * units). The route refuses anything longer and the panel's counter measures
+ * the same way, so the two always agree.
+ *
+ * Why this number: the Design Agent receives the message, followed by the
+ * visual plan, as one command-line argument, and Linux allows at most 128 KiB
+ * in a single argument. A code unit is at most 3 bytes of UTF-8, so even a
+ * message in a non-Latin script stays under 96,000 bytes and leaves room for
+ * the plan. It also fits the longest brief a carousel can use: `MAX_SLIDES`
+ * fully specified slides of about 1,500 characters each, plus overall
+ * instructions.
+ */
+export const MAX_CHAT_MESSAGE_LENGTH = 32_000;
+
+export type ChatMessageCheck =
+  | { ok: true; message: string }
+  | { ok: false; reason: "empty" | "too_long"; length: number; error: string };
+
+const count = (n: number) => n.toLocaleString("en-US");
+const characters = (n: number) => `${count(n)} ${n === 1 ? "character" : "characters"}`;
+
+/** Why a message cannot be sent, in the words the user sees; never truncates it. */
+export function checkChatMessage(message: unknown): ChatMessageCheck {
+  if (typeof message !== "string" || !message.trim()) {
+    return { ok: false, reason: "empty", length: 0, error: "The message is empty. Type what you want, then send it." };
+  }
+  if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+    return {
+      ok: false,
+      reason: "too_long",
+      length: message.length,
+      error:
+        `This message is ${characters(message.length)} long, and the limit is ${count(MAX_CHAT_MESSAGE_LENGTH)}. ` +
+        `Nothing was sent or changed. Shorten it by ${characters(message.length - MAX_CHAT_MESSAGE_LENGTH)} and send it again.`,
+    };
+  }
+  return { ok: true, message };
+}
+
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Creative run IDs are UUIDs too. */
 const RUN_ID_PATTERN = SESSION_ID_PATTERN;

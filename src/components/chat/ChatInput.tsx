@@ -3,6 +3,30 @@
 import { useState, useRef } from "react";
 import { Send, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { checkChatMessage, MAX_CHAT_MESSAGE_LENGTH } from "@/lib/chat-stream";
+import { cn } from "@/lib/utils";
+
+/** The counter appears once a draft is this close to the limit. */
+export const COUNTER_FROM = Math.floor(MAX_CHAT_MESSAGE_LENGTH * 0.8);
+
+const count = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * What the composer does with a draft: the text it would send (trimmed,
+ * measured exactly as the server measures it), whether it may be sent, and
+ * the length line to show near or over the limit (null below it).
+ */
+export function draftStatus(draft: string): { text: string; canSend: boolean; tooLong: boolean; notice: string | null } {
+  const text = draft.trim();
+  const check = checkChatMessage(text);
+  const tooLong = !check.ok && check.reason === "too_long";
+  const notice =
+    text.length < COUNTER_FROM
+      ? null
+      : `${count(text.length)} / ${count(MAX_CHAT_MESSAGE_LENGTH)} characters` +
+        (tooLong ? `. Shorten it by ${count(text.length - MAX_CHAT_MESSAGE_LENGTH)} to send it.` : "");
+  return { text, canSend: check.ok, tooLong, notice };
+}
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -25,10 +49,12 @@ export function ChatInput({ onSend, isStreaming, disabled, textareaRef: external
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = externalRef || internalRef;
 
+  const draft = draftStatus(value);
+
   const handleSubmit = () => {
-    const trimmed = value.trim();
-    if (!trimmed || isStreaming) return;
-    onSend(trimmed);
+    // A draft over the limit stays in the box, so nothing the user wrote is lost.
+    if (!draft.canSend || isStreaming) return;
+    onSend(draft.text);
     setValue("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -79,6 +105,8 @@ export function ChatInput({ onSend, isStreaming, disabled, textareaRef: external
           rows={1}
           className="flex-1 resize-none bg-muted rounded-lg px-3 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
           aria-label="Chat message input"
+          aria-invalid={draft.tooLong || undefined}
+          aria-describedby={draft.notice ? "chat-message-length" : undefined}
         />
         {isStreaming ? (
           <Button
@@ -93,13 +121,22 @@ export function ChatInput({ onSend, isStreaming, disabled, textareaRef: external
           <Button
             size="icon"
             onClick={handleSubmit}
-            disabled={!value.trim() || disabled}
+            disabled={!draft.canSend || disabled}
             aria-label="Send message"
           >
             <Send className="h-4 w-4" />
           </Button>
         )}
       </div>
+      {draft.notice && (
+        <p
+          id="chat-message-length"
+          aria-live="polite"
+          className={cn("mt-1.5 text-[11px] tabular-nums", draft.tooLong ? "text-destructive" : "text-muted-foreground")}
+        >
+          {draft.notice}
+        </p>
+      )}
     </div>
   );
 }
