@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { open } from "node:fs/promises";
 import type { BrandConfig } from "@/types/brand";
 import type { Carousel, ReferenceImage } from "@/types/carousel";
 import { MAX_SLIDES } from "@/types/carousel";
@@ -23,12 +24,16 @@ import type { BlockedCode, ChatStage } from "./chat-stream";
 import { mergeBrief } from "./creative-brief";
 import { capabilityStatus } from "./creative-capabilities";
 import { buildDesignMessage, type ResolvedImage } from "./creative-handoff";
-import { explicitCountOverLimit, imagePrompt, validatePlan, type ReadyPlan } from "./director-plan";
+import { explicitCountOverLimit, imagePrompt, validatePlan, type PlanAsset, type ReadyPlan } from "./director-plan";
 import {
   GENERATION_TIMEOUT_MS,
   ImageGenerationError,
+  MAX_IMAGE_BYTES,
+  editImage,
   generateImage,
   imageGenerationConfigured,
+  prepareEditSource,
+  type GeneratedImage,
   type ImageAspectRatio,
 } from "./image-service";
 import { findSourceLinks, retrieveSources, type SourceUnavailableReason } from "./source-retrieval";
@@ -37,8 +42,9 @@ import { directorFailureMessage, planContextFor, runDirector, type DirectorReque
 /**
  * The creative run: everything a chat message does before the Design Agent
  * starts. Linked pages are read, the Visual Director plans, the plan's images
- * are generated one at a time and attached all or nothing, and the result is
- * a task message for the Design Agent.
+ * are generated or edited one at a time and attached all or nothing, and the
+ * result is a task message for the Design Agent. An edit is never replaced by
+ * a generated image: a failed edit stops the run with its reason.
  *
  * The chat route owns the carousel's run (`beginGeneration`) and the stream;
  * this module owns the creative run record through the asset module. Every
@@ -90,6 +96,8 @@ export const creativeRunDeps = {
   runDirector: (request: DirectorRequest, options: { signal?: AbortSignal }) => runDirector(request, options),
   generateImage: (request: Parameters<typeof generateImage>[0], options: Parameters<typeof generateImage>[1]) =>
     generateImage(request, options),
+  editImage: (request: Parameters<typeof editImage>[0], options: Parameters<typeof editImage>[1]) =>
+    editImage(request, options),
 };
 
 class Blocked extends Error {
@@ -103,6 +111,61 @@ class Blocked extends Error {
   }
 }
 class Cancelled extends Error {}
+class EditSourceError extends Error {
+  readonly code = "edit_source_unavailable";
+}
+
+/**
+ * The bytes of an edit's one source, resolved by the server from its ID: an
+ * uploaded reference of this carousel (already confined, with a
+ * server-derived path) or a committed asset whose bytes still match their
+ * recorded hash. The hash is taken over the bytes that are then edited, so a
+ * file changed after planning is refused, not edited.
+ */
+async function readEditSource(input: CreativeRunInput, sourceId: string): Promise<Buffer> {
+  const reference = input.references.find((r) => r.id === sourceId);
+  if (reference) return readBounded(reference.absPath);
+  const carousel = await getCarousel(input.carousel.id);
+  const asset = carousel?.assets?.find((a) => a.id === sourceId);
+  if (!asset) throw new EditSourceError("The photo to edit is no longer part of this carousel.");
+  const bytes = await readBounded(assetFilePath(asset.id));
+  if (createHash("sha256").update(bytes).digest("hex") !== asset.sha256) {
+    throw new EditSourceError("The image to edit has changed since it was made, so it was not used.");
+  }
+  return bytes;
+}
+
+async function readBounded(file: string): Promise<Buffer> {
+  let handle;
+  try {
+    handle = await open(file, "r");
+  } catch {
+    throw new EditSourceError("The photo to edit could not be read.");
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > MAX_IMAGE_BYTES) throw new EditSourceError("The photo to edit could not be read.");
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Makes one plan image: generated from its brief, or the background of its source replaced. */
+async function makeImage(
+  input: CreativeRunInput,
+  asset: PlanAsset,
+  options: { timeoutMs: number; signal: AbortSignal }
+): Promise<GeneratedImage> {
+  if (asset.operation === "edit") {
+    const source = await prepareEditSource(await readEditSource(input, asset.sourceIds![0]), asset.aspectRatio!);
+    return creativeRunDeps.editImage(
+      { operation: "replace_background", instruction: asset.instruction!, aspectRatio: asset.aspectRatio!, source },
+      options
+    );
+  }
+  return creativeRunDeps.generateImage({ prompt: imagePrompt(asset.brief!), aspectRatio: asset.aspectRatio! }, options);
+}
 
 const SOURCE_REASONS: Partial<Record<SourceUnavailableReason, string>> = {
   timed_out: "took too long to respond",
@@ -122,9 +185,14 @@ const SERVICE_WIDE = new Set([
   "image_service_not_configured",
   "image_service_busy",
   "image_generation_refused",
+  "image_editing_unavailable",
 ]);
 
+/** Edit failures that the same source would meet again, so a retry of the stored plan cannot help. */
+const PERMANENT = new Set(["image_edit_no_subject", "image_edit_ambiguous_subject", "invalid_edit", "edit_source_unavailable"]);
+
 function imageFailureText(err: unknown): string {
+  if (err instanceof EditSourceError) return err.message;
   if (!(err instanceof ImageGenerationError)) return "The image could not be prepared.";
   const wait = err.detail.retryAfterSeconds;
   if (err.code === "image_service_busy") return `${err.message} Try again in about ${wait ?? 60} seconds.`;
@@ -301,20 +369,28 @@ async function imagesThenHandoff(
   pendingKeys?: string[]
 ): Promise<CreativeRunOutcome> {
   const carouselId = input.carousel.id;
-  const generate = plan.execution.assets.filter((a) => a.operation === "generate");
+  // Every image the run makes, generated or edited: they share the stage, the
+  // deadline, staging, the all-or-nothing attach and retry.
+  const images = plan.execution.assets.filter((a) => a.operation === "generate" || a.operation === "edit");
   if (!pendingKeys) {
     await setCreativeTasks(
       carouselId,
       runId,
-      generate.map((a) => ({ key: a.key, required: a.required, aspectRatio: a.aspectRatio as ImageAspectRatio })),
-      generate.length > 0 ? { plan, message: input.message } : undefined
+      images.map((a) => ({
+        key: a.key,
+        required: a.required,
+        aspectRatio: a.aspectRatio as ImageAspectRatio,
+        origin: a.operation === "edit" ? "edited" : "generated",
+        sourceIds: a.operation === "edit" ? [...(a.sourceIds ?? [])] : [],
+      })),
+      images.length > 0 ? { plan, message: input.message } : undefined
     );
   }
-  const pending = generate.filter((a) => (pendingKeys ? pendingKeys.includes(a.key) : true));
+  const pending = images.filter((a) => (pendingKeys ? pendingKeys.includes(a.key) : true));
   const unavailable = new Set<string>();
   // Required images that failed on their own; the stage continues past them so
   // a retry only has to remake these, and the run blocks once the stage ends.
-  const failedRequired: { slides: string; why: string }[] = [];
+  const failedRequired: { what: string; slides: string; why: string; permanent: boolean }[] = [];
 
   if (pending.length > 0) {
     events.stage("preparing-images", `0 of ${pending.length}`);
@@ -325,8 +401,9 @@ async function imagesThenHandoff(
       if (signal.aborted) throw new Cancelled();
       const remaining = deadline - Date.now();
       const slides = `slide ${asset.targetSlides.join(", ")}`;
+      const what = asset.operation === "edit" ? "The edited photo" : "The image";
       if (remaining <= 0) {
-        if (asset.required) throw new Blocked("image_stage_timed_out", `Preparing images took longer than 12 minutes, so the image for ${slides} was not made. Nothing was changed.`, true);
+        if (asset.required) throw new Blocked("image_stage_timed_out", `Preparing images took longer than 12 minutes, so ${what.toLowerCase()} for ${slides} was not made. Nothing was changed.`, true);
         await setTaskState(carouselId, runId, asset.key, "failed");
         unavailable.add(asset.key);
         continue;
@@ -335,39 +412,40 @@ async function imagesThenHandoff(
       await setTaskState(carouselId, runId, asset.key, "running");
       const taskStarted = Date.now();
       try {
-        const image = await creativeRunDeps.generateImage(
-          { prompt: imagePrompt(asset.brief!), aspectRatio: asset.aspectRatio! },
-          { timeoutMs: Math.min(GENERATION_TIMEOUT_MS, remaining), signal }
-        );
+        const image = await makeImage(input, asset, { timeoutMs: Math.min(GENERATION_TIMEOUT_MS, remaining), signal });
         if (signal.aborted) throw new Cancelled();
         await stageImage(carouselId, runId, asset.key, image);
-        log("image staged", { carouselId, runId, key: asset.key, durationMs: Date.now() - taskStarted });
+        log("image staged", { carouselId, runId, key: asset.key, operation: asset.operation, durationMs: Date.now() - taskStarted });
       } catch (err) {
         if (err instanceof Cancelled || signal.aborted) throw new Cancelled();
         // The service's refusal code, already bounded to a short lowercase
         // token by the image client, makes a refusal diagnosable; never text.
         const reason = err instanceof ImageGenerationError ? err.detail.reason : undefined;
         await setTaskState(carouselId, runId, asset.key, "failed", { failureReason: reason });
-        const code = err instanceof ImageGenerationError || err instanceof AssetError ? err.code : "unexpected";
+        const code =
+          err instanceof ImageGenerationError || err instanceof AssetError || err instanceof EditSourceError ? err.code : "unexpected";
         const serviceWide = err instanceof ImageGenerationError && SERVICE_WIDE.has(err.code);
+        // A photo without one clear person is the user's to change, not a fault.
+        const expected = serviceWide || PERMANENT.has(code);
         // Capacity and set-up are expected outcomes; an unusable image or storage failure is not.
         log(
           "image failed",
-          { carouselId, runId, key: asset.key, required: asset.required, code, ...(reason ? { reason } : {}), durationMs: Date.now() - taskStarted },
-          serviceWide ? "warn" : "error"
+          { carouselId, runId, key: asset.key, operation: asset.operation, required: asset.required, code, ...(reason ? { reason } : {}), durationMs: Date.now() - taskStarted },
+          expected ? "warn" : "error"
         );
         if (err instanceof AssetError) throw new Blocked("storage_failed", `${err.message} Nothing was changed.`, true);
         const why = imageFailureText(err);
         if (serviceWide && asset.required) {
-          throw new Blocked("image_failed", `The image for ${slides} could not be made. ${why} Nothing was changed.`, true);
+          throw new Blocked("image_failed", `${what} for ${slides} could not be made. ${why} Nothing was changed.`, true);
         }
-        if (asset.required) failedRequired.push({ slides, why });
+        if (asset.required) failedRequired.push({ what, slides, why, permanent: PERMANENT.has(code) });
         else unavailable.add(asset.key);
         // Later images would fail the same way, so the stage stops here.
         if (serviceWide) {
           for (const rest of pending.slice(i + 1)) {
             if (rest.required) {
-              throw new Blocked("image_failed", `The image for slide ${rest.targetSlides.join(", ")} could not be made. ${why} Nothing was changed.`, true);
+              const restWhat = rest.operation === "edit" ? "The edited photo" : "The image";
+              throw new Blocked("image_failed", `${restWhat} for slide ${rest.targetSlides.join(", ")} could not be made. ${why} Nothing was changed.`, true);
             }
             await setTaskState(carouselId, runId, rest.key, "failed");
             unavailable.add(rest.key);
@@ -378,17 +456,19 @@ async function imagesThenHandoff(
     }
     if (failedRequired.length > 0) {
       const which = failedRequired.map((f) => f.slides).join("; ");
+      // Retrying cannot help when the same source would be refused again.
+      const retryable = !failedRequired.some((f) => f.permanent);
       throw new Blocked(
         "image_failed",
-        `${failedRequired.length === 1 ? "The image" : `${failedRequired.length} images`} for ${which} could not be made. ${failedRequired[0].why} Nothing was changed; Retry remakes only the missing images.`,
-        true
+        `${failedRequired.length === 1 ? failedRequired[0].what : `${failedRequired.length} images`} for ${which} could not be made. ${failedRequired[0].why} Nothing was changed${retryable ? "; Retry remakes only the missing images." : "."}`,
+        retryable
       );
     }
     log("image stage finished", { carouselId, runId, images: pending.length, unavailable: unavailable.size, durationMs: Date.now() - started });
   }
 
   if (signal.aborted) throw new Cancelled();
-  if (generate.length > 0) {
+  if (images.length > 0) {
     try {
       await attachAssets(carouselId, runId);
     } catch (err) {

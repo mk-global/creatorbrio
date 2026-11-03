@@ -27,6 +27,9 @@ function capabilities(available: Partial<Record<CapabilityId, boolean>> = {}): C
     "image-generation": true,
     "asset-reuse": true,
     "image-editing": false,
+    "object-removal": false,
+    relighting: false,
+    "image-combination": false,
   };
   return CAPABILITIES.map((c) => ({ ...c, available: available[c.id] ?? defaults[c.id] }));
 }
@@ -393,9 +396,10 @@ describe("validatePlan: a plan that needs a missing capability", () => {
         {
           key: "a1",
           operation: "edit",
+          editKind: "replace-background",
           required: true,
           targetSlides: [1],
-          instruction: "Replace the office background with a night skyline",
+          instruction: "A night skyline seen from a high floor, soft and out of focus",
           sourceIds: ["ref-1"],
           aspectRatio: "9:16",
           ...patch,
@@ -422,7 +426,7 @@ describe("validatePlan: a plan that needs a missing capability", () => {
     const result = validatePlan(editPlan({ brief: brief(), ifUnavailable: "Place the original photo" }), coverCtx);
     expect(result).toMatchObject({ ok: false, unavailable: ["image-editing"] });
     const errors = result.ok ? [] : result.errors.join("\n");
-    expect(errors).toMatch(/editing uploaded images is not available yet/);
+    expect(errors).toMatch(/image editing is not available on this machine/);
     expect(errors).toMatch(/brief: does not belong to edit/);
     expect(errors).toMatch(/ifUnavailable: only an optional asset has an alternative/);
   });
@@ -454,6 +458,91 @@ describe("validatePlan: a plan that needs a missing capability", () => {
   });
 });
 
+describe("validatePlan: edits", () => {
+  const editing = (patch: Partial<PlanContext> = {}) =>
+    context({
+      message: "Use my photo for a reel cover but put me in front of a night skyline",
+      capabilities: capabilities({ "image-editing": true }),
+      ...patch,
+    });
+  const editPlan = (patch: object = {}) =>
+    withExecution({
+      slideCount: 1,
+      slideCountBasis: "single-cover",
+      slides: [{ index: 1, visualIntent: "The founder, new background", treatment: "edited", assetRefs: ["a1"], styleReferenceIds: [] }],
+      assets: [
+        {
+          key: "a1",
+          operation: "edit",
+          editKind: "replace-background",
+          required: true,
+          targetSlides: [1],
+          instruction: "A night skyline seen from a high floor, soft and out of focus",
+          sourceIds: ["ref-1"],
+          aspectRatio: "9:16",
+          ...patch,
+        } as never,
+      ],
+    });
+
+  it("accepts a background replacement of an upload or of an intact earlier asset, keeping one source", () => {
+    const fromUpload = accepted(editPlan(), editing());
+    if (fromUpload.status !== "ready") throw new Error("unreachable");
+    expect(fromUpload.execution.assets[0]).toMatchObject({ operation: "edit", editKind: "replace-background", sourceIds: ["ref-1"] });
+    accepted(editPlan({ sourceIds: ["asset-ok"] }), editing());
+  });
+
+  it.each([
+    ["remove-object", "object-removal"],
+    ["relight", "relighting"],
+    ["combine-images", "image-combination"],
+  ])("refuses a %s edit as the unavailable %s capability, never as something else", (editKind, capability) => {
+    const result = validatePlan(editPlan({ editKind }), editing());
+    expect(result).toMatchObject({ ok: false, unavailable: [capability] });
+    expect(result.ok ? "" : result.errors.join("\n")).toMatch(new RegExp(`${editKind} is not offered`));
+  });
+
+  it("names the unsupported edit, not the machine, when editing is also not set up", () => {
+    const result = validatePlan(editPlan({ editKind: "relight" }), editing({ capabilities: capabilities() }));
+    expect(result).toMatchObject({ ok: false, unavailable: ["relighting"] });
+  });
+
+  it.each([
+    ["no edit kind", { editKind: undefined }, /editKind: must be one of/],
+    ["an unknown edit kind", { editKind: "upscale" }, /editKind: must be one of/],
+    ["an optional edit", { required: false, ifUnavailable: "Place the original" }, /an edit is always required/],
+    ["two sources", { sourceIds: ["ref-1", "ref-2"] }, /exactly one reference image or intact asset/],
+    ["a source that is not of this carousel", { sourceIds: ["ref-elsewhere"] }, /exactly one reference image or intact asset/],
+    ["an asset whose file changed", { sourceIds: ["asset-bad"] }, /exactly one reference image or intact asset/],
+    ["an instruction over the limit", { instruction: "x".repeat(MAX_PROMPT_CHARS + 1) }, /instruction: must be 1 to/],
+    ["an assetId", { assetId: "asset-ok" }, /assetId: does not belong to edit/],
+  ])("refuses %s", (_name, patch, problem) => {
+    const result = validatePlan(editPlan(patch), editing());
+    expect(result.ok).toBe(false);
+    expect(result).not.toHaveProperty("unavailable");
+    expect(result.ok ? "" : result.errors.join("\n")).toMatch(problem);
+  });
+
+  it("refuses an edit kind on a generate or reuse task", () => {
+    const p = plan();
+    (p.execution.assets[0] as Record<string, unknown>).editKind = "replace-background";
+    expect(errorsOf(p).join()).toMatch(/editKind: does not belong to generate/);
+  });
+
+  it("counts edits towards the image limit", () => {
+    const slides = Array.from({ length: 6 }, (_, i) => ({
+      index: i + 1, visualIntent: "The founder", treatment: "edited", assetRefs: [`a${i + 1}`], styleReferenceIds: [] as string[],
+    }));
+    const assets = slides.map((s) => ({
+      key: `a${s.index}`, operation: "edit", editKind: "replace-background", required: true, targetSlides: [s.index],
+      instruction: "A plain studio wall", sourceIds: ["ref-1"], aspectRatio: "4:5",
+    }));
+    const p = withExecution({ slideCount: 6, slideCountBasis: "user-explicit", slides, assets: assets as never });
+    const errors = errorsOf(p, editing({ message: "Make 6 slides of me on new backgrounds" })).join();
+    expect(errors).toMatch(new RegExp(`at most ${MAX_IMAGE_TASKS} images`));
+  });
+});
+
 describe("planSummary", () => {
   it("summarises with counts only, never plan text", () => {
     const summary = planSummary(accepted(plan()));
@@ -463,6 +552,7 @@ describe("planSummary", () => {
       slideCount: 8,
       slideCountBasis: "baseline-default",
       generate: 1,
+      edit: 0,
       reuse: 0,
       required: 1,
       treatments: { generated: 1, typography: 7 },

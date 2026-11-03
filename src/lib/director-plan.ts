@@ -61,6 +61,20 @@ export interface ImageBrief {
   avoid?: string;
 }
 
+/**
+ * What an edit does. Only background replacement is performed; the other
+ * kinds exist so the Director can name an unsupported request exactly, and
+ * each refuses the plan with its own capability rather than being attempted
+ * or turned into something else.
+ */
+export type EditKind = "replace-background" | "remove-object" | "relight" | "combine-images";
+export const EDIT_KINDS: readonly EditKind[] = ["replace-background", "remove-object", "relight", "combine-images"];
+const UNSUPPORTED_EDITS: Partial<Record<EditKind, CapabilityId>> = {
+  "remove-object": "object-removal",
+  relight: "relighting",
+  "combine-images": "image-combination",
+};
+
 export interface PlanAsset {
   /** Plan-local key, `a` followed by one or two digits. */
   key: string;
@@ -69,7 +83,11 @@ export interface PlanAsset {
   targetSlides: number[];
   brief?: ImageBrief;
   aspectRatio?: ImageAspectRatio;
+  /** For `edit`: the kind of edit. */
+  editKind?: EditKind;
+  /** For `edit`: the new background only; the person is never described or changed. */
   instruction?: string;
+  /** For `edit`: exactly one reference image or intact asset of this carousel. */
   sourceIds?: string[];
   /** For `reuse`: a committed asset of this carousel. */
   assetId?: string;
@@ -192,8 +210,34 @@ export function imagePrompt(brief: ImageBrief): string {
 type Rec = Record<string, unknown>;
 const isRecord = (v: unknown): v is Rec => typeof v === "object" && v !== null && !Array.isArray(v);
 const ASSET_KEY = /^a[0-9]{1,2}$/;
-const TREATMENTS: readonly Treatment[] = ["typography", "css-visual", "uploaded-placement", "generated", "edited"];
-const BASES: readonly SlideCountBasis[] = ["user-explicit", "single-cover", "existing", "user-change", "baseline-default"];
+export const TREATMENTS: readonly Treatment[] = ["typography", "css-visual", "uploaded-placement", "generated", "edited"];
+export const SLIDE_COUNT_BASES: readonly SlideCountBasis[] = [
+  "user-explicit", "single-cover", "existing", "user-change", "baseline-default",
+];
+export const ASSET_OPERATIONS: readonly PlanAsset["operation"][] = ["generate", "edit", "reuse"];
+
+/**
+ * The fields the validator accepts on each object of a plan. The Director's
+ * structured-output schema must declare exactly these, or the model either
+ * cannot emit a field the validator needs or emits one it refuses; a test
+ * holds the two together.
+ */
+export const PLAN_FIELDS = {
+  sourceRequired: ["status", "message"],
+  ready: ["status", "strategy", "execution", "briefUpdate"],
+  strategy: [
+    "objective", "audience", "intendedResponse", "centralMessage", "contentType", "priorities",
+    "creativeDirection", "treatmentStrategy", "reasoning", "successCriteria", "assumptions",
+  ],
+  reasoning: ["decision", "why"],
+  execution: ["requestType", "slideCount", "slideCountBasis", "slides", "assets"],
+  slide: ["index", "visualIntent", "treatment", "assetRefs", "styleReferenceIds"],
+  asset: [
+    "key", "operation", "required", "targetSlides", "brief", "aspectRatio", "editKind", "instruction", "sourceIds",
+    "assetId", "ifUnavailable",
+  ],
+  brief: ["subject", "composition", "framing", "lighting", "textSafeArea", "avoid"],
+} as const satisfies Record<string, readonly string[]>;
 
 /**
  * Collects violations. They are written to the server log, so a violation
@@ -230,10 +274,7 @@ class Errors {
 function validateStrategy(input: unknown, e: Errors): PlanStrategy {
   const s = isRecord(input) ? input : {};
   if (!isRecord(input)) e.add("strategy", "must be an object");
-  e.keys(s, [
-    "objective", "audience", "intendedResponse", "centralMessage", "contentType", "priorities",
-    "creativeDirection", "treatmentStrategy", "reasoning", "successCriteria", "assumptions",
-  ], "strategy");
+  e.keys(s, PLAN_FIELDS.strategy, "strategy");
   const reasoning = Array.isArray(s.reasoning) && s.reasoning.length <= PLAN_LIMITS.listItems ? s.reasoning : null;
   if (!reasoning) e.add("strategy.reasoning", `must be a list of at most ${PLAN_LIMITS.listItems}`);
   return {
@@ -247,7 +288,7 @@ function validateStrategy(input: unknown, e: Errors): PlanStrategy {
     treatmentStrategy: e.text(s.treatmentStrategy, PLAN_LIMITS.treatmentStrategy, "strategy.treatmentStrategy"),
     reasoning: (reasoning ?? []).map((r, i) => {
       const item = isRecord(r) ? r : {};
-      e.keys(item, ["decision", "why"], `strategy.reasoning[${i}]`);
+      e.keys(item, PLAN_FIELDS.reasoning, `strategy.reasoning[${i}]`);
       return {
         decision: e.text(item.decision, PLAN_LIMITS.reasoningDecision, `strategy.reasoning[${i}].decision`),
         why: e.text(item.why, PLAN_LIMITS.reasoningWhy, `strategy.reasoning[${i}].why`),
@@ -272,7 +313,7 @@ function validateSlideCount(
     e.add("execution.slideCount", `must be a whole number from 1 to ${MAX_SLIDES}`);
     return;
   }
-  if (!BASES.includes(basis as SlideCountBasis)) {
+  if (!SLIDE_COUNT_BASES.includes(basis as SlideCountBasis)) {
     e.add("execution.slideCountBasis", "is not a known basis");
     return;
   }
@@ -311,7 +352,7 @@ function validateBrief(input: unknown, path: string, e: Errors): ImageBrief | un
     e.add(path, "must be an object");
     return undefined;
   }
-  e.keys(input, ["subject", "composition", "framing", "lighting", "textSafeArea", "avoid"], path);
+  e.keys(input, PLAN_FIELDS.brief, path);
   const brief: ImageBrief = {
     subject: e.text(input.subject, PLAN_LIMITS.briefField, `${path}.subject`),
     composition: e.text(input.composition, PLAN_LIMITS.briefField, `${path}.composition`),
@@ -337,10 +378,7 @@ function validateAssets(input: unknown, context: PlanContext, e: Errors): PlanAs
     const path = `execution.assets[${i}]`;
     const a = isRecord(raw) ? raw : {};
     if (!isRecord(raw)) e.add(path, "must be an object");
-    e.keys(a, [
-      "key", "operation", "required", "targetSlides", "brief", "aspectRatio", "instruction", "sourceIds", "assetId",
-      "ifUnavailable",
-    ], path);
+    e.keys(a, PLAN_FIELDS.asset, path);
     const key = typeof a.key === "string" ? a.key : "";
     if (!ASSET_KEY.test(key)) e.add(`${path}.key`, "must be a plan key such as a1");
     else if (keys.has(key)) e.add(`${path}.key`, "is used twice");
@@ -373,17 +411,27 @@ function validateAssets(input: unknown, context: PlanContext, e: Errors): PlanAs
         if (!(typeof a.aspectRatio === "string" && a.aspectRatio in IMAGE_DIMENSIONS)) {
           e.add(`${path}.aspectRatio`, "must be 1:1, 4:5, 9:16 or 16:9");
         } else asset.aspectRatio = a.aspectRatio as ImageAspectRatio;
-        for (const f of ["instruction", "sourceIds", "assetId"]) if (a[f] !== undefined) e.add(`${path}.${f}`, "does not belong to generate");
+        for (const f of ["editKind", "instruction", "sourceIds", "assetId"]) if (a[f] !== undefined) e.add(`${path}.${f}`, "does not belong to generate");
         break;
       case "edit": {
-        if (!isAvailable(context.capabilities, "image-editing")) {
-          e.needs("image-editing", `${path}.operation`, "editing uploaded images is not available yet");
+        const kind = a.editKind as EditKind;
+        if (!EDIT_KINDS.includes(kind)) e.add(`${path}.editKind`, `must be one of ${EDIT_KINDS.join(", ")}`);
+        else {
+          asset.editKind = kind;
+          const unsupported = UNSUPPORTED_EDITS[kind];
+          if (unsupported) e.needs(unsupported, `${path}.editKind`, `${kind} is not offered`);
+          else if (!isAvailable(context.capabilities, "image-editing")) {
+            e.needs("image-editing", `${path}.operation`, "image editing is not available on this machine");
+          }
         }
+        // An edit is never optional: a failed edit must stop the request with its
+        // reason, not fall through to an alternative the user did not ask for.
+        if (a.required !== true) e.add(`${path}.required`, "an edit is always required");
         asset.instruction = e.text(a.instruction, PLAN_LIMITS.instruction, `${path}.instruction`);
         const editable = new Set([...references, ...intact]);
-        if (!Array.isArray(a.sourceIds) || a.sourceIds.length === 0 || a.sourceIds.some((id) => !editable.has(id as string))) {
-          e.add(`${path}.sourceIds`, "must name the reference images or intact assets of this carousel to edit");
-        } else asset.sourceIds = a.sourceIds as string[];
+        if (!Array.isArray(a.sourceIds) || a.sourceIds.length !== 1 || !editable.has(a.sourceIds[0] as string)) {
+          e.add(`${path}.sourceIds`, "must name exactly one reference image or intact asset of this carousel");
+        } else asset.sourceIds = [a.sourceIds[0] as string];
         if (!(typeof a.aspectRatio === "string" && a.aspectRatio in IMAGE_DIMENSIONS)) {
           e.add(`${path}.aspectRatio`, "must be 1:1, 4:5, 9:16 or 16:9");
         } else asset.aspectRatio = a.aspectRatio as ImageAspectRatio;
@@ -394,7 +442,7 @@ function validateAssets(input: unknown, context: PlanContext, e: Errors): PlanAs
         if (typeof a.assetId !== "string" || !known.has(a.assetId)) e.add(`${path}.assetId`, "is not an asset of this carousel");
         else if (!intact.has(a.assetId)) e.add(`${path}.assetId`, "no longer matches its recorded file");
         else asset.assetId = a.assetId;
-        for (const f of ["brief", "aspectRatio", "instruction", "sourceIds"]) if (a[f] !== undefined) e.add(`${path}.${f}`, "does not belong to reuse");
+        for (const f of ["brief", "aspectRatio", "editKind", "instruction", "sourceIds"]) if (a[f] !== undefined) e.add(`${path}.${f}`, "does not belong to reuse");
         break;
       default:
         e.add(`${path}.operation`, "must be generate, edit or reuse");
@@ -421,7 +469,7 @@ function validateSlides(
     const path = `execution.slides[${i}]`;
     const s = isRecord(raw) ? raw : {};
     if (!isRecord(raw)) e.add(path, "must be an object");
-    e.keys(s, ["index", "visualIntent", "treatment", "assetRefs", "styleReferenceIds"], path);
+    e.keys(s, PLAN_FIELDS.slide, path);
     const index = s.index;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 1 || index > slideCount) {
       e.add(`${path}.index`, `must be from 1 to ${slideCount}`);
@@ -495,17 +543,17 @@ export function validatePlan(input: unknown, context: PlanContext): PlanValidati
   if (!isRecord(input)) return { ok: false, errors: ["plan: must be an object"] };
 
   if (input.status === "source-required") {
-    e.keys(input, ["status", "message"], "plan");
+    e.keys(input, PLAN_FIELDS.sourceRequired, "plan");
     const message = e.text(input.message, PLAN_LIMITS.sourceMessage, "plan.message");
     return e.list.length > 0 ? { ok: false, errors: e.list } : { ok: true, plan: { status: "source-required", message } };
   }
   if (input.status !== "ready") return { ok: false, errors: ['plan.status: must be "ready" or "source-required"'] };
 
-  e.keys(input, ["status", "strategy", "execution", "briefUpdate"], "plan");
+  e.keys(input, PLAN_FIELDS.ready, "plan");
   const strategy = validateStrategy(input.strategy, e);
   const x = isRecord(input.execution) ? input.execution : {};
   if (!isRecord(input.execution)) e.add("execution", "must be an object");
-  e.keys(x, ["requestType", "slideCount", "slideCountBasis", "slides", "assets"], "execution");
+  e.keys(x, PLAN_FIELDS.execution, "execution");
   validateSlideCount({ requestType: x.requestType, slideCount: x.slideCount, slideCountBasis: x.slideCountBasis }, context, e);
   const slideCount = typeof x.slideCount === "number" ? x.slideCount : 0;
 
@@ -552,6 +600,7 @@ export function planSummary(plan: DirectorPlan): Record<string, unknown> {
     slideCount: plan.execution.slideCount,
     slideCountBasis: plan.execution.slideCountBasis,
     generate: assets.filter((a) => a.operation === "generate").length,
+    edit: assets.filter((a) => a.operation === "edit").length,
     reuse: assets.filter((a) => a.operation === "reuse").length,
     required: assets.filter((a) => a.required).length,
     treatments: Object.fromEntries(

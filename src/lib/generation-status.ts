@@ -287,6 +287,10 @@ export interface AssetTask {
   required: boolean;
   /** The aspect ratio the plan asked for; a staged file must match it. */
   aspectRatio: string;
+  /** How the image is made. Absent on records written before edits existed; read it as generated. */
+  origin?: "generated" | "edited";
+  /** For an edit: the one reference image or asset it was made from. */
+  sourceIds?: string[];
   state: "pending" | "running" | "staged" | "failed" | "committed" | "abandoned";
   /** Set once the task's file is fully staged. */
   sha256?: string;

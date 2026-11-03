@@ -13,6 +13,7 @@ import type { CapabilityId, CapabilityStatus } from "./creative-capabilities";
 import { DIRECTOR_INSTRUCTIONS } from "./director-instructions";
 import {
   BASELINE_DEFAULT_SLIDES,
+  EDIT_KINDS,
   MAX_IMAGE_TASKS,
   explicitSlideCounts,
   mentionsCover,
@@ -97,9 +98,21 @@ export const DIRECTOR_FAILURE_MESSAGES: Record<DirectorFailureCode, string> = {
 };
 
 /** Why a plan that needs a missing capability was refused, per capability. */
+/**
+ * One statement of what photo editing cannot do, used for every unsupported
+ * edit. The Director may fold several unsupported requests into one refused
+ * edit ("remove my watch and relight me" as a single object removal), so each
+ * refusal states the whole limit rather than only the kind it was labelled.
+ */
+const UNSUPPORTED_EDIT_MESSAGE =
+  "Only the background of a photo can be replaced. Removing things from a photo, changing the light on a person and putting a person into another photo are not available, because they changed the person or what they were holding. Nothing was changed; you can use the photo as it is, or ask for a new background that suits its light.";
+
 export const UNAVAILABLE_CAPABILITY_MESSAGES: Partial<Record<CapabilityId, string>> = {
   "image-editing":
-    "This request needs one of your uploaded images edited, and editing uploaded images is not available yet. Nothing was changed; you can ask for a design that uses the image as it is.",
+    "This request needs one of your photos edited, and image editing is not set up on this machine. Nothing was changed; you can ask for a design that uses the photo as it is.",
+  "object-removal": UNSUPPORTED_EDIT_MESSAGE,
+  relighting: UNSUPPORTED_EDIT_MESSAGE,
+  "image-combination": UNSUPPORTED_EDIT_MESSAGE,
   "image-generation":
     "This request needs a newly generated image, and image generation is not set up on this machine. Nothing was changed; you can ask for a design without generated images.",
 };
@@ -108,7 +121,7 @@ export const UNAVAILABLE_CAPABILITY_MESSAGES: Partial<Record<CapabilityId, strin
 export function directorFailureMessage(code: DirectorFailureCode, unavailable: readonly CapabilityId[] = []): string {
   if (code === "capability_unavailable") {
     const reasons = unavailable.map((c) => UNAVAILABLE_CAPABILITY_MESSAGES[c]).filter((m): m is string => !!m);
-    if (reasons.length > 0) return reasons.join(" ");
+    if (reasons.length > 0) return [...new Set(reasons)].join(" ");
   }
   return DIRECTOR_FAILURE_MESSAGES[code];
 }
@@ -258,8 +271,13 @@ export const DIRECTOR_PLAN_SCHEMA = {
               },
             },
             aspectRatio: { type: "string", enum: ["1:1", "4:5", "9:16", "16:9"], description: 'Only for "generate" and "edit".' },
-            instruction: { ...text(2000), description: 'Only for "edit".' },
-            sourceIds: { ...list(5, { type: "string" }), description: 'Only for "edit".' },
+            editKind: {
+              type: "string",
+              enum: [...EDIT_KINDS],
+              description: 'Only for "edit". "replace-background" is the only edit performed; the others name a request that is refused.',
+            },
+            instruction: { ...text(2000), description: 'Only for "edit": the new background only, never the person.' },
+            sourceIds: { ...list(1, { type: "string" }), description: 'Only for "edit": exactly one reference image or earlier asset ID.' },
             assetId: { type: "string", description: 'Only for "reuse".' },
             ifUnavailable: {
               ...text(200),
@@ -363,11 +381,14 @@ export function buildDirectorInput(
         : "None."
     ),
     block(
-      "Earlier generated assets of this carousel",
+      "Earlier images of this carousel (generated or edited assets)",
       request.assets.filter((a) => a.intact).length > 0
         ? request.assets
             .filter((a) => a.intact)
-            .map(({ asset }) => `- ID ${asset.id}: ${asset.origin}, ${asset.width}x${asset.height}, file ./${files.assets.get(asset.id)}`)
+            .map(({ asset }) => {
+              const from = asset.origin === "edited" && asset.sourceIds.length > 0 ? ` from ${asset.sourceIds.join(", ")}` : "";
+              return `- ID ${asset.id}: ${asset.origin}${from}, ${asset.width}x${asset.height}, file ./${files.assets.get(asset.id)}`;
+            })
             .join("\n")
         : "None."
     ),

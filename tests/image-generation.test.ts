@@ -10,8 +10,10 @@ import {
   IMAGE_DIMENSIONS,
   ImageGenerationError,
   MAX_IMAGE_BYTES,
+  editImage,
   generateImage,
   parseImageRequest,
+  prepareEditSource,
   type GeneratedImage,
   type ImageAspectRatio,
 } from "@/lib/image-service";
@@ -299,6 +301,116 @@ describe("image client: generateImage", () => {
     handler = replyPng(await png(1024, 1280));
     await generate({ prompt: "quiet harbour\n\tempty sky", aspectRatio: "4:5", seed: 7, model: "x" });
     expect(Object.keys(JSON.parse(received[0].body))).toEqual(["prompt", "aspectRatio"]);
+  });
+});
+
+describe("image client: editImage", () => {
+  const source = (aspectRatio: ImageAspectRatio) => {
+    const { width, height } = IMAGE_DIMENSIONS[aspectRatio];
+    return sharp({ create: { width, height, channels: 3, background: { r: 200, g: 120, b: 90 } } }).png().toBuffer();
+  };
+  const edit = async (aspectRatio: ImageAspectRatio = "4:5", instruction = "quiet harbour wall behind the person") =>
+    editImage({ operation: "replace_background", instruction, aspectRatio, source: await source(aspectRatio) });
+  const editRefusal = async (...args: Parameters<typeof edit>) => {
+    try {
+      await edit(...args);
+    } catch (err) {
+      if (err instanceof ImageGenerationError) return err;
+      throw err;
+    }
+    throw new Error("expected the edit to be refused");
+  };
+
+  it.each(Object.entries(IMAGE_DIMENSIONS))("posts one %s edit with exactly the contract's fields", async (aspectRatio, { width, height }) => {
+    handler = replyPng(await png(width, height));
+    const result = await edit(aspectRatio as ImageAspectRatio);
+    expect(result).toEqual({ png: expect.any(Buffer), width, height });
+    expect(received).toHaveLength(1);
+    expect(received[0].headers.authorization).toBe(`Bearer ${TOKEN}`);
+    const body = JSON.parse(received[0].body);
+    expect(Object.keys(body).sort()).toEqual(["aspectRatio", "image", "instruction", "operation"]);
+    expect(body).toMatchObject({ operation: "replace_background", aspectRatio, instruction: "quiet harbour wall behind the person" });
+    expect(Buffer.from(body.image, "base64")).toEqual(await source(aspectRatio as ImageAspectRatio));
+    // Metadata is stripped from what comes back, as for a generated image.
+    expect((await sharp(result.png).metadata()).exif).toBeUndefined();
+    expect(await uploads()).toEqual([]);
+  });
+
+  it.each([
+    [422, "subject_not_found", "image_edit_no_subject", /one person is clearly visible/],
+    [422, "subject_ambiguous", "image_edit_ambiguous_subject", /one main person/],
+    [503, "editing_unavailable", "image_editing_unavailable", /not set up on the image service/],
+    [404, "not_found", "image_editing_unavailable", /not set up on the image service/],
+    [504, "edit_timeout", "image_edit_timeout", /took too long/],
+    [500, "edit_misaligned", "image_edit_failed", /discarded to keep them exactly as photographed/],
+    [500, "edit_failed", "image_edit_failed", /could not edit the photo/],
+  ])("maps a %i %s from the service to %s", async (status, error, code, message) => {
+    handler = replyError(status, error, "x");
+    const err = await editRefusal();
+    expect(err.code).toBe(code);
+    expect(err.message).toMatch(message);
+  });
+
+  it("shares generation's busy and admission refusals", async () => {
+    handler = replyError(503, "busy", "Another generation is running", { "Retry-After": "15" });
+    expect(await editRefusal()).toMatchObject({ code: "image_service_busy", detail: { retryAfterSeconds: 15 } });
+    handler = replyError(503, "admission_refused", "insufficient_free_memory", { "Retry-After": "30" });
+    expect(await editRefusal()).toMatchObject({ code: "image_generation_refused", detail: { reason: "insufficient_free_memory" } });
+  });
+
+  it("refuses before any request an unknown operation, a bad instruction or a source of the wrong size", async () => {
+    handler = replyPng(await png(1024, 1280));
+    const good = await source("4:5");
+    const cases = [
+      { operation: "remove_object" as never, instruction: "x", aspectRatio: "4:5" as const, source: good },
+      { operation: "replace_background" as const, instruction: "  ", aspectRatio: "4:5" as const, source: good },
+      { operation: "replace_background" as const, instruction: "a\u0000b", aspectRatio: "4:5" as const, source: good },
+      { operation: "replace_background" as const, instruction: "x", aspectRatio: "1:1" as const, source: good },
+      { operation: "replace_background" as const, instruction: "x", aspectRatio: "4:5" as const, source: Buffer.from("not an image") },
+    ];
+    for (const request of cases) {
+      await expect(editImage(request)).rejects.toMatchObject({ code: "invalid_edit" });
+    }
+    expect(received).toEqual([]);
+  });
+
+  it("refuses a returned image of the wrong size", async () => {
+    handler = replyPng(await png(1024, 1024));
+    expect((await editRefusal("4:5")).message).toMatch(/wrong size/);
+  });
+});
+
+describe("prepareEditSource", () => {
+  it.each(Object.entries(IMAGE_DIMENSIONS))("crops a photo of another shape to the exact %s size without stretching", async (aspectRatio, { width, height }) => {
+    // A 3:4 photo with a distinct block where a person would be.
+    const photo = await sharp({ create: { width: 810, height: 1080, channels: 4, background: { r: 240, g: 240, b: 240, alpha: 0 } } })
+      .composite([{ input: await sharp({ create: { width: 300, height: 600, channels: 3, background: { r: 20, g: 40, b: 200 } } }).png().toBuffer(), left: 255, top: 300 }])
+      .png()
+      .toBuffer();
+    const prepared = await prepareEditSource(photo, aspectRatio as ImageAspectRatio);
+    const meta = await sharp(prepared).metadata();
+    expect([meta.format, meta.width, meta.height, meta.hasAlpha]).toEqual(["png", width, height, false]);
+  });
+
+  it("stands a photo with an EXIF rotation upright", async () => {
+    // Upright: red top half, blue bottom half. Stored sideways with orientation 6, as a phone does.
+    const half = (r: number, b: number) => sharp({ create: { width: 300, height: 200, channels: 3, background: { r, g: 0, b } } }).png().toBuffer();
+    const portrait = await sharp({ create: { width: 300, height: 400, channels: 3, background: "#000000" } })
+      .composite([{ input: await half(255, 0), left: 0, top: 0 }, { input: await half(0, 255), left: 0, top: 200 }])
+      .png()
+      .toBuffer();
+    const stored = await sharp(await sharp(portrait).rotate(-90).png().toBuffer()).withMetadata({ orientation: 6 }).jpeg().toBuffer();
+    const prepared = await prepareEditSource(stored, "4:5");
+    const { data, info } = await sharp(prepared).raw().toBuffer({ resolveWithObject: true });
+    const at = (x: number, y: number) => [...data.subarray((y * info.width + x) * info.channels, (y * info.width + x) * info.channels + 3)];
+    expect(at(512, 40)[0]).toBeGreaterThan(200);
+    expect(at(512, 40)[2]).toBeLessThan(60);
+    expect(at(512, 1240)[2]).toBeGreaterThan(200);
+    expect(at(512, 1240)[0]).toBeLessThan(60);
+  });
+
+  it("refuses bytes that are not an image", async () => {
+    await expect(prepareEditSource(Buffer.from("nope"), "1:1")).rejects.toMatchObject({ code: "invalid_edit" });
   });
 });
 
