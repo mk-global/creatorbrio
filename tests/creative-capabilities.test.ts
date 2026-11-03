@@ -17,6 +17,9 @@ describe("the capability table", () => {
       "image-generation",
       "asset-reuse",
       "image-editing",
+      "object-removal",
+      "relighting",
+      "image-combination",
     ]);
     for (const c of CAPABILITIES) {
       for (const field of ["does", "usefulWhen", "needs", "produces", "constraints", "failureModes"] as const) {
@@ -47,12 +50,25 @@ describe("capabilityStatus", () => {
     });
   });
 
-  it("always offers composition and never editing", async () => {
+  it("always offers composition and never an edit that would change the photo or the person", async () => {
     for (const generation of [true, false]) {
       const status = await capabilityStatus({ referenceCount: 3, intactAssetCount: 3 }, async () => generation);
       expect(isAvailable(status, "design-composition")).toBe(true);
-      expect(isAvailable(status, "image-editing")).toBe(false);
+      for (const id of ["object-removal", "relighting", "image-combination"] as const) {
+        expect(isAvailable(status, id), id).toBe(false);
+      }
     }
+  });
+
+  it("offers background replacement exactly when the image service is set up, as background replacement only", async () => {
+    expect((await byId({ referenceCount: 1, intactAssetCount: 0 }, true))["image-editing"].available).toBe(true);
+    expect((await byId({ referenceCount: 1, intactAssetCount: 0 }, false))["image-editing"]).toMatchObject({
+      available: false,
+      unavailableReason: expect.stringMatching(/not set up/),
+    });
+    const editing = CAPABILITIES.find((c) => c.id === "image-editing")!;
+    expect(editing.constraints).toMatch(/Background replacement only/);
+    expect(editing.failureModes).toMatch(/never replaced by a generated image/);
   });
 });
 

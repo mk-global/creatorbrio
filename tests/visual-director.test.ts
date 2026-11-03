@@ -19,6 +19,7 @@ vi.mock("@/lib/claude-path", () => ({
 
 const {
   DIRECTOR_BUDGET_USD,
+  DIRECTOR_PLAN_SCHEMA,
   DIRECTOR_TOOLS,
   buildDirectorInput,
   directorArgs,
@@ -26,6 +27,8 @@ const {
   runDirector,
 } = await import("@/lib/visual-director");
 const { capabilityStatus } = await import("@/lib/creative-capabilities");
+const { ASSET_OPERATIONS, EDIT_KINDS, PLAN_FIELDS, SLIDE_COUNT_BASES, TREATMENTS } = await import("@/lib/director-plan");
+const { IMAGE_DIMENSIONS } = await import("@/lib/image-service");
 const { EMPTY_BRIEF_UPDATE } = await import("@/lib/creative-brief");
 
 const FAKE_CLAUDE = `#!/usr/bin/env node
@@ -207,6 +210,38 @@ afterEach(async () => {
   await rm(workdir, { recursive: true, force: true });
 });
 
+describe("DIRECTOR_PLAN_SCHEMA", () => {
+  // The schema steers the model and the validator decides. If they disagree on
+  // a field, the model either cannot emit what the validator requires or emits
+  // what it refuses, and every such plan fails in a real run.
+  type Node = { properties?: Record<string, Node>; items?: Node; enum?: readonly unknown[] };
+  const schema = DIRECTOR_PLAN_SCHEMA as unknown as Node;
+  const props = (node: Node | undefined) => Object.keys(node?.properties ?? {}).sort();
+  const execution = schema.properties!.execution;
+  const asset = execution.properties!.assets.items!;
+  const slide = execution.properties!.slides.items!;
+  const strategy = schema.properties!.strategy;
+
+  it("declares exactly the fields the validator accepts, at every level", () => {
+    const sorted = (fields: readonly string[]) => [...fields].sort();
+    expect(props(schema)).toEqual(sorted([...PLAN_FIELDS.ready, ...PLAN_FIELDS.sourceRequired].filter((f, i, all) => all.indexOf(f) === i)));
+    expect(props(strategy)).toEqual(sorted(PLAN_FIELDS.strategy));
+    expect(props(strategy.properties!.reasoning.items)).toEqual(sorted(PLAN_FIELDS.reasoning));
+    expect(props(execution)).toEqual(sorted(PLAN_FIELDS.execution));
+    expect(props(slide)).toEqual(sorted(PLAN_FIELDS.slide));
+    expect(props(asset)).toEqual(sorted(PLAN_FIELDS.asset));
+    expect(props(asset.properties!.brief)).toEqual(sorted(PLAN_FIELDS.brief));
+  });
+
+  it("offers exactly the values the validator accepts", () => {
+    expect(asset.properties!.operation.enum).toEqual([...ASSET_OPERATIONS]);
+    expect(asset.properties!.editKind.enum).toEqual([...EDIT_KINDS]);
+    expect(asset.properties!.aspectRatio.enum).toEqual(Object.keys(IMAGE_DIMENSIONS));
+    expect(slide.properties!.treatment.enum).toEqual([...TREATMENTS]);
+    expect(execution.properties!.slideCountBasis.enum).toEqual([...SLIDE_COUNT_BASES]);
+  });
+});
+
 describe("runDirector", () => {
   it("returns the validated plan with its usage", async () => {
     await play("plan");
@@ -330,17 +365,17 @@ describe("runDirector", () => {
     expect(logged).not.toMatch(/Lisbon|ref-of-another-carousel/);
   });
 
-  it("refuses a plan that needs editing and tells the user editing is not available yet", async () => {
+  it("refuses a plan that needs an unsupported edit and tells the user what is possible instead", async () => {
     const edit = coverPlan();
-    edit.execution.slides[0] = { index: 1, visualIntent: "Founder, new background", treatment: "edited", assetRefs: ["a1"], styleReferenceIds: [] };
+    edit.execution.slides[0] = { index: 1, visualIntent: "Founder, without the mug", treatment: "edited", assetRefs: ["a1"], styleReferenceIds: [] };
     edit.execution.assets = [
-      { key: "a1", operation: "edit", required: true, targetSlides: [1], instruction: "Replace the background with a night skyline", sourceIds: [reference.id], aspectRatio: "9:16" },
+      { key: "a1", operation: "edit", editKind: "remove-object", required: true, targetSlides: [1], instruction: "Remove the mug", sourceIds: [reference.id], aspectRatio: "9:16" },
     ] as never;
     await play("plan", edit);
     const result = await runDirector(await request());
-    expect(result).toMatchObject({ ok: false, code: "capability_unavailable", unavailable: ["image-editing"] });
+    expect(result).toMatchObject({ ok: false, code: "capability_unavailable", unavailable: ["object-removal"] });
     if (result.ok) throw new Error("unreachable");
-    expect(directorFailureMessage(result.code, result.unavailable)).toMatch(/editing uploaded images is not available yet/);
+    expect(directorFailureMessage(result.code, result.unavailable)).toMatch(/Only the background of a photo can be replaced\. Removing things.*ask for a new background/);
     expect(console.warn).not.toHaveBeenCalled();
   });
 
@@ -428,5 +463,18 @@ describe("directorFailureMessage", () => {
     expect(directorFailureMessage("capability_unavailable", ["image-generation"])).toMatch(/not set up on this machine/);
     expect(directorFailureMessage("capability_unavailable", [])).toMatch(/cannot do yet/);
     expect(directorFailureMessage("timed_out")).toMatch(/took too long/);
+  });
+
+  it("states every editing limit once, whichever unsupported edit was flagged", () => {
+    // "Remove my watch and relight me" can arrive as a single object removal.
+    for (const flagged of [["object-removal"], ["relighting"], ["image-combination"]] as const) {
+      const message = directorFailureMessage("capability_unavailable", flagged);
+      expect(message).toMatch(/Removing things from a photo/);
+      expect(message).toMatch(/changing the light on a person/);
+      expect(message).toMatch(/putting a person into another photo/);
+    }
+    const both = directorFailureMessage("capability_unavailable", ["object-removal", "relighting", "image-generation"]);
+    expect(both.match(/Only the background of a photo can be replaced/g)).toHaveLength(1);
+    expect(both).toMatch(/image generation is not set up/);
   });
 });

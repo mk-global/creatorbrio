@@ -7,8 +7,11 @@ import sharp from "sharp";
  * Client for the optional local image service, a separate program that is not
  * part of this repository. Its public contract: `POST /generate` on a loopback
  * address with a bearer token, a JSON body of `prompt` and `aspectRatio`, and
- * PNG bytes in reply. This module is the single place that holds the token, so
- * it never reaches the design agent, the browser or the logs.
+ * PNG bytes in reply; and, from service 1.1.0, `POST /edit`, which replaces
+ * the background behind the one person in a photograph and returns every
+ * opaque pixel of that person unchanged. This module is the single place that
+ * holds the token, so it never reaches the design agent, the browser or the
+ * logs.
  *
  * Error messages are user-facing and state only what happened; the creative
  * run decides what follows (a required image stops the run before design).
@@ -29,6 +32,11 @@ export const MAX_PROMPT_CHARS = 2000;
 export const GENERATION_TIMEOUT_MS = 150_000;
 /** A 1536x864 PNG from the service is a few MiB; anything past this is wrong. */
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+/** The service's own limit on a decoded source PNG for `/edit`. */
+export const MAX_EDIT_SOURCE_BYTES = 8 * 1024 * 1024;
+/** The only edit the service performs; anything else is refused before a request is made. */
+export const EDIT_OPERATIONS = ["replace_background"] as const;
+export type EditOperation = (typeof EDIT_OPERATIONS)[number];
 
 const DEFAULT_SERVICE_URL = "http://127.0.0.1:8791";
 // The service allows newline and tab; carriage return is refused here too.
@@ -51,6 +59,15 @@ export class ImageGenerationError extends Error {
 export interface ImageRequest {
   prompt: string;
   aspectRatio: ImageAspectRatio;
+}
+
+export interface EditRequest {
+  operation: EditOperation;
+  /** What the new background should be; the service decides everything about the person. */
+  instruction: string;
+  aspectRatio: ImageAspectRatio;
+  /** The source, already prepared with `prepareEditSource` for this aspect ratio. */
+  source: Buffer;
 }
 
 /**
@@ -90,6 +107,7 @@ export function parseImageRequest(body: unknown): ImageRequest {
 
 const NOT_CONFIGURED = "Image generation is not set up on this machine.";
 const TIMED_OUT = "Generating the image took too long and was stopped.";
+const EDIT_TIMED_OUT = "Editing the image took too long and was stopped.";
 
 /** The service is reached on loopback only, or the token could leave the machine. */
 function serviceUrl(): URL {
@@ -177,7 +195,7 @@ function failed(message = "The image service did not return a usable image.") {
   return new ImageGenerationError(502, "image_generation_failed", message);
 }
 
-async function serviceError(response: Response): Promise<ImageGenerationError> {
+async function serviceError(response: Response, kind: "generate" | "edit"): Promise<ImageGenerationError> {
   let code = "";
   let reason: string | undefined;
   try {
@@ -202,6 +220,7 @@ async function serviceError(response: Response): Promise<ImageGenerationError> {
   if (response.status === 401) {
     return new ImageGenerationError(503, "image_service_not_configured", NOT_CONFIGURED);
   }
+  if (kind === "edit") return editError(response.status, code);
   if (response.status === 504) {
     return new ImageGenerationError(504, "image_generation_timeout",
       TIMED_OUT);
@@ -210,15 +229,112 @@ async function serviceError(response: Response): Promise<ImageGenerationError> {
 }
 
 /**
+ * The service's editing refusals, each with what the user can do about it.
+ * A photo without one clear person is the user's to change; a service that
+ * predates editing (404) or has it turned off cannot edit any image.
+ */
+function editError(status: number, code: string): ImageGenerationError {
+  if (status === 422 && code === "subject_not_found") {
+    return new ImageGenerationError(422, "image_edit_no_subject",
+      "No person could be found clearly enough in the photo to keep them exactly as they are. Use a photo where one person is clearly visible.");
+  }
+  if (status === 422 && code === "subject_ambiguous") {
+    return new ImageGenerationError(422, "image_edit_ambiguous_subject",
+      "The photo shows more than one person of similar size, so it is not clear whose background to replace. Use a photo with one main person.");
+  }
+  if (status === 404 || (status === 503 && code === "editing_unavailable")) {
+    return new ImageGenerationError(503, "image_editing_unavailable", "Editing photos is not set up on the image service.");
+  }
+  if (status === 504) return new ImageGenerationError(504, "image_edit_timeout", EDIT_TIMED_OUT);
+  if (status === 500 && code === "edit_misaligned") {
+    return new ImageGenerationError(502, "image_edit_failed",
+      "The edit moved the person, so it was discarded to keep them exactly as photographed.");
+  }
+  return new ImageGenerationError(502, "image_edit_failed", "The image service could not edit the photo.");
+}
+
+/**
  * Asks the image service for one image and returns it once validated.
  * Never returns bytes that did not pass every check; writes nothing.
  */
 export async function generateImage(
   request: ImageRequest,
-  { timeoutMs = GENERATION_TIMEOUT_MS, signal }: { timeoutMs?: number; signal?: AbortSignal } = {}
+  options: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<GeneratedImage> {
+  return requestImage("generate", { prompt: request.prompt, aspectRatio: request.aspectRatio }, request.aspectRatio, options);
+}
+
+/**
+ * Asks the image service to replace the background of a prepared source and
+ * returns the result once validated, under the same checks as a generated
+ * image. Never falls back to generation: every refusal is an error.
+ */
+export async function editImage(
+  request: EditRequest,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<GeneratedImage> {
+  const instruction = request.instruction.trim();
+  if (!(EDIT_OPERATIONS as readonly string[]).includes(request.operation)) {
+    throw new ImageGenerationError(400, "invalid_edit", "That kind of edit is not supported.");
+  }
+  if (!instruction || instruction.length > MAX_PROMPT_CHARS || CONTROL_CHARS.test(instruction)) {
+    throw new ImageGenerationError(400, "invalid_edit", "The edit instruction is not usable.");
+  }
+  const expected = IMAGE_DIMENSIONS[request.aspectRatio];
+  if (request.source.length > MAX_EDIT_SOURCE_BYTES || !(await isPngOfSize(request.source, expected))) {
+    throw new ImageGenerationError(400, "invalid_edit", "The photo could not be prepared for editing.");
+  }
+  return requestImage(
+    "edit",
+    { operation: request.operation, instruction, aspectRatio: request.aspectRatio, image: request.source.toString("base64") },
+    request.aspectRatio,
+    options
+  );
+}
+
+/**
+ * Prepares a stored image as an edit source for an aspect ratio: upright,
+ * sRGB, opaque, and cropped to the preset's exact size around its most
+ * salient region (normally the person), never stretched. The service does
+ * not resize, because a frame of another shape makes its model re-render and
+ * distort the person.
+ */
+export async function prepareEditSource(bytes: Buffer, aspectRatio: ImageAspectRatio): Promise<Buffer> {
+  const { width, height } = IMAGE_DIMENSIONS[aspectRatio];
+  try {
+    return await sharp(bytes)
+      .rotate()
+      .flatten({ background: "#ffffff" })
+      .resize(width, height, { fit: "cover", position: sharp.strategy.attention })
+      .toColorspace("srgb")
+      .png()
+      .toBuffer();
+  } catch {
+    throw new ImageGenerationError(400, "invalid_edit", "The photo could not be prepared for editing.");
+  }
+}
+
+async function isPngOfSize(bytes: Buffer, expected: { width: number; height: number }): Promise<boolean> {
+  try {
+    const meta = await sharp(bytes).metadata();
+    return meta.format === "png" && meta.width === expected.width && meta.height === expected.height;
+  } catch {
+    return false;
+  }
+}
+
+async function requestImage(
+  kind: "generate" | "edit",
+  body: Record<string, string>,
+  aspectRatio: ImageAspectRatio,
+  { timeoutMs = GENERATION_TIMEOUT_MS, signal }: { timeoutMs?: number; signal?: AbortSignal }
+): Promise<GeneratedImage> {
+  const timedOut = () =>
+    kind === "edit"
+      ? new ImageGenerationError(504, "image_edit_timeout", EDIT_TIMED_OUT)
+      : new ImageGenerationError(504, "image_generation_timeout", TIMED_OUT);
   if (signal?.aborted) throw cancelled();
-  const url = new URL("/generate", serviceUrl());
+  const url = new URL(`/${kind}`, serviceUrl());
   const token = await readToken();
 
   let response: Response;
@@ -226,21 +342,18 @@ export async function generateImage(
     response = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: request.prompt, aspectRatio: request.aspectRatio }),
+      body: JSON.stringify(body),
       signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
       redirect: "error",
     });
   } catch (err) {
     if (signal?.aborted) throw cancelled();
-    if ((err as Error)?.name === "TimeoutError") {
-      throw new ImageGenerationError(504, "image_generation_timeout",
-        TIMED_OUT);
-    }
+    if ((err as Error)?.name === "TimeoutError") throw timedOut();
     throw new ImageGenerationError(503, "image_service_unavailable",
       "The local image service is not running.");
   }
 
-  if (response.status !== 200) throw await serviceError(response);
+  if (response.status !== 200) throw await serviceError(response, kind);
   if (!(response.headers.get("content-type") ?? "").startsWith("image/png")) {
     await response.body?.cancel();
     throw failed();
@@ -252,17 +365,14 @@ export async function generateImage(
   } catch (err) {
     if (signal?.aborted) throw cancelled();
     if (err instanceof ImageGenerationError) throw err;
-    if ((err as Error)?.name === "TimeoutError") {
-      throw new ImageGenerationError(504, "image_generation_timeout",
-        TIMED_OUT);
-    }
+    if ((err as Error)?.name === "TimeoutError") throw timedOut();
     throw failed();
   }
 
   // Re-encoding decodes every pixel, so a truncated or corrupt file is refused
   // here rather than in the preview or the export. PNG is lossless, so this only
   // drops embedded metadata, as the upload route does; the size is unchanged.
-  const expected = IMAGE_DIMENSIONS[request.aspectRatio];
+  const expected = IMAGE_DIMENSIONS[aspectRatio];
   let png: Buffer;
   try {
     // sharp's default refuses any decoding warning, the strictest setting.

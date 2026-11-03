@@ -198,6 +198,15 @@ export function isCreativeRunLive(runId: string): boolean {
   return processState().live.has(runId);
 }
 
+/** A task as the plan defines it: generated unless it names an origin, and an edit names its one source. */
+export interface TaskSpec {
+  key: string;
+  required: boolean;
+  aspectRatio: ImageAspectRatio;
+  origin?: "generated" | "edited";
+  sourceIds?: string[];
+}
+
 /**
  * Records a new creative run for a carousel, replacing its previous record,
  * whose staging the next sweep removes. The caller holds the carousel's
@@ -206,7 +215,7 @@ export function isCreativeRunLive(runId: string): boolean {
 export async function beginCreativeRun(
   carouselId: string,
   runId: string,
-  tasks: { key: string; required: boolean; aspectRatio: ImageAspectRatio }[] = []
+  tasks: TaskSpec[] = []
 ): Promise<void> {
   requireIds(runId, tasks.map((t) => t.key));
   processState().live.add(runId);
@@ -251,7 +260,7 @@ function taskOf(record: CreativeRunRecord, key: string): AssetTask {
 export async function setCreativeTasks(
   carouselId: string,
   runId: string,
-  tasks: { key: string; required: boolean; aspectRatio: ImageAspectRatio }[],
+  tasks: TaskSpec[],
   retry?: { plan: unknown; message: string }
 ): Promise<void> {
   requireIds(runId, tasks.map((t) => t.key));
@@ -382,8 +391,10 @@ function assetRecord(runId: string, task: AssetTask, item: AttachItem, createdAt
   return {
     id: item.assetId,
     url: `/uploads/${item.assetId}.png`,
-    origin: "generated",
-    sourceIds: [],
+    // Carried by the task from the validated plan, so an attach finished by
+    // recovery records the same origin and source as one finished in-process.
+    origin: task.origin ?? "generated",
+    sourceIds: task.origin === "edited" ? [...(task.sourceIds ?? [])] : [],
     width: task.width ?? 0,
     height: task.height ?? 0,
     sha256: item.sha256,

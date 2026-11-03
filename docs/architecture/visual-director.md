@@ -12,7 +12,7 @@ It is written for contributors and describes only what is merged.
 | Capability table | Implemented (`src/lib/creative-capabilities.ts`) |
 | Intelligence evaluation suite | Implemented as a separate, opt-in harness (`eval/director/`) |
 | Running the Director inside a chat request, the image stage and the Design Agent handoff | Implemented; see [creative-workflow.md](creative-workflow.md) |
-| Editing uploaded images | Not available; a plan that needs it is refused with a clear message |
+| Editing the user's photo | Background replacement only; other edits are refused with a message that names them |
 
 ## Why there is a Director
 
@@ -22,7 +22,7 @@ What it does not do on its own is step back and ask what the content is for befo
 Left alone, it either uses no imagery or treats imagery as decoration.
 
 The Visual Director answers that earlier question.
-It reads the request, the brand, the carousel's history and the user's images, and decides which treatment will communicate best: typography alone, designed CSS visuals, the user's own images, or a newly generated image.
+It reads the request, the brand, the carousel's history and the user's images, and decides which treatment will communicate best: typography alone, designed CSS visuals, the user's own images as they are, the user's own photo with a new background, or a newly generated image.
 It is a creative director, not an image router.
 A plan with no images at all is often its best answer.
 
@@ -100,8 +100,9 @@ Each row says what the capability does, when it is useful, what it needs, what i
 | Placing an uploaded reference image on a slide | The carousel has reference images |
 | Following an uploaded reference image as a style source | The carousel has reference images |
 | Generating a new image | Image generation is set up on this machine |
-| Reusing an image this carousel generated earlier | The carousel has an intact earlier asset |
-| Editing an uploaded image | Not available yet |
+| Reusing an image this carousel generated or edited earlier | The carousel has an intact earlier asset |
+| Replacing the background of the user's photo, keeping the person unchanged | Image generation is set up on this machine |
+| Removing objects, relighting, combining two images | Never: listed so the Director can name the request, which is refused |
 
 Availability is computed from local facts only, without a network call, so the same carousel always gets the same description.
 Whether the image service is actually running is discovered only when an image is requested.
@@ -124,7 +125,11 @@ Plan asset keys must look like `a1`, and every placed image must be a plan asset
 No model-provided path, URL, command or file name is ever used.
 There is no partial acceptance and no repair: a plan is used whole or refused.
 
-A plan that needs a capability the machine lacks, for example editing the user's photograph, is refused with a message naming that capability, rather than silently replaced by something else.
+A plan that needs a capability the machine lacks or that is not offered, for example removing an object from the user's photograph, is refused with a message naming that capability and what is possible instead, rather than silently replaced by something else.
+An unsupported edit is answered with the whole editing limit (only the background can be replaced; removing things, relighting and combining photos are not offered), because one request often mixes several kinds and the plan may label only one of them.
+
+An edit task names its kind (`replace-background`, or one of the unoffered `remove-object`, `relight` and `combine-images`), exactly one source (a reference image or intact asset of this carousel), an instruction that describes only the new background, an aspect ratio and the slides that place it, and is always required.
+For the user's own photo the Director decides between placing it as it is, editing its background, following it only as a style source, or leaving it out, and it never generates an image of a person as a stand-in for the user.
 A plan that is malformed in any other way is refused with a generic message, and its violations go to the server log only.
 
 When a request depends on a page or document the Director was not given, such as "summarize my latest post" with no text or link, it returns `source-required` and asks the user to paste the text or share a public link.

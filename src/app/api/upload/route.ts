@@ -107,8 +107,11 @@ export async function POST(request: Request) {
       });
     }
 
-    // Process image through Sharp: strip EXIF, enforce sRGB, max 1080px, convert to PNG
+    // Process image through Sharp: stand it upright from its EXIF orientation
+    // before EXIF is stripped (a phone portrait is often stored sideways with a
+    // rotation tag), enforce sRGB, max 1080px, convert to PNG
     const processed = await sharp(Buffer.from(arrayBuffer))
+      .rotate()
       .resize(1080, 1080, { fit: "inside", withoutEnlargement: true })
       .toColorspace("srgb")
       .png()

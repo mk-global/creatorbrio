@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -100,6 +101,9 @@ const original = { ...creativeRunDeps };
 /** The image requests the run made, and how each one answers. */
 let imageCalls: { prompt: string; aspectRatio: ImageAspectRatio }[] = [];
 let imageScript: ((call: number, signal?: AbortSignal) => Promise<"ok" | Error>) | null = null;
+/** The edit requests the run made (the prepared source's size, never its pixels), and how each answers. */
+let editCalls: { instruction: string; aspectRatio: ImageAspectRatio; operation: string; source: { width?: number; height?: number; format?: string } }[] = [];
+let editScript: ((call: number, signal?: AbortSignal) => Promise<"ok" | Error>) | null = null;
 
 async function png(aspectRatio: ImageAspectRatio, seed = 1) {
   const { width, height } = IMAGE_DIMENSIONS[aspectRatio];
@@ -128,6 +132,17 @@ beforeEach(async () => {
     const answer = imageScript ? await imageScript(imageCalls.length, options?.signal) : "ok";
     if (answer instanceof Error) throw answer;
     const bytes = await png(request.aspectRatio, imageCalls.length);
+    return { png: bytes, ...IMAGE_DIMENSIONS[request.aspectRatio] };
+  };
+  editCalls = [];
+  editScript = null;
+  creativeRunDeps.editImage = async (request, options) => {
+    const meta = await sharp(request.source).metadata();
+    editCalls.push({ instruction: request.instruction, aspectRatio: request.aspectRatio, operation: request.operation,
+      source: { width: meta.width, height: meta.height, format: meta.format } });
+    const answer = editScript ? await editScript(editCalls.length, options?.signal) : "ok";
+    if (answer instanceof Error) throw answer;
+    const bytes = await png(request.aspectRatio, 100 + editCalls.length);
     return { png: bytes, ...IMAGE_DIMENSIONS[request.aspectRatio] };
   };
   creativeRunDeps.retrieveSources = async () => ({ status: "none" });
@@ -218,6 +233,32 @@ const brief = {
   lighting: "Single desk lamp",
   textSafeArea: "Upper half kept dark",
 };
+
+/** A one-slide reel cover that places the user's photo with its background replaced. */
+function editPlan(request: DirectorRequest, sourceId: string, patch: Record<string, unknown> = {}) {
+  const base = typographyPlanFor(request);
+  return {
+    ...base,
+    strategy,
+    execution: {
+      ...base.execution,
+      slides: base.execution.slides.map((s) => (s.index === 1 ? { ...s, treatment: "edited", assetRefs: ["a1"] } : s)),
+      assets: [
+        {
+          key: "a1",
+          operation: "edit",
+          editKind: "replace-background",
+          required: true,
+          targetSlides: [1],
+          instruction: "A plain warm studio wall, softly lit from the left",
+          sourceIds: [sourceId],
+          aspectRatio: "9:16",
+          ...patch,
+        },
+      ],
+    },
+  };
+}
 
 /** A plan with one generated image per listed slide, typography elsewhere. */
 function imagePlan(request: DirectorRequest, imageSlides: number[], opts: { required?: boolean; aspectRatio?: ImageAspectRatio } = {}) {
@@ -394,26 +435,18 @@ describe("a creative run through the chat route", () => {
     expect(director.requests).toHaveLength(0);
   });
 
-  it("tells the user editing is not available when the plan needs it", async () => {
+  it("tells the user an unsupported edit is not available and makes no image", async () => {
     const carousel = await newCarousel("9:16");
     const photo = await addReference(carousel.id, "founder-photo.png");
     director.restore();
-    director = stubDirector((r) => {
-      const base = typographyPlanFor(r);
-      base.execution.slides[0] = { ...base.execution.slides[0], treatment: "edited", assetRefs: ["a1"] };
-      return {
-        ...base,
-        execution: {
-          ...base.execution,
-          assets: [{ key: "a1", operation: "edit", required: true, targetSlides: [1], instruction: "New background", sourceIds: [photo.id], aspectRatio: "9:16" }],
-        },
-      };
-    });
-    const { events } = await send({ carouselId: carousel.id, message: "Use my photo on a reel cover with a new background" });
+    director = stubDirector((r) => editPlan(r, photo.id, { editKind: "relight" }));
+    const { events } = await send({ carouselId: carousel.id, message: "Use my photo on a reel cover with warmer light on me" });
     expect(of(events, "blocked")[0]).toMatchObject({
       code: "capability_unavailable",
-      message: expect.stringContaining("editing uploaded images is not available yet"),
+      message: expect.stringContaining("changing the light on a person"),
     });
+    expect(editCalls).toEqual([]);
+    expect(imageCalls).toEqual([]);
     expect(await designSpawned()).toBe(false);
   });
 
@@ -480,6 +513,151 @@ describe("a creative run through the chat route", () => {
     expect(after?.assets ?? []).toEqual([]);
     expect(await readdir(path.join(workdir, "public", "uploads"))).toEqual([]);
     expect((await readCreativeRuns())[carousel.id].ended?.outcome).toBe("blocked");
+  });
+});
+
+describe("editing the user's photo", () => {
+  it("replaces the background of an uploaded photo, attaches it as an edited asset and places it", async () => {
+    const carousel = await newCarousel("9:16");
+    const photo = await addReference(carousel.id, "founder-photo.png");
+    const original = await readFile(path.join(workdir, "public", "uploads", `${photo.id}.png`));
+    director.restore();
+    director = stubDirector((r) => editPlan(r, photo.id));
+    const { events } = await send({ carouselId: carousel.id, message: "Use my photo for a reel cover in front of a warm studio wall" });
+
+    expect(stages(events)).toEqual(["planning", "preparing-images", "preparing-images", "designing"]);
+    // Edited, never generated; the source is the stored photo cropped to the exact preset size.
+    expect(imageCalls).toEqual([]);
+    expect(editCalls).toEqual([{
+      operation: "replace_background",
+      instruction: "A plain warm studio wall, softly lit from the left",
+      aspectRatio: "9:16",
+      source: { width: 864, height: 1536, format: "png" },
+    }]);
+    const after = await getCarousel(carousel.id);
+    expect(after?.assets).toHaveLength(1);
+    const asset = after!.assets![0];
+    expect(asset).toMatchObject({ origin: "edited", sourceIds: [photo.id], width: 864, height: 1536 });
+    expect(sha(await readFile(path.join(workdir, "public", "uploads", `${asset.id}.png`)))).toBe(asset.sha256);
+    // The original upload is untouched and still a reference.
+    expect(await readFile(path.join(workdir, "public", "uploads", `${photo.id}.png`))).toEqual(original);
+    expect(after?.referenceImages.map((r) => r.id)).toEqual([photo.id]);
+    expect(after?.slides[0].html).toContain(asset.url);
+    expect(after?.slides[0].html).not.toContain(photo.url);
+    expect(of(events, "deviations")).toEqual([]);
+
+    const task = await taskMessage();
+    expect(task).toContain(`Place this image: ${asset.url}`);
+    expect(task).toContain("founder-photo.png");
+    expect(task).toMatch(/background replaced/);
+    expect((await readCreativeRuns())[carousel.id].tasks[0]).toMatchObject({ state: "committed", origin: "edited", sourceIds: [photo.id] });
+  });
+
+  it("edits an earlier image of the carousel, refusing one whose file changed since it was made", async () => {
+    const carousel = await newCarousel("9:16");
+    const id = randomUUID();
+    const bytes = await png("9:16", 7);
+    await writeFile(path.join(workdir, "public", "uploads", `${id}.png`), bytes);
+    await appendCarouselAssets(carousel.id, [{
+      id, url: `/uploads/${id}.png`, origin: "generated", sourceIds: [], width: 864, height: 1536,
+      sha256: sha(bytes), runId: randomUUID(), createdAt: new Date().toISOString(),
+    }]);
+    director.restore();
+    director = stubDirector((r) => editPlan(r, id));
+    await send({ carouselId: carousel.id, message: "Same cover, but a plain white background" });
+    const edited = (await getCarousel(carousel.id))!.assets!.find((a) => a.origin === "edited");
+    expect(edited).toMatchObject({ sourceIds: [id] });
+
+    // The file changes after the Director planned with it: the bytes read are refused, not edited.
+    const second = await newCarousel("9:16");
+    const id2 = randomUUID();
+    const bytes2 = await png("9:16", 8);
+    await writeFile(path.join(workdir, "public", "uploads", `${id2}.png`), bytes2);
+    await appendCarouselAssets(second.id, [{
+      id: id2, url: `/uploads/${id2}.png`, origin: "generated", sourceIds: [], width: 864, height: 1536,
+      sha256: sha(bytes2), runId: randomUUID(), createdAt: new Date().toISOString(),
+    }]);
+    director.restore();
+    const changed = await png("9:16", 9);
+    director = stubDirector((r) => {
+      writeFileSync(path.join(workdir, "public", "uploads", `${id2}.png`), changed);
+      return editPlan(r, id2);
+    });
+    editCalls = [];
+    const { events } = await send({ carouselId: second.id, message: "Same cover, but a plain white background" });
+    expect(of(events, "blocked")[0]).toMatchObject({
+      code: "image_failed",
+      message: expect.stringContaining("has changed since it was made"),
+      retryRunId: null,
+    });
+    expect(editCalls).toEqual([]);
+  });
+
+  it("stops before design with an actionable reason when the photo has no clear person, and offers no retry", async () => {
+    const carousel = await newCarousel("9:16");
+    const photo = await addReference(carousel.id, "landscape.png");
+    director.restore();
+    director = stubDirector((r) => editPlan(r, photo.id));
+    editScript = async () => new ImageGenerationError(422, "image_edit_no_subject",
+      "No person could be found clearly enough in the photo to keep them exactly as they are. Use a photo where one person is clearly visible.");
+    const { events } = await send({ carouselId: carousel.id, message: "Put me in front of a studio wall" });
+    const blocked = of(events, "blocked")[0];
+    expect(blocked).toMatchObject({
+      code: "image_failed",
+      message: expect.stringMatching(/^The edited photo for slide 1 could not be made\. No person .* Use a photo where one person is clearly visible\. Nothing was changed\.$/),
+      retryRunId: null,
+    });
+    // Never a generated stand-in.
+    expect(imageCalls).toEqual([]);
+    expect(await designSpawned()).toBe(false);
+    expect((await getCarousel(carousel.id))?.assets ?? []).toEqual([]);
+  });
+
+  it("blocks with a retry when editing is unavailable on the service, and the retry edits and attaches", async () => {
+    const carousel = await newCarousel("9:16");
+    const photo = await addReference(carousel.id, "founder-photo.png");
+    director.restore();
+    director = stubDirector((r) => editPlan(r, photo.id));
+    editScript = async () => new ImageGenerationError(503, "image_editing_unavailable", "Editing photos is not set up on the image service.");
+    const first = await send({ carouselId: carousel.id, message: "Put me in front of a studio wall" });
+    const blocked = of(first.events, "blocked")[0];
+    expect(blocked).toMatchObject({ code: "image_failed", message: expect.stringContaining("Editing photos is not set up"), retryRunId: expect.any(String) });
+    expect(imageCalls).toEqual([]);
+
+    editScript = null;
+    editCalls = [];
+    await send({ carouselId: carousel.id, message: "Retry", retryRunId: blocked.retryRunId });
+    expect(editCalls).toHaveLength(1);
+    expect(director.requests).toHaveLength(1);
+    expect((await getCarousel(carousel.id))?.assets).toMatchObject([{ origin: "edited", sourceIds: [photo.id] }]);
+  });
+
+  it("is stopped by cancellation during the edit, attaching nothing", async () => {
+    const carousel = await newCarousel("9:16");
+    const photo = await addReference(carousel.id, "founder-photo.png");
+    director.restore();
+    director = stubDirector((r) => editPlan(r, photo.id));
+    const controller = new AbortController();
+    editScript = async () => {
+      controller.abort();
+      return new ImageGenerationError(499, "image_generation_cancelled", "Image generation was cancelled.");
+    };
+    const res = await chat(
+      new Request("http://localhost:3000/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", host: "localhost:3000" },
+        body: JSON.stringify({ carouselId: carousel.id, message: "Put me in front of a studio wall" }),
+      }) as never
+    );
+    const reader = res.body!.getReader();
+    controller.signal.addEventListener("abort", () => void reader.cancel());
+    while (!(await reader.read().catch(() => ({ done: true }))).done) {
+      // Drain until the client goes away.
+    }
+    await vi.waitFor(() => expect(isGenerating(carousel.id)).toBe(false), { timeout: 5000 });
+    expect(await designSpawned()).toBe(false);
+    expect((await getCarousel(carousel.id))?.assets ?? []).toEqual([]);
+    expect((await readCreativeRuns())[carousel.id].ended?.outcome).toBe("stopped");
   });
 });
 

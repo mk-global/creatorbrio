@@ -454,6 +454,36 @@ describe("assets: fault injection with recovery", () => {
     }
   );
 
+  // An edit's origin and source travel on its task, so the record is right
+  // whichever process finishes the attach: this one, or recovery after a crash.
+  it.each([["attach:linked", 2], ["attach:records", 1], ["attach:committed", 1], ["attach:cleaned", 1]] as const)(
+    "records an edited asset with its origin and source after a crash at %s (#%i) and recovery",
+    async (step, occurrence) => {
+      const { carouselId, untouchable } = await world();
+      const referenceId = (await getCarousel(carouselId))!.referenceImages[0].id;
+      const runId = randomUUID();
+      await beginCreativeRun(carouselId, runId, [
+        { key: "a1", required: true, aspectRatio: "1:1" },
+        { key: "a2", required: true, aspectRatio: "1:1", origin: "edited", sourceIds: [referenceId] },
+      ]);
+      await stageImage(carouselId, runId, "a1", await png(31));
+      await stageImage(carouselId, runId, "a2", await png(32));
+      faultAt(step, "crash", occurrence);
+      await attachAssets(carouselId, runId).catch((e) => e);
+      setAssetFaultHookForTests(null);
+      simulateRestartForTests();
+      await ensureAssetsRecovered();
+      const { mine, record } = await assertInvariants(carouselId, runId, untouchable, 2);
+      const byTask = new Map(record.tasks.map((t) => [t.key, t.assetId]));
+      if (mine.length === 0) {
+        expect(record.tasks.every((t) => t.state === "staged")).toBe(true);
+        return;
+      }
+      expect(mine.find((a) => a.id === byTask.get("a1"))).toMatchObject({ origin: "generated", sourceIds: [] });
+      expect(mine.find((a) => a.id === byTask.get("a2"))).toMatchObject({ origin: "edited", sourceIds: [referenceId] });
+    }
+  );
+
   it.each(
     (["recover:linked", "recover:records", "recover:committed", "rollback:records", "rollback:file"] as const).map(
       (s) => [s] as const

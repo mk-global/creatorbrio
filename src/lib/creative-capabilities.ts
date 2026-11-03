@@ -19,7 +19,10 @@ export type CapabilityId =
   | "reference-style"
   | "image-generation"
   | "asset-reuse"
-  | "image-editing";
+  | "image-editing"
+  | "object-removal"
+  | "relighting"
+  | "image-combination";
 
 export interface Capability {
   id: CapabilityId;
@@ -93,12 +96,45 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     id: "image-editing",
-    does: "Edits an uploaded image according to an instruction.",
-    usefulWhen: "The user asks to change their own image, for example a new background behind their photograph.",
-    needs: "An uploaded reference image and an instruction.",
-    produces: "An edited copy, leaving the original unchanged.",
-    constraints: "Not available yet.",
-    failureModes: "A plan that requires it is refused, and the user is told editing is not available yet.",
+    does:
+      "Replaces the background behind the one person in a photograph, keeping every pixel of that person exactly as photographed. The source is an uploaded photo of this carousel or an earlier image of it.",
+    usefulWhen:
+      "The user wants their own photo, unchanged, in a different setting: a clean studio wall, a calmer room, a branded colour, an outdoor scene.",
+    needs:
+      "Exactly one source (an uploaded reference image or an intact asset of this carousel, by ID), a description of the new background only, and an aspect ratio (1:1, 4:5, 9:16 or 16:9).",
+    produces:
+      "One edited copy, attached as a carousel asset that records its source; the original is never changed.",
+    constraints:
+      "Background replacement only. The person is never changed: not their face, expression, hair, skin, clothing, pose or lighting, and they cannot be made to look better. The photo needs one clearly visible main person. The person keeps the light they were photographed in, so describe a background whose light plausibly matches it. The source is cropped to the aspect ratio around the person, and edits count towards the 5 images per request.",
+    failureModes:
+      "No clear person, or several people of similar size: the request stops before design and the user is asked for another photo. Busy, declined, not running or not set up: it stops the request before design, like a required generated image. An edit is never replaced by a generated image.",
+  },
+  {
+    id: "object-removal",
+    does: "Removes an object or a person from a photograph.",
+    usefulWhen: "The user asks to take something out of their photo.",
+    needs: "Nothing can make it available; it is not offered.",
+    produces: "Nothing: a plan that needs it is refused before any image is made.",
+    constraints: "Not offered: it changed the rest of the photo unpredictably, including what the person was holding.",
+    failureModes: "A plan that needs it is refused, and the user is told what is possible instead.",
+  },
+  {
+    id: "relighting",
+    does: "Changes the lighting on the person in a photograph.",
+    usefulWhen: "The user asks for different light, colour or mood on themselves.",
+    needs: "Nothing can make it available; it is not offered.",
+    produces: "Nothing: a plan that needs it is refused before any image is made.",
+    constraints: "Not offered: relighting regenerated the person and changed their face.",
+    failureModes: "A plan that needs it is refused, and the user is told what is possible instead.",
+  },
+  {
+    id: "image-combination",
+    does: "Combines two images, for example placing the person from one photo into another photo.",
+    usefulWhen: "The user asks to put themselves into a specific other picture.",
+    needs: "Nothing can make it available; it is not offered.",
+    produces: "Nothing: a plan that needs it is refused before any image is made.",
+    constraints: "Not offered: combining images regenerated the person and changed their face and gaze.",
+    failureModes: "A plan that needs it is refused, and the user is told what is possible instead.",
   },
 ];
 
@@ -133,7 +169,15 @@ export async function capabilityStatus(
           ? { ...capability, available: true }
           : { ...capability, available: false, unavailableReason: "Image generation is not set up on this machine." };
       case "image-editing":
-        return { ...capability, available: false, unavailableReason: "Editing uploaded images is not available yet." };
+        // The same local condition as generation: the service is set up for this
+        // account. A service without editing is discovered when an edit is made.
+        return generation
+          ? { ...capability, available: true }
+          : { ...capability, available: false, unavailableReason: "Image editing is not set up on this machine." };
+      case "object-removal":
+      case "relighting":
+      case "image-combination":
+        return { ...capability, available: false, unavailableReason: "Not offered: it would change the photograph or the person." };
       default:
         return { ...capability, available: true };
     }

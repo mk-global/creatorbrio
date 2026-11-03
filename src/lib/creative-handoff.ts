@@ -68,7 +68,15 @@ export function buildHandoff({ plan, assets, references, sources }: HandoffInput
       const asset = byKey.get(ref);
       if (asset) {
         const image = assets.get(ref);
-        if (image) lines.push(`  Place this image: ${image.url} (view it with Read at ${image.absPath})`);
+        if (image) {
+          lines.push(`  Place this image: ${image.url} (view it with Read at ${image.absPath})`);
+          const source = asset.operation === "edit" ? refById.get(asset.sourceIds?.[0] ?? "") : undefined;
+          if (asset.operation === "edit") {
+            lines.push(
+              `  It is ${source ? `the uploaded image ${quoted(source.name)}` : "an earlier image"} with its background replaced and the person unchanged; it replaces that image on this slide, so do not also place the original.`
+            );
+          }
+        }
         else lines.push(`  Its image could not be made. Instead: ${asset.ifUnavailable ?? "design the slide without it"}`);
         continue;
       }
@@ -85,6 +93,8 @@ export function buildHandoff({ plan, assets, references, sources }: HandoffInput
 
   if (references.length > 0) {
     lines.push("", "Uploaded reference images:");
+    const editedOn = (id: string) =>
+      x.assets.filter((a) => a.operation === "edit" && a.sourceIds?.[0] === id).flatMap((a) => a.targetSlides);
     for (const r of references) {
       const placedOn = x.slides.filter((sl) => sl.assetRefs.includes(r.id)).map((sl) => sl.index);
       const styleOn = x.slides.filter((sl) => sl.styleReferenceIds.includes(r.id)).map((sl) => sl.index);
@@ -93,7 +103,9 @@ export function buildHandoff({ plan, assets, references, sources }: HandoffInput
           ? `placed as content on slide ${placedOn.join(", ")}${styleOn.length > 0 ? `; a style source on slide ${styleOn.join(", ")}` : ""}`
           : styleOn.length > 0
             ? `a style source only, on slide ${styleOn.join(", ")}; do not place it on any slide`
-            : "not used in this plan; do not place it on any slide";
+            : editedOn(r.id).length > 0
+              ? `edited, with its background replaced, for slide ${editedOn(r.id).join(", ")}; place only the edited image, never this original`
+              : "not used in this plan; do not place it on any slide";
       lines.push(`- ${quoted(r.name)} (${r.url}): ${role}.`);
     }
   }

@@ -66,13 +66,15 @@ Retry is a button, and it only remakes what is missing.
 Why: a quietly different result is harder to notice and fix than a clear stop.
 Automatic retries against a busy local machine make contention worse.
 
-## Editing is gated
+## Editing keeps the person exactly as photographed
 
-Editing an uploaded image is listed as a capability but is not available.
-A request that genuinely needs it stops with "editing uploaded images is not available yet" rather than producing something else.
+The only edit is background replacement: the person's opaque pixels are returned unchanged, and only the background and a narrow band at their outline come from the image model.
+Object removal, relighting and combining two images are listed as capabilities that are not offered, so a request that needs one stops with a message saying what is possible instead.
 
-Why: the image service has no editing operation yet, and whether editing can preserve a person's likeness well enough has not been shown.
-Listing the capability lets the Director recognise the need honestly, and adding it later is the documented three-step extension.
+Why: when the whole photograph was regenerated, the person's face, expression and skin changed even when the request did not touch them, and a person's likeness is not something to approximate.
+Keeping the person's pixels is necessary but not sufficient, so the remaining limit, that the person keeps their original light, is described to the Director and to users rather than hidden by regenerating the person.
+An edit is always required and never falls back to a generated image, for the same reason as every other silent substitution.
+Adding another kind of edit is the documented extension (a capability row, an `editKind` the validator accepts and the image service performs, and the executor), plus its own quality criteria.
 
 ## Local JSON storage stays
 

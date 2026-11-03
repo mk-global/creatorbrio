@@ -9,9 +9,9 @@ It is written for contributors and describes only what is merged.
 |---|---|
 | Design Agent chat runs, run lifecycle and export gating | Implemented |
 | Creative run: linked pages, Visual Director, image stage, handoff and conformance check | Implemented; runs for every chat message sent from a carousel |
-| Typed generated assets: staging, attach, recovery, retry integrity and expiry | Implemented and used by the image stage |
+| Typed assets (generated and edited): staging, attach, recovery, retry integrity and expiry | Implemented and used by the image stage |
 | Image generation | Implemented as a client of an optional local image service that is not part of this repository; without it, plans use no generated images |
-| Editing uploaded images | Not available; a request that needs it stops with a clear message |
+| Editing the user's photo | Background replacement only, through the same image service; the person is kept exactly as photographed. Object removal, relighting and combining images are not offered, and a request that needs one stops with a clear message |
 
 ## From request to export
 
@@ -25,7 +25,7 @@ flowchart TD
     L -- no --> P
     S -- all readable --> P[Planning visuals: Visual Director]
     S -- any unreadable --> B[Blocked]
-    P -- ready plan --> I{Images to generate?}
+    P -- ready plan --> I{Images to generate or edit?}
     P -- source required, invalid plan, missing capability --> B
     I -- yes --> G[Preparing images: one at a time]
     I -- no --> K
@@ -79,11 +79,26 @@ They never trigger a correction, a re-prompt or a retry, and they do not block e
 | Stopped, failed or timed out during design | As before this workflow | Possibly partly changed | Held until the user accepts the slides |
 
 A blocked run says why, in words the user can act on, and offers Retry when its stored plan can be retried.
-Blocking reasons: too many slides requested, too many links, an unreadable link, a request that needs a page the user did not give, a plan that could not be made or used, a capability this machine lacks (editing, or generation where it is not set up), a required image that could not be made, the image stage time limit, and storage problems.
+Blocking reasons: too many slides requested, too many links, an unreadable link, a request that needs a page the user did not give, a plan that could not be made or used, a capability this machine lacks or that is not offered (an edit other than background replacement, or generation and editing where they are not set up), a required image that could not be made (including a photo without one clearly visible person), the image stage time limit, and storage problems.
+
+### Edited images
+
+An edit replaces the background behind the one person in a photograph and keeps every opaque pixel of that person exactly as photographed; only a narrow band at their outline is blended.
+It runs in the same image stage as generated images, one image at a time under the same time limit, with the same staging, all-or-nothing attach, retry and cancellation.
+
+- The source is one uploaded reference image of the carousel or one of its intact assets, named by ID in the plan; the server resolves the file itself and, for an asset, refuses bytes that no longer match the recorded hash.
+- The server prepares the source: upright from its EXIF orientation, sRGB, opaque, and cropped to the exact size of the requested aspect ratio around its most salient region, never stretched.
+- The instruction describes only the new background; the image service wraps it in its own instructions and decides everything about the person.
+- An edit is always required, so a failed edit stops the run with its reason and is never replaced by a generated image or by the plan's alternative.
+- The result is attached as an asset with origin `edited` and the ID of its source; the original upload is never changed.
+- A photo with no clear person, or with several people of similar size, stops the run with a request for another photo and no Retry, because the same photo would be refused again.
+
+The person keeps the light they were photographed in: the image service asks for a background lit to match, but a strong mismatch can still look composited.
+Editing needs image service 1.1.0 or later; an older service, or one with editing turned off, stops an edit with "editing photos is not set up on the image service".
 
 ### Image failures
 
-Failures that every later image would meet too (the service not running, not set up, busy, or declining for lack of machine resources) stop the image stage at once.
+Failures that every later image would meet too (the service not running, not set up, busy, declining for lack of machine resources, or without editing) stop the image stage at once.
 A failure that belongs to one image (an unusable result, or one image taking too long) does not: the remaining images are still made, so a retry only remakes what failed.
 A required image that could not be made blocks the run once the stage ends.
 An optional image that could not be made is skipped; the handoff tells the Design Agent the alternative the Director planned, and the conformance check lists it.
@@ -154,7 +169,8 @@ A generated image is different: it is content placed on a specific slide.
 Recording it as a reference would turn it into a style source.
 
 Generated images therefore have their own typed list, `Carousel.assets` (`src/types/carousel.ts`).
-Each record is server-generated: an ID, a URL of the form `/uploads/<id>.png`, its origin (`generated`, or `edited` once editing exists), the IDs it was made from, its size, the SHA-256 of its bytes, the run that produced it and when.
+Each record is server-generated: an ID, a URL of the form `/uploads/<id>.png`, its origin (`generated` or `edited`), the ID it was edited from (empty for a generated image), its size, the SHA-256 of its bytes, the run that produced it and when.
+A run's tasks carry the same origin and source from the moment its plan is accepted, so an attach finished by recovery after a crash records them exactly as one finished in-process.
 Carousels created before assets existed have no list and read as having none; no existing data is rewritten.
 Duplicating a carousel copies its assets, as it copies reference images.
 Update routes never accept `assets` from a request body.
