@@ -179,7 +179,8 @@ export function restoreLabel(
 ): HistoryOutcome {
   const blocked = busy(history) ?? restoreArgs(args);
   if (blocked) return { history, result: blocked };
-  const label = history.labels[name];
+  // Own labels only: a name such as "constructor" must not resolve to an Object.prototype member.
+  const label = Object.prototype.hasOwnProperty.call(history.labels, name) ? history.labels[name] : undefined;
   if (!label) return { history, result: historyIssue("name", "no version with this label") };
   const restored = restore(history, label.production, args, context);
   if (!restored.ok) return { history, result: restored.result };

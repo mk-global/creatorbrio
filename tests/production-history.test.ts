@@ -142,6 +142,9 @@ describe("labelled versions", () => {
     h = ok(undo(h, restoreArgs()));
     expect(h.current.name).toBe("Draft two");
     expect(restoreLabel(h, "missing", restoreArgs()).result).toMatchObject({ status: "rejected", stage: "history" });
+    for (const name of ["constructor", "toString", "hasOwnProperty"]) {
+      expect(restoreLabel(h, name, restoreArgs()).result, name).toMatchObject({ status: "rejected", stage: "history" });
+    }
   });
 });
 

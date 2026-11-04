@@ -80,7 +80,18 @@ export type StoreFailure =
   | { status: "unsupported_version"; productionId: string; generation: number | null; file: string; message: string }
   | { status: "io_error"; productionId: string | null; operation: string; code: string | null; message: string }
   | { status: "recovery_required"; productionId: string; runId: string; ownerAlive: boolean | null; message: string }
-  | { status: "contended"; productionId: string; attempts: number; message: string };
+  | { status: "contended"; productionId: string; attempts: number; message: string }
+  | { status: "generation_mismatch"; productionId: string; expectedGeneration: number; actualGeneration: number; message: string };
+
+/**
+ * An optional precondition on a history command: the generation the caller
+ * last saw. It is checked inside the commit loop, against the state the
+ * command is committed on top of, so a confirmed command never acts on a
+ * state the caller has not seen.
+ */
+export interface Precondition {
+  expectedGeneration?: number;
+}
 
 /** The engine's own result (applied, conflict or rejected) with the generation it was decided at. */
 export type MutationResult = (HistoryResult & { generation: number }) | StoreFailure;
@@ -184,7 +195,8 @@ export class ProductionStore {
   private readonly hashes = new WeakMap<Production, { hash: string; json: string }>();
 
   constructor(options: StoreOptions = {}) {
-    this.root = path.resolve(options.root ?? path.join(process.cwd(), "data", "video"));
+    // Runtime data, not build input: the ignore comments stop Next.js tracing the whole project.
+    this.root = path.resolve(/*turbopackIgnore: true*/ options.root ?? path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "video"));
     this.fs = options.fs ?? nodeFs;
     this.now = options.now ?? (() => new Date().toISOString());
     this.maxAttempts = options.maxCommitAttempts ?? 8;
@@ -194,7 +206,7 @@ export class ProductionStore {
   // -- paths ---------------------------------------------------------------
 
   private dir(productionId: string, ...parts: string[]): string {
-    return path.join(this.root, productionId, ...parts);
+    return path.join(/*turbopackIgnore: true*/ this.root, productionId, ...parts);
   }
 
   private lock(productionId: string): Mutex {
@@ -278,29 +290,29 @@ export class ProductionStore {
     return this.mutate(productionId, "change", csId, (h) => applyToHistory(h, changeSet));
   }
 
-  undo(productionId: string, args: RestoreArgs): Promise<MutationResult> {
-    return this.mutate(productionId, "undo", args.changeSetId, (h) => undo(h, args));
+  undo(productionId: string, args: RestoreArgs, pre: Precondition = {}): Promise<MutationResult> {
+    return this.mutate(productionId, "undo", args.changeSetId, (h) => undo(h, args), pre);
   }
 
-  redo(productionId: string, args: RestoreArgs): Promise<MutationResult> {
-    return this.mutate(productionId, "redo", args.changeSetId, (h) => redo(h, args));
+  redo(productionId: string, args: RestoreArgs, pre: Precondition = {}): Promise<MutationResult> {
+    return this.mutate(productionId, "redo", args.changeSetId, (h) => redo(h, args), pre);
   }
 
-  label(productionId: string, name: string): Promise<MutationResult> {
-    return this.mutate(productionId, "label", name, (h) => labelRevision(h, name));
+  label(productionId: string, name: string, pre: Precondition = {}): Promise<MutationResult> {
+    return this.mutate(productionId, "label", name, (h) => labelRevision(h, name), pre);
   }
 
-  restoreLabel(productionId: string, name: string, args: RestoreArgs): Promise<MutationResult> {
-    return this.mutate(productionId, "restore_label", args.changeSetId, (h) => restoreLabel(h, name, args));
+  restoreLabel(productionId: string, name: string, args: RestoreArgs, pre: Precondition = {}): Promise<MutationResult> {
+    return this.mutate(productionId, "restore_label", args.changeSetId, (h) => restoreLabel(h, name, args), pre);
   }
 
   /** Opens an agent run owned by this store instance. */
-  beginRun(productionId: string, run: { runId: string; scope?: string[] }): Promise<MutationResult> {
-    return this.mutate(productionId, "begin_run", run.runId, (h) => beginRun(h, run), { takeRun: true });
+  beginRun(productionId: string, run: { runId: string; scope?: string[] }, pre: Precondition = {}): Promise<MutationResult> {
+    return this.mutate(productionId, "begin_run", run.runId, (h) => beginRun(h, run), { ...pre, takeRun: true });
   }
 
-  endRun(productionId: string, args: { runId: string; decision: "keep" | "discard"; changeSetId: string; at: string }): Promise<MutationResult> {
-    return this.mutate(productionId, "end_run", args.runId, (h) => endRun(h, args));
+  endRun(productionId: string, args: { runId: string; decision: "keep" | "discard"; changeSetId: string; at: string }, pre: Precondition = {}): Promise<MutationResult> {
+    return this.mutate(productionId, "end_run", args.runId, (h) => endRun(h, args), pre);
   }
 
   /**
@@ -311,7 +323,8 @@ export class ProductionStore {
    */
   resolveInterruptedRun(
     productionId: string,
-    args: { runId: string; decision: "keep" | "discard" | "resume"; changeSetId: string; at: string }
+    args: { runId: string; decision: "keep" | "discard" | "resume"; changeSetId: string; at: string },
+    pre: Precondition = {}
   ): Promise<MutationResult> {
     const notThisRun = (h: ProductionHistory): HistoryOutcome | null =>
       h.run?.runId === args.runId
@@ -319,12 +332,13 @@ export class ProductionStore {
         : { history: h, result: { status: "rejected", stage: "history", issues: [{ opIndex: null, path: "runId", code: "invalid_op", message: "no open run with this id" }] } };
     if (args.decision === "resume") {
       return this.mutate(productionId, "resume_run", args.runId, (h) => notThisRun(h) ?? { history: { ...h }, result: noChange(h, args.changeSetId) }, {
+        ...pre,
         foreignRunAllowed: true,
         takeRun: true,
       });
     }
     const decision = args.decision;
-    return this.mutate(productionId, "end_run", args.runId, (h) => notThisRun(h) ?? endRun(h, { ...args, decision }), { foreignRunAllowed: true });
+    return this.mutate(productionId, "end_run", args.runId, (h) => notThisRun(h) ?? endRun(h, { ...args, decision }), { ...pre, foreignRunAllowed: true });
   }
 
   /**
@@ -333,12 +347,13 @@ export class ProductionStore {
    * generation; the damaged files are copied to `quarantine/` and kept. It is
    * refused when the newest record is readable or from a newer CreatorBrio.
    */
-  async recover(productionId: string, args: { fromGeneration: number }): Promise<MutationResult> {
+  async recover(productionId: string, args: { fromGeneration: number }, pre: Precondition = {}): Promise<MutationResult> {
     return this.guard(productionId, () =>
       this.lock(productionId).runExclusive(async () => {
         const generations = await this.generations(productionId);
         if (generations.length === 0) throw new Abort({ status: "not_found", productionId, message: "no production with this id" });
         const latest = generations[generations.length - 1];
+        if (pre.expectedGeneration !== undefined && pre.expectedGeneration !== latest) throw new Abort(mismatch(productionId, pre.expectedGeneration, latest));
         try {
           await this.readCurrent(productionId);
           throw new Abort({ status: "invalid_request", productionId, message: "the current state is readable; there is nothing to recover" });
@@ -472,13 +487,16 @@ export class ProductionStore {
     kind: EventKind,
     eventId: string,
     step: (history: ProductionHistory) => HistoryOutcome,
-    options: { foreignRunAllowed?: boolean; takeRun?: boolean } = {}
+    options: Precondition & { foreignRunAllowed?: boolean; takeRun?: boolean } = {}
   ): Promise<MutationResult> {
     if (!ID_PATTERN.test(productionId)) return { status: "invalid_request", productionId: null, message: "production ids are short identifiers" };
     return this.guard(productionId, () =>
       this.lock(productionId).runExclusive(async () => {
         for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
           const loaded = await this.readCurrent(productionId);
+          if (options.expectedGeneration !== undefined && options.expectedGeneration !== loaded.generation) {
+            return mismatch(productionId, options.expectedGeneration, loaded.generation);
+          }
           const state = this.describe(productionId, loaded);
           if (state.recoveryRequired && !options.foreignRunAllowed) {
             const run = state.run!;
@@ -620,7 +638,7 @@ export class ProductionStore {
     await this.io(productionId, "mkdir", () => fs.mkdirp(dir));
     const recordFile = this.dir(productionId, "journal", generationFile(generation));
     const raw = await this.io(productionId, "read", () => fs.readFile(recordFile));
-    await this.io(productionId, "write", () => fs.writeNewFileDurable(path.join(dir, `journal-${generationFile(generation)}.${randomUUID()}`), raw.toString("utf-8")));
+    await this.io(productionId, "write", () => fs.writeNewFileDurable(path.join(/*turbopackIgnore: true*/ dir, `journal-${generationFile(generation)}.${randomUUID()}`), raw.toString("utf-8")));
     const decoded = decodeRecord(raw.toString("utf-8"));
     if (!decoded.ok) return;
     for (const hash of new Set(referencedHashes(decoded.record))) {
@@ -632,7 +650,7 @@ export class ProductionStore {
         continue;
       }
       if (contentHash(data.toString("utf-8")) === hash) continue;
-      await this.io(productionId, "write", () => fs.writeNewFileDurable(path.join(dir, `snapshot-${hash}.${randomUUID()}`), data.toString("utf-8")));
+      await this.io(productionId, "write", () => fs.writeNewFileDurable(path.join(/*turbopackIgnore: true*/ dir, `snapshot-${hash}.${randomUUID()}`), data.toString("utf-8")));
       this.documents.delete(hash);
       await this.io(productionId, "unlink", () => fs.unlink(file));
     }
@@ -695,6 +713,16 @@ export class ProductionStore {
       return this.ioFailure(productionId, "unknown", error).failure;
     }
   }
+}
+
+function mismatch(productionId: string, expectedGeneration: number, actualGeneration: number): StoreFailure {
+  return {
+    status: "generation_mismatch",
+    productionId,
+    expectedGeneration,
+    actualGeneration,
+    message: `the production changed since generation ${expectedGeneration}; it is now at generation ${actualGeneration}`,
+  };
 }
 
 function noChange(h: ProductionHistory, changeSetId: string): HistoryResult {

@@ -4,7 +4,7 @@
 
 The production store (`src/lib/video/production/store/`, WS1 #118) keeps Video Studio productions on disk.
 Each production's document, its bounded undo and redo history, its named versions and any open agent run survive a restart.
-No UI or API route uses the store yet.
+The Production API ([video-production-api.md](video-production-api.md)) is its only caller; no UI uses it yet.
 
 ## Layout
 
