@@ -1,9 +1,12 @@
-// Resolves the project's `@/` alias and extensionless TypeScript imports so a
-// plain Node child process can load source files directly. Node strips the
-// types itself (--experimental-transform-types); no bundler is involved.
-import { existsSync } from "node:fs";
+// Module hooks that let a plain Node child process (Node 20.6 or later) load
+// the project's TypeScript source directly: they resolve the `@/` alias and
+// extensionless imports, and compile each .ts or .mts file with the project's
+// own TypeScript compiler (`transpileModule`, which only strips types).
+// No bundler or extra dependency is involved.
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../src");
 
@@ -19,4 +22,16 @@ export async function resolve(specifier, context, next) {
     }
   }
   return next(specifier, context);
+}
+
+export async function load(url, context, next) {
+  if (url.startsWith("file:") && /\.m?ts$/.test(url)) {
+    const file = fileURLToPath(url);
+    const { outputText } = ts.transpileModule(readFileSync(file, "utf-8"), {
+      fileName: file,
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, sourceMap: false },
+    });
+    return { format: "module", source: outputText, shortCircuit: true };
+  }
+  return next(url, context);
 }

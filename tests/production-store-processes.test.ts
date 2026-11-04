@@ -38,7 +38,7 @@ interface Child {
 function worker(job: Record<string, unknown>): Child {
   const child = spawn(
     process.execPath,
-    ["--no-warnings", "--experimental-transform-types", "--import", path.join(HELPERS, "register.mjs"), path.join(HELPERS, "store-worker.mts"), JSON.stringify({ root, productionId: ID, ...job })],
+    ["--no-warnings", "--import", path.join(HELPERS, "register.mjs"), path.join(HELPERS, "store-worker.mts"), JSON.stringify({ root, productionId: ID, ...job })],
     { stdio: ["ignore", "pipe", "pipe"] }
   );
   let stdout = "";
