@@ -146,7 +146,7 @@ The first applicable rule wins, and the plan records which one it used:
 
 At most five images are generated per request, and never more than the slide count.
 
-## Isolation and budget
+## Isolation and limits
 
 The Director runs as its own Claude CLI invocation, separate from the Design Agent's session.
 
@@ -156,11 +156,16 @@ Director tools: `Read`
 - No user or project settings, no MCP servers and no automatic memory are loaded.
 - No session is written or resumed, so the Director cannot touch the Design Agent's conversation.
 - Its input arrives on standard input, never in the process arguments.
-- Each run has its own limits: $0.25 and 120 seconds.
+- Each run is bounded by a mandatory 120-second timeout, after which the Director is stopped (and killed if it ignores the stop); cancelling the request stops it the same way.
+- There is no spending cap by default.
+  An operator who wants one sets `DIRECTOR_MAX_BUDGET_USD` in `.env.local` to a positive amount in US dollars, such as `0.75`, and restarts the server; only then is the CLI given `--max-budget-usd`.
+  A value that is not a plain positive amount is refused before anything starts, with the outcome "spending cap setting invalid", rather than ignored.
+  A run that reaches a configured cap ends as "budget exceeded" and the user is told which setting stopped it.
+  Each run's cost, duration and the cap in force are recorded in the `[director] plan finished` log line.
 
 These are the CLI's permission rules, a policy boundary rather than operating-system isolation: the CLI runs as the same account as the app.
 
-Every outcome is typed (`runDirector` in `src/lib/visual-director.ts`): planned, start failure, timeout, cancellation, budget exceeded, agent failure, no output, invalid plan, or a missing capability.
+Every outcome is typed (`runDirector` in `src/lib/visual-director.ts`): planned, start failure, timeout, cancellation, budget exceeded, spending cap setting invalid, agent failure, no output, invalid plan, or a missing capability.
 There is no automatic re-plan.
 The server log records counts and outcome codes only, never the message, page text or plan text.
 

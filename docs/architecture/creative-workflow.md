@@ -126,7 +126,7 @@ The image service may keep generating an image it already started until it finis
 | Limit | Value |
 |---|---|
 | Linked pages per message | 3, read within 30 seconds in total |
-| Director | $0.25 and 120 seconds per message |
+| Director | 120 seconds per message; no spending cap unless `DIRECTOR_MAX_BUDGET_USD` sets one |
 | Generated images per message | 5, and never more than the slide count |
 | One image | 150 seconds, or less when the stage has less time left |
 | Image stage | 12 minutes |
