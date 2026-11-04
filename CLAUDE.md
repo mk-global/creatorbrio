@@ -23,7 +23,8 @@ Derived from the MIT-licensed Open Carrusel project and now independently mainta
 - `src/lib/data.ts` — JSON storage with proper async-mutex and atomic writes
 - `src/lib/carousels.ts` — Carousel and slide CRUD with version history
 - `src/lib/claude-path.ts` — Portable Claude CLI discovery
-- `src/types/production.ts`, `src/lib/video/production/` — Video Studio Production v2 document types and `admitProduction()`, the pure validator every production document must pass (WS1; persistence, operations and revisions are not built yet)
+- `src/types/production.ts`, `src/lib/video/production/` — Video Studio Production v2 document types and `admitProduction()`, the pure validator every production document must pass (WS1)
+- `src/lib/video/production/changes/` — the pure change-set engine for productions: strict typed operations, `applyChangeSet()` (revision check, atomic apply, admission, scope guards for agents) and in-memory history with undo/redo, labels and agent runs kept or discarded as one unit (WS1 #114; persistence and API routes are not built yet)
 
 ## API Routes
 
