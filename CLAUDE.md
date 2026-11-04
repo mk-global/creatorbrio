@@ -24,7 +24,8 @@ Derived from the MIT-licensed Open Carrusel project and now independently mainta
 - `src/lib/carousels.ts` — Carousel and slide CRUD with version history
 - `src/lib/claude-path.ts` — Portable Claude CLI discovery
 - `src/types/production.ts`, `src/lib/video/production/` — Video Studio Production v2 document types and `admitProduction()`, the pure validator every production document must pass (WS1)
-- `src/lib/video/production/changes/` — the pure change-set engine for productions: strict typed operations, `applyChangeSet()` (revision check, atomic apply, admission, scope guards for agents) and in-memory history with undo/redo, labels and agent runs kept or discarded as one unit (WS1 #114; persistence and API routes are not built yet)
+- `src/lib/video/production/changes/` — the pure change-set engine for productions: strict typed operations, `applyChangeSet()` (revision check, atomic apply, admission, scope guards for agents) and in-memory history with undo/redo, labels and agent runs kept or discarded as one unit (WS1 #114)
+- `src/lib/video/production/store/` — the durable production store (WS1 #118): immutable journal records and content-addressed documents under `data/video/<productionId>/`, committed by an atomic hard-link compare-and-swap that holds across processes; typed failures, explicit recovery and interrupted-run decisions. See `docs/architecture/video-production-store.md`. API routes are not built yet
 
 ## API Routes
 
@@ -55,7 +56,7 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - Components max ~300 lines per file
 - Use `cn()` from `src/lib/utils.ts` for class merging
 - Types in `src/types/`, libs in `src/lib/`, components in `src/components/`
-- All data mutations go through `src/lib/data.ts` (never direct fs writes for JSON)
+- All data mutations go through `src/lib/data.ts` (never direct fs writes for JSON), except Video Studio productions, which go through the production store and its cross-process commit protocol
 - Update routes never pass a parsed request body straight to a mutator. They select the fields the endpoint defines as mutable via `src/lib/api-input.ts`; everything else is server-owned
 - iframe slides always use `sandbox=""` attribute (no JavaScript execution)
 - The Claude subprocess gets `--allowedTools Bash WebFetch Read`: `Bash` to curl the local API routes, `WebFetch` to research while designing, `Read` to view reference images
