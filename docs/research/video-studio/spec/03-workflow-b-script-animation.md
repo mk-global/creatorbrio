@@ -5,7 +5,7 @@
 **Input:** a complete script, or a topic with a brief, plus optional source links, documents, brand assets and reference videos.
 **Output:** a finished animated video with locally generated narration, and the same editable production, captions, credits and manifest as Workflow A.
 
-Requirement IDs refer to [01](01-product-requirements.md#requirements-register).
+Requirement IDs refer to [01](01-product-requirements.md#6-requirements-register).
 **Judgment** is **D** for deterministic code, **AI** for model judgment, **U** for a user decision.
 
 ## 1. Stages at a glance

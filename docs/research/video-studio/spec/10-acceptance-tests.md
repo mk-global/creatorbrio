@@ -1,6 +1,6 @@
 # 10 · Acceptance tests
 
-[← Specification index](README.md) · Requirements: [01](01-product-requirements.md#requirements-register) · Programme: [11](11-implementation-program.md)
+[← Specification index](README.md) · Requirements: [01](01-product-requirements.md#6-requirements-register) · Programme: [11](11-implementation-program.md)
 
 These tests decide whether Video Studio is complete.
 They use **real material**: the founder's and the wellness educator's own footage, scripts and brands.
@@ -118,8 +118,8 @@ The release is complete when every test passes ([11 §5](11-implementation-progr
 **Requirements verified:** [STB-09](01-product-requirements.md#stb-09), [GFX-05](01-product-requirements.md#gfx-05), [GFX-08](01-product-requirements.md#gfx-08), [AUD-01](01-product-requirements.md#aud-01), [AUD-05](01-product-requirements.md#aud-05), [STY-02](01-product-requirements.md#sty-02)
 
 ### AT-B6 · Sourced media and rights
-- **Steps:** source at least one asset each from Wikimedia Commons, Openverse, Freesound and Internet Archive into M4's production; then switch usage intent between `personal` and `commercial`.
-- **Pass (measured):** each asset has a complete source and rights record; credits text is correct for each licence; a CC BY-NC sound is allowed with a label in `personal` and blocked in `commercial`; an Internet Archive item with unknown rights requires a recorded decision; candidates show a relevance reason.
+- **Steps:** with the Freesound and Internet Archive connectors enabled by the tester (own Freesound key, terms acknowledged), source at least one asset each from Wikimedia Commons, Openverse, Freesound and Internet Archive into M4's production; then switch usage intent between `personal` and `commercial`.
+- **Pass (measured):** each asset has a complete source and rights record; credits text is correct for each licence; a CC BY-NC sound is allowed with a label in `personal` and blocked in `commercial`; an Internet Archive item with unknown rights requires a recorded decision; assets carrying `noncommercial-api` or `research-use` terms flags need review in `commercial`; a Pixabay image cannot be used as input to illustration generation; candidates show a relevance reason.
 
 **Requirements verified:** [MED-05](01-product-requirements.md#med-05), [SRC-01](01-product-requirements.md#src-01), [SRC-02](01-product-requirements.md#src-02), [SRC-03](01-product-requirements.md#src-03), [SRC-04](01-product-requirements.md#src-04), [SRC-05](01-product-requirements.md#src-05), [SRC-06](01-product-requirements.md#src-06), [RGT-02](01-product-requirements.md#rgt-02), [RGT-03](01-product-requirements.md#rgt-03)
 

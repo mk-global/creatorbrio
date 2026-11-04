@@ -1,6 +1,6 @@
 # 05 · Capability and tool-mapping matrix
 
-[← Specification index](README.md) · Requirements: [01](01-product-requirements.md#requirements-register) · Capability interface: [07 §5](07-data-models-and-interfaces.md#5-capability-interface)
+[← Specification index](README.md) · Requirements: [01](01-product-requirements.md#6-requirements-register) · Capability interface: [07 §5](07-data-models-and-interfaces.md#5-capability-interface)
 
 This matrix maps each capability to the technology that provides it, and each specialist tool to how CreatorBrio uses it.
 Third-party projects are treated as reusable technology or as references, never as mandatory dependencies of the core workflow.
@@ -48,9 +48,9 @@ Third-party projects are treated as reusable technology or as references, never 
 | Ingest, proxies, HDR, ledger, libraries | MED-01 … MED-05, PRD-05 | FFmpeg, mediabunny, SigLIP 2, CLAP (dependency) | Ledger, source sets, HDR policy | SS-MEDIA |
 | Transcription, takes, fillers, transcript editing | SPC-01 … SPC-07 | parakeet-mlx, whisper.cpp, Silero VAD (dependency); Ghost Editor techniques (native) | Spine, take grouping, filler classifier, word ops | SS-ANALYSIS |
 | Faces, shots, mattes, reframing | SPC-08, SPC-09, VFX-01 | Apple Vision via Swift CLI; PySceneDetect; BiRefNet fallback (dependency) | Smoothing, framing keyframes | SS-ANALYSIS |
-| Narration and voices | VOC-01 … VOC-06 | Local TTS and forced alignment per [E8](../evidence/e8-tts-sourcing-providers.md) (dependency) | Voice library, lexicons, takes, direction mapping, consent | SS-VOICE |
+| Narration and voices | VOC-01 … VOC-06 | Kokoro-82M via mlx-audio (Apache-2.0) as primary; Chatterbox Multilingual V3 (MIT) for consented cloning; Qwen3-ForcedAligner for timing ([E8](../evidence/e8-tts-sourcing-providers.md)) (dependency) | Voice library, lexicons, takes, direction mapping, consent | SS-VOICE |
 | Voice processing | VOC-07 | DeepFilterNet3, FFmpeg (dependency) | Processing chain | SS-AUDIO |
-| Sourcing and relevance | SRC-01 … SRC-07 | Public APIs (dependency over HTTP); SigLIP 2, CLAP | Connectors, ranking, explanations | SS-SOURCE |
+| Sourcing and relevance | SRC-01 … SRC-07 | Public APIs over HTTP: Wikimedia Commons and Openverse on by default; Freesound and Internet Archive opt-in (non-commercial or research terms); Pexels, Pixabay, NASA, Smithsonian, Library of Congress optional; SigLIP 2, CLAP | Connectors, ranking, explanations | SS-SOURCE |
 | Rights, credits, consent, provenance | RGT-01 … RGT-05 | — | All of it | SS-RIGHTS |
 | Captions | GFX-01 | HyperFrames adapters (dependency); Ghost Editor placement ideas (native) | Caption presets and layout | SS-GFX |
 | Motion-graphics templates, transitions | GFX-02, EDT-04 | HyperFrames registry blocks (native adaptation), anime.js, CSS/WAAPI | Brand-tokenised template library | SS-GFX |
@@ -64,7 +64,7 @@ Third-party projects are treated as reusable technology or as references, never 
 | Specialist tools used directly | AIM-06 | Manim, Earshot, `render(t)` pages (direct) | Adapter runtime and manifests | SS-TOOLS |
 | Manual editing, keyframes, inspector | EDT-02, EDT-03, EDT-05 | `@xzdarcy/react-timeline-editor` or the G7 choice (dependency) | Lanes, ops, inspector forms | SS-UI |
 | Zooms, masks, compositing, grading, safe zones | VFX-02 … VFX-05 | HyperFrames transforms; FFmpeg `lut3d`; OpenEdit safe zones (native) | Templates and presets | SS-GFX |
-| Music, SFX, Foley, ambience, ducking, mastering | AUD-01 … AUD-05 | CLAP, Earshot, CC0 packs, Freesound, ACE-Step 1.5 (optional), FFmpeg loudnorm, HyperFrames audio mixer | Cue extraction, envelopes, levelling | SS-AUDIO |
+| Music, SFX, Foley, ambience, ducking, mastering | AUD-01 … AUD-05 | CLAP, Earshot, CC0 packs, user libraries, Freesound (opt-in), ACE-Step 1.5 (optional), FFmpeg loudnorm, HyperFrames audio mixer | Cue extraction, envelopes, levelling | SS-AUDIO |
 | QA | QAS-01 … QAS-05 | FFmpeg filters; `visual-critic` role | Checks, rubric, claims, waivers | SS-QA |
 | Targeted revisions | REV-01 | — | Target-scoped runs | SS-AI |
 | Rendering | REN-01 … REN-04, PLT-05 | HyperFrames, FFmpeg | Compiler, caches, manifests | SS-RENDER |
@@ -81,7 +81,7 @@ New rows:
 
 | Responsibility | The one tool | Not used for this |
 |---|---|---|
-| Narration synthesis | The primary local TTS chosen at gate G4 ([E8](../evidence/e8-tts-sourcing-providers.md)) | A second always-on TTS (a cloning-capable engine is added only for consented custom voices) |
+| Narration synthesis | Kokoro-82M via mlx-audio, confirmed at gate G4 ([E8](../evidence/e8-tts-sourcing-providers.md)) | A second always-on TTS: Chatterbox is used only for consented custom voices. Excluded: F5-TTS, XTTS-v2 (non-commercial weights), Piper (GPL-3.0), Fish Audio and IndexTTS (restrictive licences) |
 | Narration word timing | The TTS engine's own timings where reliable; otherwise one forced aligner | ASR re-transcription of known text |
 | Character animation | CreatorBrio's Scene Spec compiler | OpenMontage Ink Theater (AGPL), Rive, Spine, Synfig |
 | Diagram layout | Mermaid / dagre | Hand-positioned SVG by the model |

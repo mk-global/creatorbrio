@@ -61,7 +61,7 @@ A *hybrid* production, for example a talking head with animated explainer scenes
 
 ## 2. Subsystems and ownership
 
-Each subsystem is an owner for requirements in [01](01-product-requirements.md#requirements-register) and a workstream in [11](11-implementation-program.md).
+Each subsystem is an owner for requirements in [01](01-product-requirements.md#6-requirements-register) and a workstream in [11](11-implementation-program.md).
 
 | ID | Subsystem | Responsibility | Owns (data) | Reuses |
 |---|---|---|---|---|

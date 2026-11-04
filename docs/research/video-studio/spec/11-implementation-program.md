@@ -1,6 +1,6 @@
 # 11 · Implementation programme
 
-[← Specification index](README.md) · Requirements: [01](01-product-requirements.md#requirements-register) · Acceptance: [10](10-acceptance-tests.md)
+[← Specification index](README.md) · Requirements: [01](01-product-requirements.md#6-requirements-register) · Acceptance: [10](10-acceptance-tests.md)
 
 This programme builds the complete Video Studio, both workflows on one infrastructure, in dependency order.
 It does not define a reduced first product.
@@ -101,7 +101,7 @@ flowchart TD
 
 ## 3. Requirements by workstream
 
-Every requirement in [01](01-product-requirements.md#requirements-register) has exactly one implementing workstream:
+Every requirement in [01](01-product-requirements.md#6-requirements-register) has exactly one implementing workstream:
 
 | WS | Requirements |
 |---|---|
@@ -139,7 +139,7 @@ Every requirement in [01](01-product-requirements.md#requirements-register) has 
 
 Video Studio is released when:
 
-- every requirement in [01](01-product-requirements.md#requirements-register) is implemented, or explicitly deferred by the founder in a recorded decision;
+- every requirement in [01](01-product-requirements.md#6-requirements-register) is implemented, or explicitly deferred by the founder in a recorded decision;
 - every acceptance test in [10](10-acceptance-tests.md) passes, including the judged criteria by the named creators;
 - the licence audit passes;
 - the full repository gate is green;

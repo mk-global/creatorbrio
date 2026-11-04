@@ -5,7 +5,7 @@
 **Input:** one or more raw recordings, usually a talking head on a phone or camera, often with several takes, plus optional B-roll, photos, logos and reference reels.
 **Output:** a finished, brand-styled short video and its editable production, captions, credits and render manifest.
 
-Requirement IDs refer to [01](01-product-requirements.md#requirements-register).
+Requirement IDs refer to [01](01-product-requirements.md#6-requirements-register).
 Acceptance tests are in [10](10-acceptance-tests.md).
 **Judgment** is **D** for deterministic code, **AI** for model judgment, **U** for a user decision.
 

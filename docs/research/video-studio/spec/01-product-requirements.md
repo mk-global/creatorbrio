@@ -167,12 +167,12 @@ Columns:
 
 | ID | Requirement | Owner | Technology candidate | Depends on | Acceptance | WS |
 |---|---|---|---|---|---|---|
-| <a id="voc-01"></a>**VOC-01** | Generate narration locally from script lines with a selectable voice; no paid API | SS-VOICE | Local TTS primary per E8 (gate G4) | PLN-05, PLT-02 | AT-B3 | WS7 |
-| <a id="voc-02"></a>**VOC-02** | Control narration: rate, pauses, emphasis, energy, pitch where supported, pronunciation lexicon per brand | SS-VOICE | TTS engine controls + respelling/phoneme lexicon | VOC-01 | AT-B3 | WS7 |
-| <a id="voc-03"></a>**VOC-03** | Obtain word timings for narration (engine timings or forced alignment of the known text) to drive captions and cues | SS-VOICE | Engine timestamps or forced aligner (Qwen3-ForcedAligner / Parakeet alignment) | VOC-01 | AT-B3 | WS7 |
+| <a id="voc-01"></a>**VOC-01** | Generate narration locally from script lines with a selectable voice; no paid API | SS-VOICE | Kokoro-82M via mlx-audio (Apache-2.0 code and weights), kokoro-onnx fallback; gate G4 | PLN-05, PLT-02 | AT-B3 | WS7 |
+| <a id="voc-02"></a>**VOC-02** | Control narration: rate, pauses, emphasis, energy, pitch where supported, pronunciation lexicon per brand | SS-VOICE | CreatorBrio narration markup translated per engine; Kokoro speed and inline phoneme overrides (misaki) | VOC-01 | AT-B3 | WS7 |
+| <a id="voc-03"></a>**VOC-03** | Obtain word timings for narration (engine timings or forced alignment of the known text) to drive captions and cues | SS-VOICE | Kokoro native word timestamps (English); Qwen3-ForcedAligner (mlx-audio) for other engines and languages | VOC-01 | AT-B3 | WS7 |
 | <a id="voc-04"></a>**VOC-04** | Keep multiple narration takes per line; regenerate one line without touching others; select per line | SS-VOICE | Narration take cache keyed by text+voice+direction | VOC-01 | AT-B3, AT-X1 | WS7 |
 | <a id="voc-05"></a>**VOC-05** | Support multiple voices for characters and narrator in one production | SS-VOICE | Voice library | VOC-01 | AT-B4 | WS7 |
-| <a id="voc-06"></a>**VOC-06** | Clone a voice only with recorded consent of the voice's owner and a commercially usable model; label synthetic voices | SS-VOICE | Commercially licensed cloning model per E8; consent record | VOC-01, RGT-04 | AT-B3 | WS7 |
+| <a id="voc-06"></a>**VOC-06** | Clone a voice only with recorded consent of the voice's owner and a commercially usable model; label synthetic voices | SS-VOICE | Chatterbox Multilingual V3 via mlx-audio (MIT code; weights licence confirmed at G9); VoxCPM2 or Qwen3-TTS alternatives; CreatorBrio provenance marking; consent record | VOC-01, RGT-04 | AT-B3 | WS7 |
 | <a id="voc-07"></a>**VOC-07** | Process recorded and synthesised voice: denoise, EQ, de-ess, level | SS-AUDIO | DeepFilterNet3; FFmpeg filters | MED-02 | AT-A8 | WS13 |
 
 ### SRC · Sourcing
@@ -181,9 +181,9 @@ Columns:
 |---|---|---|---|---|---|---|
 | <a id="src-01"></a>**SRC-01** | Search Wikimedia Commons and import files with licence, author and attribution from file metadata | SS-SOURCE | MediaWiki API (per E8 terms) | RGT-01, MED-04 | AT-B6 | WS11 |
 | <a id="src-02"></a>**SRC-02** | Search Openverse (images, audio) and import with licence metadata | SS-SOURCE | Openverse API (per E8 terms) | RGT-01, MED-04 | AT-B6 | WS11 |
-| <a id="src-03"></a>**SRC-03** | Search Freesound and import sounds with licence (CC0/CC-BY/CC-BY-NC) and attribution | SS-SOURCE | Freesound API (user's free key, per E8) | RGT-01, MED-04 | AT-B6, AT-A5 | WS11 |
-| <a id="src-04"></a>**SRC-04** | Search Internet Archive and import items with their stated rights; unknown rights require a user decision | SS-SOURCE | Internet Archive search and metadata APIs | RGT-01, MED-04 | AT-B6 | WS11 |
-| <a id="src-05"></a>**SRC-05** | Optional stock connectors (Pexels, Pixabay) and public-domain archives (NASA, Smithsonian Open Access, Library of Congress) behind user-supplied keys where required | SS-SOURCE | Respective APIs (per E8) | RGT-01 | AT-B6 | WS11 |
+| <a id="src-03"></a>**SRC-03** | Search Freesound and import sounds with licence (CC0/CC-BY/CC-BY-NC) and attribution | SS-SOURCE | Freesound API, opt-in with the user's own key; its API terms are non-commercial (E8), so off by default and excluded from commercial use without a Freesound agreement | RGT-01, MED-04 | AT-B6, AT-A5 | WS11 |
+| <a id="src-04"></a>**SRC-04** | Search Internet Archive and import items with their stated rights; unknown rights require a user decision | SS-SOURCE | Internet Archive search and metadata APIs, opt-in (site terms are research-oriented; rights unreliable, E8) | RGT-01, MED-04 | AT-B6 | WS11 |
+| <a id="src-05"></a>**SRC-05** | Optional stock connectors (Pexels, Pixabay) and public-domain archives (NASA, Smithsonian Open Access, Library of Congress) behind user-supplied keys where required | SS-SOURCE | Respective APIs (per E8); Pixabay content never used as input to generative features | RGT-01 | AT-B6 | WS11 |
 | <a id="src-06"></a>**SRC-06** | Rank candidates for a slot by relevance (text–image/audio embeddings plus model judgment on contact sheets) and explain each choice | SS-SOURCE | SigLIP 2, CLAP; `visual-critic` | MED-05, AIM-01 | AT-B6, AT-A5 | WS11 |
 | <a id="src-07"></a>**SRC-07** | Work fully offline with local libraries only; connectors are optional | SS-SOURCE | — | MED-05 | AT-X5 | WS11 |
 
@@ -204,8 +204,8 @@ Columns:
 | <a id="gfx-01"></a>**GFX-01** | Animated captions: brand presets (kinetic, calm sentence, karaoke, word-stack), safe-zone aware, manual edit of text and style | SS-GFX | HyperFrames CSS/WAAPI adapters; native templates | SPC-02, REN-01 | AT-A5, AT-A6, AT-B4 | WS12 |
 | <a id="gfx-02"></a>**GFX-02** | Motion-graphics templates: titles, lower thirds, key-point cards, callouts, end cards, transitions, brand-tokenised | SS-GFX | Native templates; adapted HyperFrames registry blocks (Apache-2.0) | REN-01, STY-01 | AT-A5, AT-B4 | WS12 |
 | <a id="gfx-03"></a>**GFX-03** | Animated diagrams and data charts from structured data, revealed in sync with words | SS-GFX | Mermaid (+ D2/ELK if validated); native chart templates | REN-01, SPC-02 | AT-A5, AT-B4 | WS12 |
-| <a id="gfx-04"></a>**GFX-04** | Stick-figure and cartoon character animation from Scene Specs: rigs, poses, expressions, walk cycles, shape-based lip sync | SS-GFX | Native SVG rig compiler per E7 (gate G6) | STB-09, REN-01 | AT-B4 | WS12 |
-| <a id="gfx-05"></a>**GFX-05** | Illustrated scenes: generate or source illustrations in the brand illustration style with character/style consistency, animated with parallax and camera moves | SS-GFX | Existing image-service contract + commercially usable model per E7; sourced art | RGT-05, STY-02 | AT-B5 | WS12 |
+| <a id="gfx-04"></a>**GFX-04** | Stick-figure and cartoon character animation from Scene Specs: rigs, poses, expressions, walk cycles, shape-based lip sync | SS-GFX | CreatorBrio rig format + choreography schema + `pose(t)` sampler with 2D IK; rough.js (MIT) for hand-drawn look; OpenMontage Ink techniques as reference only (AGPL); gate G6 | STB-09, REN-01 | AT-B4 | WS12 |
+| <a id="gfx-05"></a>**GFX-05** | Illustrated scenes: generate or source illustrations in the brand illustration style with character/style consistency, animated with parallax and camera moves | SS-GFX | Existing image-service contract with a commercially licensed model (FLUX.2 [klein] 4B or Z-Image, Apache-2.0 per E7, via mflux); sourced art | RGT-05, STY-02 | AT-B5 | WS12 |
 | <a id="gfx-06"></a>**GFX-06** | Collage and documentary-style sequences from cut-outs, textures and sourced imagery | SS-GFX | Adapted gbro-collage-info grammar (MIT); HyperFrames `paper-collage-reveal` | SPC-09 or GFX-05, SRC-01 | AT-B8 | WS12 |
 | <a id="gfx-07"></a>**GFX-07** | Authored one-off graphics: the scene-author writes script-free HTML/CSS/SVG that passes lint and determinism checks | SS-GFX | Merged-research authored-graphics path | AIM-01, REN-01 | AT-B4 | WS12 |
 | <a id="gfx-08"></a>**GFX-08** | Import animation assets (Lottie) and vector art (SVG) as clips | SS-GFX | Lottie runtime (HyperFrames adapter) | REN-01 | AT-B5 | WS12 |
@@ -235,8 +235,8 @@ Columns:
 
 | ID | Requirement | Owner | Technology candidate | Depends on | Acceptance | WS |
 |---|---|---|---|---|---|---|
-| <a id="aud-01"></a>**AUD-01** | Music selection from licence-tagged libraries and connectors by mood and intensity, with optional local generation | SS-AUDIO | CLAP retrieval; ACE-Step 1.5 (optional) | MED-05, SRC-03 | AT-A5, AT-B5 | WS13 |
-| <a id="aud-02"></a>**AUD-02** | Sound effects and Foley placed frame-accurately on spine words, composition events, cuts and transitions | SS-AUDIO | Cue extraction (owned); Earshot procedural bank; CC0 libraries; Freesound | SPC-02, REN-01 | AT-A5, AT-B4 | WS13 |
+| <a id="aud-01"></a>**AUD-01** | Music selection from licence-tagged libraries and connectors by mood and intensity, with optional local generation | SS-AUDIO | CLAP retrieval over licence-tagged libraries; ACE-Step 1.5 (optional, MIT) | MED-05, SRC-03 | AT-A5, AT-B5 | WS13 |
+| <a id="aud-02"></a>**AUD-02** | Sound effects and Foley placed frame-accurately on spine words, composition events, cuts and transitions | SS-AUDIO | Cue extraction (owned); Earshot procedural bank; CC0 packs (e.g. uisfx); user libraries; Freesound opt-in | SPC-02, REN-01 | AT-A5, AT-B4 | WS13 |
 | <a id="aud-03"></a>**AUD-03** | Ducking as explicit gain keyframes derived from the spine; editable | SS-AUDIO | Owned envelope generator | SPC-02 | AT-A8, AT-B4 | WS13 |
 | <a id="aud-04"></a>**AUD-04** | Mix and master: per-track levels, SFX levelled to voice, two-pass loudness normalisation and true-peak limit to the delivery target | SS-AUDIO | FFmpeg loudnorm; HyperFrames audio mixer | AUD-01..03 | AT-A8, AT-X10 | WS13 |
 | <a id="aud-05"></a>**AUD-05** | Ambience beds for animated scenes | SS-AUDIO | Library + connectors | AUD-01 | AT-B5 | WS13 |
@@ -291,7 +291,7 @@ Columns:
 |---|---|---|---|---|---|---|
 | <a id="aim-01"></a>**AIM-01** | Provider-agnostic model gateway with roles, structured output, tools and vision requirements, and uniform outcomes | SS-AI | Owned gateway (07 §7); MCP | — | AT-X4 | WS8 |
 | <a id="aim-02"></a>**AIM-02** | Claude Code CLI runtime for local use on the user's own account, with the existing isolation flags | SS-AI | Existing `visual-director.ts` invocation pattern | AIM-01 | AT-X4 | WS8 |
-| <a id="aim-03"></a>**AIM-03** | Anthropic API runtime (Agent SDK or Messages API) with an operator-supplied key, and an OpenAI-compatible runtime for local models | SS-AI | Claude Agent SDK; Ollama / LM Studio / MLX-LM / llama.cpp servers | AIM-01 | AT-X4 | WS8 |
+| <a id="aim-03"></a>**AIM-03** | Anthropic API runtime (Agent SDK or Messages API) with an operator-supplied key, and an OpenAI-compatible runtime for local models | SS-AI | `@anthropic-ai/sdk` (Apache-2.0) Messages API with MCP tools; Claude Agent SDK optional (Anthropic licence); Ollama / LM Studio / llama.cpp servers (MLX-LM lacks JSON-schema output, E8) | AIM-01 | AT-X4 | WS8 |
 | <a id="aim-04"></a>**AIM-04** | Edit agent operates only through MCP tools and validated change sets; runs are budgeted, cancellable and reviewable | SS-AI | Merged-research MCP design | AIM-01, PRD-01 | AT-X1, AT-X2 | WS8 |
 | <a id="aim-05"></a>**AIM-05** | Manual mode: every workflow can be completed without any model | SS-AI | — | PRD-01, SS-UI | AT-X3 | WS8 |
 | <a id="aim-06"></a>**AIM-06** | Direct use of specialist tools through isolated external-tool adapters that return media with an invocation manifest | SS-TOOLS | Adapter interface (07 §5); Manim, Earshot, render(t) pages | PLT-01, RGT-05 | AT-B7 | WS15 |

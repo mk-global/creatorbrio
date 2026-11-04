@@ -213,6 +213,8 @@ interface RightsRecord {
   shareAlike: boolean;                            // CC BY-SA obligations on the output
   aiGenerated: boolean;
   personConsent?: "self" | "documented" | "none";  // for footage and cloned voices of real people
+  termsFlags: Array<"no-ai-input" | "noncommercial-api" | "research-use" | "no-endorsement" | "credit-platform">;
+                                                  // obligations from the source's terms, not its licence (E8)
   status: "cleared" | "needs-review" | "restricted" | "blocked";
   reviewedBy?: { by: "user"; at: string; note?: string };
 }
@@ -231,6 +233,8 @@ It runs when an asset is placed and again before export.
 | `shareAlike: true` (CC BY-SA) | allowed; the export carries the share-alike notice | needs review: the whole video may have to be released under BY-SA |
 | Requires attribution | credits generated automatically | credits generated automatically |
 | Real person, no recorded consent | needs review | **blocked** |
+| `termsFlags` contains `noncommercial-api` or `research-use` (Freesound API, Internet Archive) | allowed, labelled | needs review: the user confirms a separate right to use it commercially |
+| `termsFlags` contains `no-ai-input` (Pixabay) and the asset is used as input to a generative capability | **blocked** | **blocked** |
 
 Blocked assets cannot be exported; the timeline shows them with the reason.
 The policy is data, not code paths scattered through capabilities, and is tested on its own.
@@ -388,8 +392,8 @@ type AgentOutcome =
 
 | Runtime | How it runs | Intended use |
 |---|---|---|
-| `claude-code-cli` | Spawns the user's own installed `claude` with the existing isolation flags (`--strict-mcp-config`, `--setting-sources ""`, path-scoped `Read`, `--json-schema`, budgets) | Local, self-hosted use by the person who installed CreatorBrio, on their own account. This is today's behaviour |
-| `anthropic-api` | Claude Agent SDK or the Messages API with an API key the operator supplies; the MCP tools are the same | Any deployment where CreatorBrio is offered to other people, including a future paid service |
+| `claude-code-cli` | Spawns the user's own installed, unmodified `claude` with the existing isolation flags (`--strict-mcp-config`, `--setting-sources ""`, path-scoped `Read`, `--json-schema`, budgets). CreatorBrio never reads, stores or proxies Claude credentials | Local, self-hosted use by the person who installed CreatorBrio, on their own account. This is today's behaviour, and the only arrangement in which a Claude subscription is used ([08 §4](08-licensing-and-commercial.md#4-ai-providers-and-terms)) |
+| `anthropic-api` | The Messages API through `@anthropic-ai/sdk` (Apache-2.0) with CreatorBrio's own tool loop over the same MCP tools; the Claude Agent SDK (Anthropic's own licence) is an optional alternative. Uses an API key the operator supplies | Any deployment where CreatorBrio is offered to other people, including a future paid service |
 | `openai-compatible` | Any endpoint implementing chat completions with tool calling and JSON-schema output: local Ollama, LM Studio, MLX-LM or llama.cpp servers, or other hosted providers | Fully local operation without any Anthropic account; quality depends on the model, and roles whose requirements the model lacks (for example vision) are refused with the reason |
 | `manual` | No model | Every workflow remains usable by hand: the user writes the script, builds the storyboard and edits the timeline |
 

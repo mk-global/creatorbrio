@@ -172,7 +172,7 @@ type SceneElement =
 - **Illustrations** are image assets in a slot, generated or sourced, animated with transforms (parallax, Ken Burns) rather than generated motion.
 - The compiled output of a Scene Spec is ordinary HTML/SVG/CSS, so the final video and the storyboard frames come from one renderer, and a person can edit any element's timing or text in the inspector.
 
-The concrete rigging and pose-interpolation approach is chosen at validation gate [G6](11-implementation-program.md#validation-gates), using the evidence in [E7](../evidence/e7-openmontage-animation.md).
+The concrete rigging and pose-interpolation approach is chosen at validation gate [G6](11-implementation-program.md#1-validation-gates), using the evidence in [E7](../evidence/e7-openmontage-animation.md).
 
 ## 6. From storyboard to timeline: materialisation
 
@@ -208,7 +208,7 @@ Rules:
 | Animatic | Timed playback of the storyboard | Comment at a time; approve pacing |
 | Timeline review | The realised video with scene bands above the timeline | Comment at a time or on a range; approve picture lock |
 | Run review | A diff of everything an agent run changed, grouped by scene ([merged research 05 §5](../05-proposed-architecture.md#run-lifecycle)) | Keep or discard the whole run; keep per scene |
-| QA report | Technical and creative findings with timestamps ([10](10-acceptance-tests.md), [01 QA](01-product-requirements.md#requirements-register)) | Fix, waive with a reason, or ask the agent to fix |
+| QA report | Technical and creative findings with timestamps ([10](10-acceptance-tests.md), [01 QA](01-product-requirements.md#6-requirements-register)) | Fix, waive with a reason, or ask the agent to fix |
 
 ### Comments and targeted revisions
 
