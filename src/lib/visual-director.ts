@@ -37,8 +37,10 @@ import { confineUploadedPng } from "./reference-images";
  * - no session persistence and never `--resume`, so it cannot create, resume
  *   or overwrite the Design Agent's session;
  * - its input arrives on stdin, never in the process arguments;
- * - its own budget: $0.25 and 120 seconds (founder decision D4), on the CLI's
- *   default model, the same as the Design Agent.
+ * - a mandatory 120-second timeout, on the CLI's default model, the same as
+ *   the Design Agent. There is no spending cap unless the operator sets
+ *   `DIRECTOR_MAX_BUDGET_USD` (#116): a fixed default cap refused legitimate
+ *   requests that needed more planning, and the timeout already bounds a run.
  *
  * These are the CLI's permission rules, a policy boundary rather than
  * operating-system isolation: the CLI runs as the same account as the app.
@@ -46,8 +48,9 @@ import { confineUploadedPng } from "./reference-images";
 
 /** The tools the Director may use; pinned by the docs-consistency test. */
 export const DIRECTOR_TOOLS = ["Read"] as const;
-export const DIRECTOR_BUDGET_USD = 0.25;
 export const DIRECTOR_TIMEOUT_MS = 120_000;
+/** The optional operator setting that caps one planning run's Claude usage, in US dollars. */
+export const DIRECTOR_BUDGET_ENV = "DIRECTOR_MAX_BUDGET_USD";
 /** How long a cancelled or timed-out Director gets to exit before it is killed. */
 const KILL_GRACE_MS = 5_000;
 /** The CLI's JSON result is small; anything past this is not a plan. */
@@ -80,6 +83,7 @@ export type DirectorFailureCode =
   | "timed_out"
   | "cancelled"
   | "budget_exceeded"
+  | "budget_setting_invalid"
   | "agent_failed"
   | "invalid_output"
   | "invalid_plan"
@@ -90,7 +94,8 @@ export const DIRECTOR_FAILURE_MESSAGES: Record<DirectorFailureCode, string> = {
   start_failed: "The visual planner could not be started. Check that Claude Code is installed and working, then try again.",
   timed_out: "Planning the visuals took too long and was stopped. Nothing was changed; send your message again.",
   cancelled: "Planning was stopped. Nothing was changed.",
-  budget_exceeded: "Planning the visuals reached its spending limit and was stopped. Nothing was changed; try a simpler request.",
+  budget_exceeded: `Planning the visuals reached the spending cap set by ${DIRECTOR_BUDGET_ENV} and was stopped. Nothing was changed; raise or remove that cap in .env.local, restart CreatorBrio and send your message again.`,
+  budget_setting_invalid: `The visual planner's spending cap, ${DIRECTOR_BUDGET_ENV}, is not a positive amount in US dollars, such as 0.75. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.`,
   agent_failed: "The visual planner stopped unexpectedly. Nothing was changed; send your message again.",
   invalid_output: "The visual planner did not return a plan. Nothing was changed; send your message again.",
   invalid_plan: "The visual plan could not be used. Nothing was changed; send your message again, or rephrase it.",
@@ -416,8 +421,22 @@ export function buildDirectorInput(
 // ---------------------------------------------------------------------------
 // Invocation.
 
+/**
+ * Reads the optional spending cap. Unset or blank means no cap; otherwise it
+ * must be a plain positive decimal such as `0.75`. Anything else is refused
+ * rather than ignored, so a cap the operator asked for is never silently
+ * dropped.
+ */
+export function directorBudgetCap(raw: string | undefined): { ok: true; usd: number | null } | { ok: false } {
+  const value = raw?.trim() ?? "";
+  if (value === "") return { ok: true, usd: null };
+  if (!/^\d+(\.\d+)?$/.test(value)) return { ok: false };
+  const usd = Number(value);
+  return Number.isFinite(usd) && usd > 0 ? { ok: true, usd } : { ok: false };
+}
+
 /** The CLI arguments; exported so tests can pin the isolation flags. */
-export function directorArgs(workDir: string): string[] {
+export function directorArgs(workDir: string, budgetUsd: number | null): string[] {
   return [
     "-p",
     "--output-format",
@@ -432,8 +451,7 @@ export function directorArgs(workDir: string): string[] {
     "--json-schema",
     JSON.stringify(DIRECTOR_PLAN_SCHEMA),
     "--no-session-persistence",
-    "--max-budget-usd",
-    String(DIRECTOR_BUDGET_USD),
+    ...(budgetUsd === null ? [] : ["--max-budget-usd", String(budgetUsd)]),
     "--setting-sources",
     "",
     "--strict-mcp-config",
@@ -556,37 +574,43 @@ export async function runDirector(
     deniedReads: Array.isArray(result?.permission_denials) ? result.permission_denials.length : 0,
   });
 
-  let work: Awaited<ReturnType<typeof prepareWorkDir>> | null = null;
+  // Read per run, like the app's other .env.local settings, and before any
+  // working directory or process exists, so a bad setting costs nothing.
+  const cap = directorBudgetCap(process.env[DIRECTOR_BUDGET_ENV]);
   let outcome: DirectorResult;
-  try {
-    work = await prepareWorkDir(request);
-    const input = buildDirectorInput(request, work);
-    const cli = await runCli(directorArgs(work.dir), work.dir, input, options.signal, options.timeoutMs);
-    const result = parseResult(cli.stdout);
+  if (!cap.ok) outcome = { ok: false, code: "budget_setting_invalid", usage: usage(null) };
+  else {
+    let work: Awaited<ReturnType<typeof prepareWorkDir>> | null = null;
+    try {
+      work = await prepareWorkDir(request);
+      const input = buildDirectorInput(request, work);
+      const cli = await runCli(directorArgs(work.dir, cap.usd), work.dir, input, options.signal, options.timeoutMs);
+      const result = parseResult(cli.stdout);
 
-    if (cli.startError) outcome = { ok: false, code: "start_failed", usage: usage(null) };
-    else if (cli.cancelled) outcome = { ok: false, code: "cancelled", usage: usage(result) };
-    else if (cli.timedOut) outcome = { ok: false, code: "timed_out", usage: usage(result) };
-    else if (result?.subtype === "error_max_budget_usd") outcome = { ok: false, code: "budget_exceeded", usage: usage(result) };
-    else if (cli.exitCode !== 0 || !result || result.is_error) outcome = { ok: false, code: "agent_failed", usage: usage(result) };
-    else if (result.structured_output === undefined) outcome = { ok: false, code: "invalid_output", usage: usage(result) };
-    else {
-      const validated = validatePlan(result.structured_output, planContextFor(request));
-      if (validated.ok) outcome = { ok: true, plan: validated.plan, usage: usage(result) };
-      else if (validated.unavailable) {
-        outcome = {
-          ok: false,
-          code: "capability_unavailable",
-          usage: usage(result),
-          errors: validated.errors,
-          unavailable: validated.unavailable,
-        };
-      } else outcome = { ok: false, code: "invalid_plan", usage: usage(result), errors: validated.errors };
+      if (cli.startError) outcome = { ok: false, code: "start_failed", usage: usage(null) };
+      else if (cli.cancelled) outcome = { ok: false, code: "cancelled", usage: usage(result) };
+      else if (cli.timedOut) outcome = { ok: false, code: "timed_out", usage: usage(result) };
+      else if (result?.subtype === "error_max_budget_usd") outcome = { ok: false, code: "budget_exceeded", usage: usage(result) };
+      else if (cli.exitCode !== 0 || !result || result.is_error) outcome = { ok: false, code: "agent_failed", usage: usage(result) };
+      else if (result.structured_output === undefined) outcome = { ok: false, code: "invalid_output", usage: usage(result) };
+      else {
+        const validated = validatePlan(result.structured_output, planContextFor(request));
+        if (validated.ok) outcome = { ok: true, plan: validated.plan, usage: usage(result) };
+        else if (validated.unavailable) {
+          outcome = {
+            ok: false,
+            code: "capability_unavailable",
+            usage: usage(result),
+            errors: validated.errors,
+            unavailable: validated.unavailable,
+          };
+        } else outcome = { ok: false, code: "invalid_plan", usage: usage(result), errors: validated.errors };
+      }
+    } catch {
+      outcome = { ok: false, code: "start_failed", usage: usage(null) };
+    } finally {
+      if (work) await rm(work.dir, { recursive: true, force: true }).catch(() => {});
     }
-  } catch {
-    outcome = { ok: false, code: "start_failed", usage: usage(null) };
-  } finally {
-    if (work) await rm(work.dir, { recursive: true, force: true }).catch(() => {});
   }
 
   // Counts and codes only: never the message, page text, briefs or plan text.
@@ -597,6 +621,8 @@ export async function runDirector(
     costUsd: outcome.usage.costUsd,
     turns: outcome.usage.turns,
     deniedReads: outcome.usage.deniedReads,
+    // The configured cap, so costUsd can be read against it; never the raw setting.
+    budgetCapUsd: cap.ok ? cap.usd : null,
     references: request.references.length,
     sources: request.sources.length,
     ...(outcome.ok

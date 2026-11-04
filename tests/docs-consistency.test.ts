@@ -5,7 +5,7 @@ import path from "node:path";
 import { MAX_SLIDES } from "@/types/carousel";
 import { DEFAULT_BRAND } from "@/types/brand";
 import { buildSystemPrompt } from "@/lib/chat-system-prompt";
-import { DIRECTOR_BUDGET_USD, DIRECTOR_TIMEOUT_MS, DIRECTOR_TOOLS } from "@/lib/visual-director";
+import { DIRECTOR_BUDGET_ENV, DIRECTOR_TIMEOUT_MS, DIRECTOR_TOOLS } from "@/lib/visual-director";
 import type { Carousel } from "@/types/carousel";
 
 // CLAUDE.md is read by the assistant working on this repository, so a stale
@@ -73,8 +73,10 @@ describe("the Visual Director's architecture page matches the code", () => {
     expect(allowedToolsInChatRoute()).not.toEqual([...DIRECTOR_TOOLS]);
   });
 
-  it("states the Director's budget and time limit", () => {
-    expect(page).toContain(`$${DIRECTOR_BUDGET_USD.toFixed(2)} and ${DIRECTOR_TIMEOUT_MS / 1000} seconds`);
+  it("states the Director's mandatory time limit and its optional spending cap", () => {
+    expect(page).toContain(`a mandatory ${DIRECTOR_TIMEOUT_MS / 1000}-second timeout`);
+    expect(page).toContain(`\`${DIRECTOR_BUDGET_ENV}\``);
+    expect(readme, "README should list the Director's spending-cap setting").toContain(`\`${DIRECTOR_BUDGET_ENV}\``);
   });
 });
 
