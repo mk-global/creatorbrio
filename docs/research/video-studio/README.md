@@ -6,6 +6,8 @@ The recommendation is based on source-code study of the open-source ecosystem an
 
 > **Status: research only.** No Video Studio code exists. Nothing here is shipped or approved; implementation starts only after the founder reviews this architecture, under its own tickets.
 
+> **Product specification:** the complete product contract for both workflows (footage to video, and script to animated video) is in [`spec/`](spec/README.md) ([#66](https://github.com/mk-global/creatorbrio/issues/66)). It builds on this research and governs where they differ; the differences are listed in [spec/09](spec/09-differences-from-pr64.md).
+
 ## The recommendation in one paragraph
 
 CreatorBrio should own the edit model, the editing operations, the Claude controller, the creative-capability library and the Studio UI.
@@ -42,6 +44,8 @@ The working notes behind the documents above, with commit-pinned permalinks:
 | [E4 · Creative and audio tools](evidence/e4-creative-and-audio-tools.md) | HyperFrames in depth, Lemo-Opuscar, OneTake, Claude Animation Base, collage tools, OpenHiggsfield, Real SFX, Earshot, animation libraries |
 | [E5 · Building blocks](evidence/e5-building-blocks.md) | FFmpeg, speech, vision, audio, video understanding, local runtime pattern on Apple Silicon |
 | [E6 · Recent discovery](evidence/e6-recent-discovery.md) | 34 projects released or substantially changed in the last 90 days, with verified dates |
+| [E7 · OpenMontage, character animation, local image models](evidence/e7-openmontage-animation.md) | Added for the product specification (#66) |
+| [E8 · Local TTS, sourcing API terms, AI provider terms](evidence/e8-tts-sourcing-providers.md) | Added for the product specification (#66) |
 
 ## Evidence conventions
 

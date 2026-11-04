@@ -2,6 +2,8 @@
 
 [← Research index](README.md)
 
+> **Superseded in part.** The product specification in [`spec/`](spec/README.md) extends this document for both production workflows. See [spec/09](spec/09-differences-from-pr64.md) for exactly what changed.
+
 **Status:** recommendation for founder review. Nothing here is implemented.
 **Research date:** 2026-11-03. **Ticket:** [#63](https://github.com/mk-global/creatorbrio/issues/63).
 

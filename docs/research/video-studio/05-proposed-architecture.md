@@ -2,6 +2,8 @@
 
 [← Research index](README.md) · Decision: [00 Executive decision](00-executive-decision.md) · Alternatives: [04](04-architecture-alternatives.md)
 
+> **Superseded in part.** The product specification in [`spec/`](spec/README.md) extends this document for both production workflows. See [spec/09](spec/09-differences-from-pr64.md) for exactly what changed.
+
 This is the recommended design: **Architecture C, the hybrid**.
 CreatorBrio owns the edit document, the editing operations, the agent controller and the creative capabilities.
 It reuses HyperFrames as its one rendering engine, FFmpeg for media processing, and local Apple Silicon models for analysis.

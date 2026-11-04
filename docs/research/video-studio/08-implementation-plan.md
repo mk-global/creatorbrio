@@ -2,6 +2,8 @@
 
 [← Research index](README.md) · Architecture: [05](05-proposed-architecture.md) · Integration: [07](07-integration-plan.md)
 
+> **Superseded in part.** The product specification in [`spec/`](spec/README.md) extends this document for both production workflows. See [spec/09](spec/09-differences-from-pr64.md) for exactly what changed.
+
 The plan builds the complete Video Studio in dependency order.
 It does not ship an intentionally incomplete product: workstreams land behind a "Video (preview)" switch until the release in which every capability in [06](06-feature-coverage.md) is present and has passed its acceptance checks.
 The validation checkpoints are architectural gates, run first, that can change *how* later work is done.
