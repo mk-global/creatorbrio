@@ -195,3 +195,26 @@ describe("parseToUnicode", () => {
     expect(reversed.unicode.size).toBe(0);
   });
 });
+
+describe("forms drawn many times", () => {
+  it("reads a shared form once per font, so nested shared forms stay linear", async () => {
+    // Each level draws the next twice: 2^25 draws of the innermost form,
+    // which only a reader that remembers forms can count in time.
+    const doc = await PDFDocument.create();
+    const ctx = doc.context;
+    let inner = ctx.register(ctx.flateStream("0 0 1 1 re f", { Type: "XObject", Subtype: "Form", BBox: [0, 0, 1, 1] }));
+    for (let level = 0; level < 25; level++) {
+      inner = ctx.register(
+        ctx.flateStream("/X Do /X Do", { Type: "XObject", Subtype: "Form", BBox: [0, 0, 1, 1], Resources: { XObject: { X: inner } } })
+      );
+    }
+    const page = doc.addPage([10, 10]);
+    page.node.set(PDFName.of("Resources"), ctx.obj({ XObject: { X: inner } }));
+    page.node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream("/X Do")));
+
+    const started = Date.now();
+    const [content] = await inspectPdf(await doc.save());
+    expect(content.pathPaints).toBe(2 ** 25);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});

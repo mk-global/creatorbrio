@@ -245,6 +245,7 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
         for (const [i, content] of pages.entries()) {
           const ours = [...comparableCharacters(content.text)].sort();
           expect(ours.length).toBeGreaterThan(0);
+          // Counts too: the comparison needs each character as often as shown.
           expect(ours).toEqual([...comparableCharacters(pageWords(file, i + 1).join(" "))].sort());
         }
       });
@@ -276,6 +277,7 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "a drop-shadow on an icon-only SVG symbol beside it": [box(`<svg width="300" height="300"><defs><symbol id="icon" viewBox="0 0 10 10"><path d="M0 0L10 0L5 10z" fill="#c4622d"/></symbol></defs><use href="#icon" width="300" height="300" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"/></svg><p>Caption words</p>`), ["Caption", "words"]],
       // Text that is never drawn does not count under a filter.
       "a drop-shadow around a style sheet and an SVG title and description": [box(`<div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><style>.x{color:red}</style><svg width="200" height="200"><title>Tooltip</title><desc>Description</desc><rect width="200" height="200" fill="#c4622d"/></svg></div><p>Caption words</p>`), ["Caption", "words"]],
+      "a rounded clip-path card": [box(`<div style="clip-path:inset(0 round 30px);background:#eee;padding:30px">Card words</div>`), ["Card", "words"]],
       "a filter on a shape whose generated content is a blank": [box(`<style>.s::before{content:" "}</style><div class="s" style="width:200px;height:200px;background:#c4622d;filter:blur(2px)"></div><p>Caption words</p>`), ["Caption", "words"]],
     };
     const refused: Record<string, [string, RegExp]> = {
@@ -317,6 +319,18 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "text used as an SVG clip path": [box(`<svg width="900" height="200"><defs><clipPath id="c"><text x="0" y="120" font-size="120">CLIP</text></clipPath></defs><rect width="900" height="200" fill="#c4622d" clip-path="url(#c)"/></svg><p>Plain words</p>`), /^Slide 2 draws text inside an SVG pattern or uses text as an SVG clip path/],
       "mix-blend-mode plus-lighter": [box(`<div style="background:#336;padding:20px"><div style="mix-blend-mode:plus-lighter;background:#933;width:200px;height:100px"></div></div><p>Plain words</p>`), /^Slide 2 uses mix-blend-mode plus-lighter or plus-darker/],
       "a document nested too deeply for the DevTools protocol to read": [box(`${"<div>".repeat(400)}Deep words${"</div>".repeat(400)}`), /^Slide 2 could not be checked before printing/],
+      // Effects on pseudo-elements that style an element's own content.
+      "a filter on a list whose only text is a custom ::marker": [box(`<style>li::marker{content:"MARKER "}</style><ul style="list-style:none inside;filter:blur(0.5px);padding:0"><li></li></ul><p>Plain words</p>`), /^Slide 2 applies a CSS filter to text/],
+      "gradient text through ::first-letter": [box(`<style>p.d::first-letter{background:linear-gradient(90deg,red,blue);-webkit-background-clip:text;background-clip:text;color:transparent;font-size:200px}</style><p class="d">Drop cap paragraph</p>`), /^Slide 2 fills text with a gradient or image \(background-clip: text\)/],
+      "gradient text through ::first-line": [box(`<style>p.d::first-line{background:linear-gradient(90deg,red,blue);-webkit-background-clip:text;background-clip:text;color:transparent}</style><p class="d">First line gradient words</p>`), /^Slide 2 fills text with a gradient or image \(background-clip: text\)/],
+      "a filter on ::details-content": [box(`<style>details::details-content{filter:blur(1px)}</style><details open><summary>Sum</summary><p>Details body</p></details>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter on an input's ::placeholder": [box(`<style>input::placeholder{filter:blur(3px)}</style><input placeholder="Placeholder words" style="font-size:60px"><p>Plain words</p>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter on a file input's button": [box(`<style>input::file-selector-button{filter:blur(2px)}</style><input type="file"><p>Plain words</p>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter on generated text that spells url(": [box(`<style>.x::before{content:"url(" "PSEUDO" ")";filter:blur(2px);display:block}</style><div class="x"></div><p>Plain words</p>`), /^Slide 2 applies a CSS filter to text/],
+      "an SVG mask in <defs> drawn through <use>": [box(`<svg width="900" height="300"><defs><linearGradient id="mg"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient><mask id="m"><rect width="900" height="300" fill="url(#mg)"/></mask><g id="g"><rect width="900" height="300" fill="#c4622d" mask="url(#m)"/></g></defs><use href="#g"/></svg><p>Label</p>`), /^Slide 2 uses a CSS or SVG mask/],
+      // The screen hides a face turned away; the PDF prints it mirrored.
+      "a face turned away with backface-visibility: hidden": [box(`<p>Front</p><div style="transform:rotateY(180deg);backface-visibility:hidden">Hidden back</div>`), /^Slide 2 turns an element's back to the viewer \(backface-visibility: hidden\)/],
+      "a flip card showing its front": [box(`<div style="position:relative;width:600px;height:300px;transform-style:preserve-3d"><div style="position:absolute;inset:0;backface-visibility:hidden;background:#cde">Front side</div><div style="position:absolute;inset:0;backface-visibility:hidden;transform:rotateY(180deg);background:#fdc">Back side</div></div>`), /^Slide 2 turns an element's back to the viewer \(backface-visibility: hidden\)/],
       "CSS that defeats the print clip": [`<style>body{overflow:visible!important;position:static!important}</style>${box("<p>Shrunk words</p>")}<div style="position:absolute;top:200px;right:-300px;width:600px;height:600px;background:#c4622d"></div>`, /^Slide 2 has content reaching past its edges/],
     };
 
@@ -378,6 +392,12 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "text shortened by an ellipsis or a line clamp": box(`<p style="width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Overflowing sentence xyzq</p><p style="display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;width:520px">Clamped words then quixotic jazz</p>`),
       "transparent text with only a shadow, and masked characters": box(`<p style="color:transparent;text-shadow:0 0 4px #000">Shadow only</p><p style="-webkit-text-security:disc">Secret words</p><p>Plain words</p>`),
       "a document nested a hundred levels deep": box(`${"<div>".repeat(100)}Deep words${"</div>".repeat(100)}`),
+      "text a clip path hides entirely": box(`<p style="clip-path:inset(100%)">Gone words</p><p style="clip-path:circle(0)">Gone words</p><p style="clip-path:polygon(0 0,0 0,0 0)">Gone words</p><p>Plain words</p>`),
+      "text clipped away by contain: paint": box(`<div style="contain:paint;height:200px;background:#eee"><p>Card title</p><p style="margin-top:300px">Hidden quokka</p></div>`),
+      "hidden text in shadow trees and slots": box(`<div style="opacity:0"><div><template shadowrootmode="open"><p>Quokka jumpz</p></template></div></div><div><template shadowrootmode="open"><div style="opacity:0"><slot></slot></div></template><p>Quokka jumpz</p></div><div><template shadowrootmode="open"><div style="overflow:hidden;height:60px"><slot></slot></div></template><p>Seen</p><p>Quokka jumpz</p></div><p>Plain words</p>`),
+      "unused SVG text in <defs>": box(`<p>Plain words</p><svg width="800" height="300"><defs><text x="10" y="100" font-size="60" id="t">Quokka jumpz</text></defs><rect width="100" height="100" fill="#c4622d"/></svg>`),
+      "text below the smallest opacity Chromium paints": box(`<p>Plain words</p><p style="opacity:0.001">Zebra quiz</p>`),
+      "Greek with a final sigma, wrapped and run together": box(`<h1 style="width:500px">ΠΡΟΣ ΤΗΝ ΚΟΡΥΦΗ</h1><h2>Στόχος</h2><p>Μάθετε περισσότερα</p>`),
     };
     for (const [effect, html] of Object.entries(unpainted)) {
       it(`accepts ${effect}`, async () => {
@@ -414,13 +434,36 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       const pdf = await exportPdf([slide(html)], "4:5");
       const [content] = await inspectPdf(pdf);
       const { comparableCharacters } = await import("@/lib/print-check");
-      const extracted = [...comparableCharacters(content.text)].sort();
+      const extracted = [...comparableCharacters(content.text).keys()].sort();
       await withPdfFile(pdf, (file) => {
-        expect(extracted).toEqual([...comparableCharacters(pageWords(file, 1).join(" "))].sort());
+        expect(extracted).toEqual([...comparableCharacters(pageWords(file, 1).join(" ")).keys()].sort());
       });
       expect(extracted).toEqual(expect.arrayContaining(["提", "高", "क", "م", "λ", "к"]));
-      // A cold font cache fetches every unicode-range file of Noto Sans SC.
-    }, 180_000);
+      // A cold font cache fetches every unicode-range file of Noto Sans SC,
+      // about 600 for the variable font and 600 for the static instances,
+      // one after another: measured at over three minutes on a cold cache.
+    }, 420_000);
+
+    // Shown text the comparison must see wherever it sits: under a clip path
+    // that shows it, in generated content, and repeated elsewhere on the slide.
+    // They follow the test above, whose Noto Sans SC download they reuse.
+    const lostChinese: Record<string, string> = {
+      "inside an angled clip-path banner": box(`<div style="clip-path:polygon(0 0,100% 0,92% 100%,0 100%);background:#ffd400;padding:30px"><p>5 Tips 提高效率</p></div>`),
+      "as the only text of a rounded clip-path card": box(`<div style="clip-path:inset(0 round 30px);background:#e6e0f5;padding:30px"><p>提高效率</p></div>`),
+      "in a ::before label": box(`<style>h1::before{content:"第一步 "}</style><h1>Step one</h1>`),
+      "in counter labels": box(`<style>ol{counter-reset:s;list-style:none;padding:0}li{counter-increment:s}li::before{content:"步骤 " counter(s) " · "}</style><ol><li>Plan</li><li>Draft</li></ol>`),
+      "beside the same characters in a font that prints them": box(`<h1>5 Tips 提高效率</h1><p style="font-family:'Noto Sans SC'">如何提高工作效率</p>`),
+    };
+    for (const [where, html] of Object.entries(lostChinese)) {
+      it.skipIf(process.platform !== "darwin")(`refuses Chinese lost to an unembeddable fallback font ${where}`, async () => {
+        const plain = slide(box("<p>First slide</p>"), 0);
+        await expect(exportPdf([plain, slide(html, 1)], "4:5")).rejects.toMatchObject({
+          status: 422,
+          message: expect.stringMatching(/^Slide 2 shows text that would not reach the PDF as text \(such as "/),
+        });
+      }, 120_000);
+    }
+
 
     it("accepts a slide that is only a photograph", async () => {
       const pdf = await exportPdf(

@@ -304,6 +304,7 @@ describe("refusing a slide that cannot be printed faithfully", () => {
     ["text-paint", /^Slide 4 draws text inside an SVG pattern or uses text as an SVG clip path, .*ordinary SVG or HTML text/],
     ["mask", /^Slide 4 uses a CSS or SVG mask, .*gradient overlay or a plain shape/],
     ["blend", /^Slide 4 uses mix-blend-mode plus-lighter or plus-darker, .*another blend mode/],
+    ["backface", /^Slide 4 turns an element's back to the viewer \(backface-visibility: hidden\), .*display: none/],
     ["overflow", /^Slide 4 has content reaching past its edges .*keep everything inside the slide/],
     ["unreadable", /^Slide 4 could not be checked before printing, .*plain HTML inside the page body/],
     ["page-size", /^Slide 4 did not print as a single page at the slide's size\. .*print page rules \(@page\)/],

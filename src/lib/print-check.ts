@@ -88,6 +88,8 @@ export function bodyIsTheSlide(): boolean {
  *   poppler draw wrongly (the masked image or text loses its fade).
  * - `blend`: `mix-blend-mode: plus-lighter` and `plus-darker` have no PDF
  *   equivalent and print as an ordinary overlay.
+ * - `backface`: an element with `backface-visibility: hidden` faces away from
+ *   the viewer, so the screen hides it, but Chromium prints it, mirrored.
  * - `overflow`: content reaches past the slide although the print clip could
  *   not be applied, so the page would come out shrunk.
  * - `unreadable`: part of the slide cannot be checked: a closed shadow root,
@@ -102,6 +104,7 @@ export type PrintProblem =
   | "gradient-text"
   | "mask"
   | "blend"
+  | "backface"
   | "overflow"
   | "unreadable";
 
@@ -144,11 +147,16 @@ export function readPrintableText(isSlide = true): PrintableText {
   const nameOf = getter(Element.prototype, "localName");
   const widthOf = getter(Element.prototype, "clientWidth");
   const heightOf = getter(Element.prototype, "clientHeight");
+  const offsetWidthOf = getter(HTMLElement.prototype, "offsetWidth");
+  const offsetHeightOf = getter(HTMLElement.prototype, "offsetHeight");
   const scrollWidthOf = getter(Element.prototype, "scrollWidth");
   const scrollHeightOf = getter(Element.prototype, "scrollHeight");
   const completeOf = getter(HTMLImageElement.prototype, "complete");
   const naturalWidthOf = getter(HTMLImageElement.prototype, "naturalWidth");
   const assignedNodes = HTMLSlotElement.prototype.assignedNodes;
+  const elementSlotOf = getter(Element.prototype, "assignedSlot");
+  const textSlotOf = getter(Text.prototype, "assignedSlot");
+  const hostOf = getter(ShadowRoot.prototype, "host");
   const rectOf = (el: Element) => Element.prototype.getBoundingClientRect.call(el);
   const attribute = (el: Element, name: string) => Element.prototype.getAttribute.call(el, name);
   const hasAttribute = (el: Element, name: string) => Element.prototype.hasAttribute.call(el, name);
@@ -188,6 +196,19 @@ export function readPrintableText(isSlide = true): PrintableText {
     return { elements, texts };
   }
 
+  /**
+   * Where `node` renders in the flat tree: the slot it is assigned to, else
+   * its parent element, else the host of the shadow root it sits in.
+   */
+  function flatParent(node: Element | Text): Element | null {
+    const slot = node instanceof Text ? textSlotOf.call(node) : elementSlotOf.call(node);
+    if (slot) return slot;
+    const parent = parentOf.call(node);
+    if (parent) return parent;
+    const shadow = parentNodeOf.call(node);
+    return shadow instanceof ShadowRoot ? hostOf.call(shadow) : null;
+  }
+
   const root = rootOf.call(document);
   const body = bodyOf.call(document);
   // A slide's own document always has both; a frame inside it may be an SVG
@@ -219,11 +240,59 @@ export function readPrintableText(isSlide = true): PrintableText {
     return !(parent instanceof Element && SILENT.includes(nameOf.call(parent)));
   };
 
+  /**
+   * A computed `content` value read as CSS: its quoted strings, and whether
+   * anything else in it draws text (counters, attributes, quotation marks).
+   * Functions such as `url()` and gradients are skipped whole, strings inside
+   * them included, so a string spelling `url(` cannot hide text.
+   */
+  function contentParts(content: string): { strings: string[]; other: boolean } {
+    const strings: string[] = [];
+    let other = false;
+    let i = 0;
+    const readString = () => {
+      const quote = content[i++];
+      let out = "";
+      while (i < content.length && content[i] !== quote) {
+        if (content[i] === "\\") i++;
+        out += content[i++] ?? "";
+      }
+      i++;
+      return out;
+    };
+    while (i < content.length) {
+      const ch = content[i];
+      if (ch === '"' || ch === "'") {
+        strings.push(readString());
+        continue;
+      }
+      const word = /^[a-z-]+/i.exec(content.slice(i))?.[0];
+      if (!word) {
+        i++;
+        continue;
+      }
+      i += word.length;
+      if (content[i] === "(") {
+        if (/^(?:counters?|attr)$/i.test(word)) other = true;
+        for (let depth = 0; i < content.length; ) {
+          const c = content[i];
+          if (c === '"' || c === "'") readString();
+          else {
+            i++;
+            if (c === "(") depth++;
+            else if (c === ")" && --depth === 0) break;
+          }
+        }
+      } else if (/^(?:no-)?(?:open|close)-quote$/i.test(word)) other = true;
+    }
+    return { strings, other };
+  }
+
   /** Whether generated content draws anything other than images, spaces or nothing. */
   const generatesText = (style: CSSStyleDeclaration) => {
     if (style.display === "none" || !set(style.content)) return false;
-    const withoutImages = style.content.replace(/url\([^)]*\)|(?:-webkit-)?(?:linear|radial|conic)-gradient\([^)]*\)/g, "");
-    return withoutImages.replace(/"\s*"|'\s*'/g, "").trim() !== "";
+    const { strings, other } = contentParts(style.content);
+    return other || strings.some((text) => text.trim() !== "");
   };
 
   /** `<use>` elements being resolved, so a reference cycle ends. */
@@ -257,7 +326,10 @@ export function readPrintableText(isSlide = true): PrintableText {
       }
     }
     const style = getComputedStyle(el);
-    if (style.display === "list-item" && style.listStyleType !== "none") return true;
+    // A list marker draws its counter, or its own content even without one.
+    if (style.display === "list-item" && (style.listStyleType !== "none" || generatesText(getComputedStyle(el, "::marker")))) {
+      return true;
+    }
     return PSEUDOS.some((pseudo) => generatesText(getComputedStyle(el, pseudo)));
   }
 
@@ -291,6 +363,49 @@ export function readPrintableText(isSlide = true): PrintableText {
     set(style.maskImage) || set(style.getPropertyValue("-webkit-mask-image")) || set(style.getPropertyValue("-webkit-mask-box-image-source"));
   const blendsWithoutPdfEquivalent = (style: CSSStyleDeclaration) => /^plus-/.test(style.mixBlendMode);
 
+  /** Degrees in a computed angle. */
+  const degrees = (angle: string) => {
+    const value = parseFloat(angle);
+    if (angle.endsWith("rad") && !angle.endsWith("grad")) return (value * 180) / Math.PI;
+    if (angle.endsWith("turn")) return value * 360;
+    if (angle.endsWith("grad")) return value * 0.9;
+    return value;
+  };
+  /** An element's own transform: its `rotate` and `scale` properties, then `transform`. */
+  function transformOf(style: CSSStyleDeclaration): DOMMatrix {
+    let m = new DOMMatrix();
+    if (set(style.rotate)) {
+      const parts = style.rotate.trim().split(/\s+/);
+      const angle = degrees(parts[parts.length - 1]);
+      const named: Record<string, number[]> = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+      const axis = parts.length === 1 ? [0, 0, 1] : (named[parts[0]] ?? parts.slice(0, 3).map(Number));
+      m = m.rotateAxisAngle(axis[0], axis[1], axis[2], angle);
+    }
+    if (set(style.scale)) {
+      const [x, y = x, z = 1] = style.scale.trim().split(/\s+/).map(Number);
+      m = m.scale(x, y, z);
+    }
+    if (set(style.transform)) m = m.multiply(new DOMMatrix(style.transform));
+    return m;
+  }
+  /**
+   * Whether `el` shows its back to the viewer: its transform, composed with
+   * those of the ancestors sharing its 3D context, turns its front away.
+   */
+  function facesAway(el: Element): boolean {
+    let m = transformOf(getComputedStyle(el));
+    for (let at = flatParent(el); at; at = flatParent(at)) {
+      const style = getComputedStyle(at);
+      if (style.transformStyle !== "preserve-3d") break;
+      m = transformOf(style).multiply(m);
+    }
+    return m.m33 < 0;
+  }
+
+  // Pseudo-elements that style an element's own content rather than add to
+  // it, so an effect on one applies to text the element holds.
+  const TEXT_PSEUDOS = ["::first-letter", "::first-line", "::marker", "::placeholder", "::file-selector-button", "::details-content"];
+
   // In order of severity: content lost first, then pictures of text, then
   // effects some readers draw wrongly.
   const found = new Set<PrintProblem>();
@@ -299,8 +414,9 @@ export function readPrintableText(isSlide = true): PrintableText {
     const own = getComputedStyle(el);
     const pseudos = PSEUDOS.map((p) => getComputedStyle(el, p)).filter((s) => s.display !== "none" && set(s.content));
     // A pseudo-element's own box cannot be measured, so one that is
-    // generated at all is checked; an element is checked when it has a box.
-    for (const style of hasBox(el) ? [own, ...pseudos] : pseudos) {
+    // generated at all is checked; an element is checked when it has a box,
+    // and an SVG element always, as one in <defs> is drawn where it is used.
+    for (const style of hasBox(el) || el instanceof SVGElement ? [own, ...pseudos] : pseudos) {
       if (set(style.backdropFilter)) found.add("backdrop-filter");
       if (masks(style)) found.add("mask");
     }
@@ -310,6 +426,15 @@ export function readPrintableText(isSlide = true): PrintableText {
     if (set(own.filter) && containsText(el)) found.add("filter");
     if (reflects(own) && containsText(el)) found.add("box-reflect");
     if (clipsToText(own) && containsText(el)) found.add("gradient-text");
+    if (own.backfaceVisibility === "hidden" && facesAway(el)) found.add("backface");
+    for (const pseudo of TEXT_PSEUDOS) {
+      const style = getComputedStyle(el, pseudo);
+      if (!set(style.filter) && !reflects(style) && !clipsToText(style)) continue;
+      if (!containsText(el)) continue;
+      if (set(style.filter)) found.add("filter");
+      if (reflects(style)) found.add("box-reflect");
+      if (clipsToText(style)) found.add("gradient-text");
+    }
     for (const style of pseudos) {
       if (!generatesText(style)) continue;
       if (set(style.filter)) found.add("filter");
@@ -318,13 +443,13 @@ export function readPrintableText(isSlide = true): PrintableText {
       if (blendsWithoutPdfEquivalent(style)) found.add("blend");
     }
   }
-  const order: PrintProblem[] = ["backdrop-filter", "filter", "box-reflect", "text-paint", "gradient-text", "mask", "blend"];
+  const order: PrintProblem[] = ["backdrop-filter", "filter", "box-reflect", "text-paint", "gradient-text", "mask", "blend", "backface"];
   const problem = order.find((p) => found.has(p)) ?? null;
   if (problem) return { hasText: true, visibleText: "", problem };
 
-  // Visibly painted text: inside the slide and every clipping ancestor, not
-  // hidden, fully transparent or disguised, and SVG text with a fill or a
-  // stroke. Text under a clip-path is not counted.
+  // Visibly painted text: inside the slide, every clipping ancestor and any
+  // clip path's region, not hidden, transparent or disguised, and SVG text
+  // with a fill or a stroke.
   type Box = { left: number; top: number; right: number; bottom: number };
   const MIN_VISIBLE_PX = 2;
   const intersect = (a: Box, b: Box): Box => ({
@@ -336,11 +461,87 @@ export function readPrintableText(isSlide = true): PrintableText {
   const visibleBox = (b: Box) => b.right - b.left >= MIN_VISIBLE_PX && b.bottom - b.top >= MIN_VISIBLE_PX;
   const inside = (r: Box, area: Box) =>
     r.left >= area.left && r.top >= area.top && r.right <= area.right && r.bottom <= area.bottom;
-  // Only an alpha of zero: computed colours are rgb(), rgba() or color(... / alpha).
-  const transparent = (color: string) =>
-    color === "transparent" ||
-    /^rgba\((?:[^,]*,){3}\s*0(?:\.0+)?\s*\)$/.test(color) ||
-    /\/\s*0(?:\.0+)?\s*\)$/.test(color);
+  // Chromium paints in 8-bit alpha, so anything under half a step is nothing.
+  const invisibleAlpha = (alpha: number) => alpha * 255 < 0.5;
+  /** Whether a computed colour (rgb(), rgba() or color(... / alpha)) is not painted. */
+  const transparent = (color: string) => {
+    if (color === "transparent") return true;
+    const alpha = /^rgba\((?:[^,]*,){3}\s*([\d.]+)\s*\)$/.exec(color) ?? /\/\s*([\d.]+)\s*\)$/.exec(color);
+    return alpha ? invisibleAlpha(Number(alpha[1])) : false;
+  };
+  // SVG resources draw nothing where they are written, only where referenced.
+  const RESOURCES = ["defs", "symbol", "pattern", "clipPath", "mask", "marker", "filter", "linearGradient", "radialGradient"];
+
+  /**
+   * The region a `clip-path` leaves, as a box in the page: "empty" when it
+   * shows nothing, which Chromium then leaves out of the PDF altogether (the
+   * visually hidden pattern), or "unknown" when it cannot be measured, in
+   * which case the element's other clips stand. A clip path that shows any
+   * part of the text keeps all of its glyphs in the PDF, so the box only
+   * narrows which characters are compared.
+   */
+  function clipRegion(el: Element, clipPath: string): Box | "empty" | "unknown" {
+    const r = rectOf(el);
+    const width: number = el instanceof HTMLElement ? offsetWidthOf.call(el) : r.width;
+    const height: number = el instanceof HTMLElement ? offsetHeightOf.call(el) : r.height;
+    // Shapes are measured in the element's own box; under a transform they
+    // are only checked for being empty.
+    const flat = Math.abs(r.width - width) < 0.5 && Math.abs(r.height - height) < 0.5;
+    const length = (value: string, basis: number): number | null => {
+      if (/^-?[\d.]+px$/.test(value)) return parseFloat(value);
+      if (/^-?[\d.]+%$/.test(value)) return (parseFloat(value) / 100) * basis;
+      return value === "0" ? 0 : null;
+    };
+    const box = (left: number, top: number, right: number, bottom: number): Box | "empty" | null => {
+      if (right - left <= 0 || bottom - top <= 0) return "empty";
+      return flat ? { left: r.left + left, top: r.top + top, right: r.left + right, bottom: r.top + bottom } : null;
+    };
+    const shape = /^(inset|circle|ellipse|polygon)\((.*)\)/.exec(clipPath.trim());
+    if (clipPath.startsWith("url(")) {
+      const id = /#([^"')]+)/.exec(clipPath)?.[1];
+      const scope = Node.prototype.getRootNode.call(el);
+      const target = id ? (scope instanceof ShadowRoot ? DocumentFragment.prototype.getElementById : Document.prototype.getElementById).call(scope, id) : null;
+      // A clip path with nothing in it clips everything away.
+      return target && nameOf.call(target) === "clipPath" && subtree(target).elements.length === 0 ? "empty" : "unknown";
+    }
+    if (!shape) return "unknown";
+    const [, kind, args] = shape;
+    const at = /\bat\s+(\S+)\s+(\S+)/.exec(args);
+    const centre = at ? [length(at[1], width), length(at[2], height)] : [width / 2, height / 2];
+    let result: Box | "empty" | null = null;
+    if (kind === "inset") {
+      const values = args.split(/\s+round\s+/)[0].trim().split(/\s+/);
+      const [t, rgt = t, b = t, l = rgt] = values;
+      const [top, right, bottom, left] = [length(t, height), length(rgt, width), length(b, height), length(l, width)];
+      if ([top, right, bottom, left].every((v) => v !== null)) result = box(left!, top!, width - right!, height - bottom!);
+    } else if (kind === "circle" || kind === "ellipse") {
+      const radii = args.split(/\s+at\s+/)[0].trim().split(/\s+/).filter(Boolean);
+      const diagonal = Math.sqrt((width * width + height * height) / 2);
+      const rx = radii[0] === undefined ? null : length(radii[0], kind === "circle" ? diagonal : width);
+      const ry = kind === "circle" ? rx : radii[1] === undefined ? null : length(radii[1], height);
+      if (rx === 0 || ry === 0) return "empty";
+      if (rx !== null && ry !== null && centre.every((v) => v !== null)) {
+        result = box(centre[0]! - rx, centre[1]! - ry, centre[0]! + rx, centre[1]! + ry);
+      }
+    } else {
+      const points = args.replace(/^\s*(?:nonzero|evenodd)\s*,/, "").split(",").map((p) => p.trim().split(/\s+/));
+      const xy = points.map(([x, y]) => [length(x ?? "", width), length(y ?? "", height)]);
+      if (xy.length > 0 && xy.every(([x, y]) => x !== null && y !== null)) {
+        const xs = xy.map(([x]) => x!);
+        const ys = xy.map(([, y]) => y!);
+        // A polygon of no area draws nothing, even when its points spread out.
+        let area = 0;
+        for (let i = 0; i < xy.length; i++) {
+          const [x1, y1] = xy[i];
+          const [x2, y2] = xy[(i + 1) % xy.length];
+          area += x1! * y2! - x2! * y1!;
+        }
+        result = area === 0 ? "empty" : box(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys));
+      }
+    }
+    return result ?? "unknown";
+  }
+
   /**
    * Where `el`'s text can show, or null when it is not painted at all.
    * `exact` is false when the text may be shortened where it shows, by a
@@ -351,17 +552,23 @@ export function readPrintableText(isSlide = true): PrintableText {
     let box: Box = { left: 0, top: 0, right: slideWidth, bottom: slideHeight };
     let opacity = 1;
     let exact = true;
-    for (let at: Element | null = el, from: Element | null = null; at; from = at, at = parentOf.call(at)) {
+    for (let at: Element | null = el, from: Element | null = null; at; from = at, at = flatParent(at)) {
       const style = getComputedStyle(at);
       opacity *= Number(style.opacity);
-      if (set(style.clipPath)) return null;
+      if (RESOURCES.includes(nameOf.call(at))) return null;
+      if (set(style.clipPath)) {
+        const region = clipRegion(at, style.clipPath);
+        if (region === "empty") return null;
+        if (region !== "unknown") box = intersect(box, region);
+      }
       // Skipped content is never painted, though Chromium still lays it out
       // when asked; a closed details element shows only its summary.
       if (style.contentVisibility === "hidden") return null;
       if (nameOf.call(at) === "details" && !hasAttribute(at, "open") && !(from && nameOf.call(from) === "summary")) {
         return null;
       }
-      const clips = style.overflowX !== "visible" || style.overflowY !== "visible";
+      const clips =
+        style.overflowX !== "visible" || style.overflowY !== "visible" || /\b(?:paint|strict|content)\b/.test(style.contain);
       if (clips) box = intersect(box, rectOf(at));
       if ((clips && style.textOverflow !== "clip") || set(style.getPropertyValue("-webkit-line-clamp"))) exact = false;
       // `clip` applies to absolutely positioned elements; anything but `auto`
@@ -375,7 +582,7 @@ export function readPrintableText(isSlide = true): PrintableText {
       }
     }
     const style = getComputedStyle(el);
-    if (style.visibility !== "visible" || opacity === 0) return null;
+    if (style.visibility !== "visible" || invisibleAlpha(opacity)) return null;
     // Masked characters (-webkit-text-security) draw as discs, not as the text.
     if (set(style.getPropertyValue("-webkit-text-security"))) return null;
     if (el instanceof SVGElement) {
@@ -391,8 +598,9 @@ export function readPrintableText(isSlide = true): PrintableText {
 
   let hasText = false;
   const visible: string[] = [];
-  for (const node of subtree(top).texts) {
-    const el = parentOf.call(node);
+  const { elements: shownElements, texts: shownTexts } = subtree(top);
+  for (const node of shownTexts) {
+    const el = flatParent(node);
     const value = node.nodeValue ?? "";
     if (!el || !value.trim() || !drawableText(node)) continue;
     const shown = shownArea(el);
@@ -419,22 +627,49 @@ export function readPrintableText(isSlide = true): PrintableText {
       i += length;
     }
   }
+
+  // Generated text: the strings of ::before, ::after and a custom ::marker,
+  // counted only where they must show, laid out in their element's flow and
+  // that element wholly in view. A pseudo-element's own box cannot be
+  // measured, so one placed elsewhere is not compared.
+  if (isSlide) {
+    for (const el of shownElements) {
+      const pseudos = ["::before", "::after", ...(getComputedStyle(el).display === "list-item" ? ["::marker"] : [])];
+      for (const pseudo of pseudos) {
+        const style = getComputedStyle(el, pseudo);
+        if (!generatesText(style)) continue;
+        if (!/^(?:static|relative)$/.test(style.position) || style.visibility !== "visible") continue;
+        if (invisibleAlpha(Number(style.opacity)) || transparent(style.getPropertyValue("-webkit-text-fill-color"))) continue;
+        const shown = shownArea(el);
+        const r = rectOf(el);
+        if (!shown || !shown.exact || !visibleBox(r) || !inside(r, shown.box)) continue;
+        hasText = true;
+        visible.push(...contentParts(style.content).strings);
+      }
+    }
+  }
   return { hasText, visibleText: visible.join(" "), problem: null };
 }
 
 /**
- * The letters and digits of `text` in a form that survives printing, for
- * comparing what a slide shows with what its PDF page carries: case folded
- * (so `text-transform` and small caps compare equal, and ß with SS),
- * decomposed with compatibility mappings (so ligatures, full-width forms and
- * accents compare equal however they were encoded), without marks,
- * punctuation, spaces or symbols. Emoji are symbols, and keycap emoji are
- * removed with their digit, since they are drawn as pictures.
+ * The letters and digits of `text`, counted, in a form that survives
+ * printing, for comparing what a slide shows with what its PDF page carries:
+ * case folded (so `text-transform` and small caps compare equal, ß with SS,
+ * and final sigma with sigma), decomposed with compatibility mappings (so
+ * ligatures, full-width forms and accents compare equal however they were
+ * encoded), without marks, punctuation, spaces or symbols. Emoji are symbols,
+ * and keycap emoji are removed with their digit, since they are drawn as
+ * pictures. Counts matter: the same characters elsewhere on a slide must not
+ * stand in for ones the page lost.
  */
-export function comparableCharacters(text: string): Set<string> {
-  const withoutKeycaps = text.replace(/[#*0-9]️?⃣|[#*0-9]️/gu, " ");
-  const folded = withoutKeycaps.toUpperCase().toLowerCase().normalize("NFKD");
-  return new Set([...folded].filter((ch) => /[\p{L}\p{N}]/u.test(ch)));
+export function comparableCharacters(text: string): Map<string, number> {
+  const withoutKeycaps = text.replace(/[#*0-9]\uFE0F?\u20E3|[#*0-9]\uFE0F/gu, " ");
+  const folded = withoutKeycaps.toUpperCase().toLowerCase().replace(/\u03C2/g, "\u03C3").normalize("NFKD");
+  const counts = new Map<string, number>();
+  for (const ch of folded) {
+    if (/[\p{L}\p{N}]/u.test(ch)) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /** The part of a DevTools protocol DOM node `hasClosedShadowRoot` reads. */

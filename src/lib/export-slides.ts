@@ -433,13 +433,16 @@ export async function exportSlidePdf(
       });
 
       // Defence against what the checks above cannot foresee: every letter and
-      // digit the slide visibly shows must be in the page's text (a font that
-      // cannot be embedded leaves its characters out entirely), and a slide
-      // that shows text must print text, never only an image of itself.
+      // digit the slide visibly shows must be in the page's text, as often as
+      // it is shown (a font that cannot be embedded leaves its characters out
+      // entirely), and a slide that shows text must print text, never only an
+      // image of itself.
       if (text.hasText) {
         const [content] = await inspectPdf(pdf);
         const printed = comparableCharacters(content?.text ?? "");
-        const missing = [...comparableCharacters(text.visibleText)].filter((c) => !printed.has(c));
+        const missing = [...comparableCharacters(text.visibleText)]
+          .filter(([character, shown]) => (printed.get(character) ?? 0) < shown)
+          .map(([character]) => character);
         if (missing.length > 0) throw new UnprintableSlideError("missing-text", missing);
         if (!content || content.textShows === 0) {
           throw new UnprintableSlideError("flattened");

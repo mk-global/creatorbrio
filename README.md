@@ -269,12 +269,15 @@ Refused before printing, with status 422 and a message naming the slide and the 
 - A CSS or SVG `filter` or a `-webkit-box-reflect` turns the element into an image of everything in it, so it is refused when anything it renders could draw text: a text node, `::before` or `::after` text (counters included), a form field, media controls, an embedded frame, a list marker, a `<details>` element's own label, a broken image's alt text, or an SVG `<use>` that reaches `<text>` through any chain of references.
   The check follows what renders, not only the document tree: open shadow roots, the content slotted into them, and every frame of the slide are held to the same rule.
   The check is deliberately conservative and does not ask whether that text is visible, so hidden text under a filter is refused too.
+  The same applies to a filter or reflection on a pseudo-element that styles an element's own content (`::first-letter`, `::first-line`, `::marker`, `::placeholder`, `::file-selector-button`, `::details-content`) when that element holds text.
   Text that is never drawn, in `<style>`, `<script>` or SVG `<title>`, `<desc>` and `<metadata>`, does not count, and a filter on an image, a shape or an icon with no text is fine.
 - A closed shadow root anywhere in the slide, frames included, because its content cannot be checked; a frame the check cannot run in, a document nested too deeply for the DevTools protocol to read (far beyond real designs: 140 levels is accepted, 200 is not), and a check that takes longer than 15 seconds are refused for the same reason.
 - A `backdrop-filter` anywhere on the slide, including on a `::before` or `::after` whatever the size of its element, because Chromium leaves the text inside it, and can leave content painted after it, out of the PDF.
 - Text inside an SVG `<pattern>`, which prints as part of a picture, or used as an SVG `<clipPath>`, which prints as a soft mask that Apple's Preview and poppler-based readers draw wrongly.
-- Text filled through `background-clip: text` (gradient or image text): it prints as text, but Apple's Preview and poppler-based readers draw it as a solid block.
-- A CSS or SVG mask (`mask`, `mask-image`) on anything visible, or on any generated `::before` or `::after`: Apple's Preview and poppler-based readers draw the masked image or text without its fade.
+- Text filled through `background-clip: text` (gradient or image text), including through `::first-letter` or `::first-line`: it prints as text, but Apple's Preview and poppler-based readers draw it as a solid block.
+- A CSS or SVG mask (`mask`, `mask-image`) on anything visible, on any generated `::before` or `::after`, or on SVG content defined in `<defs>` or a `<symbol>` and drawn through `<use>`: Apple's Preview and poppler-based readers draw the masked image or text without its fade.
+- An element with `backface-visibility: hidden` turned away from the viewer, such as the back of a flip card: the screen hides it, but Chromium prints it, mirrored, over the face that shows.
+  A flip card is refused whichever face is turned; showing one face and leaving the other out with `display: none` prints as the screen shows.
 - `mix-blend-mode: plus-lighter` or `plus-darker`, which PDF has no equivalent for, so Chromium prints it as an ordinary overlay.
 - Content reaching past the slide when the print clip cannot apply, because the slide resizes or moves its own `body` (the clip is then left off, since positioning that body would move what is positioned inside it) or turns the body's clipping off; the page would otherwise come out shrunk.
 
@@ -282,6 +285,9 @@ Refused after printing:
 
 - A slide whose page leaves out letters or digits the slide visibly shows.
   Every letter and digit painted inside the slide (not hidden, clipped away or transparent) must be in the page's text as a PDF reader extracts it, through each font's Unicode map and the `ActualText` Chromium writes for ligatures and similar glyphs, compared without case, accents or ligatures; punctuation and emoji are not compared.
+  Characters are counted, so a character the slide shows twice must be in the page twice: the same words printed in another font elsewhere on the slide cannot stand in for ones the page lost.
+  Text under a `clip-path` that shows any of it is compared, since Chromium keeps every glyph of it in the page; text a clip path hides entirely is not.
+  The literal text of a `::before`, `::after` or custom `::marker` is compared when it is laid out in its element's flow and that element is wholly in view; counter numbers, `attr()` text, default list numbers and generated text positioned elsewhere are not compared.
   This catches characters that fall back to a system font Chromium cannot embed, which it leaves out of the page entirely: on macOS, Chinese with no web font covering it falls back to PingFang and is refused, while Japanese and Korean fall back to Hiragino and Apple SD Gothic, which embed.
   It also catches an effect not listed above that flattens part of a slide's text.
   The message quotes up to five of the missing characters; text shortened by an ellipsis or a line clamp counts as shown but is not compared.
@@ -296,10 +302,12 @@ Printed, with a difference worth knowing:
   poppler also draws a hard colour stop in a slide-high gradient as a ramp a few pixels long, where Apple's readers draw it sharp.
 - Outlined text (`-webkit-text-stroke`) is printed by Chromium in two layers, the fill in the TrueType font and the outline in a Type 3 copy of it.
   Readers find and select the words whole, but copying or extracting the page's text returns them twice.
-- Text that is not painted, such as a visually hidden label, text clipped out of view or SVG text with neither fill nor stroke, is not expected in the PDF.
+- Text that is not painted, such as a visually hidden label, text clipped out of view (by overflow, `contain: paint` or a clip path), text below the smallest opacity Chromium paints, SVG text left unused in `<defs>`, or SVG text with neither fill nor stroke, is not expected in the PDF.
 - If Google cannot serve static instances of a font covering every weight and style of its variable font, the variable font is embedded instead, as Type 3 glyphs with Unicode maps: the typeface is still right and the text still selectable, but Apple's readers fragment it.
 - A character a web font does not contain is drawn from a system font, as in the preview and the PNG export, and embedded when Chromium can embed that font; when it cannot, the slide is refused, as above.
   For Chinese, giving the text a Google font such as Noto Sans SC avoids the fallback altogether.
+- The first PDF export using a font Google splits into many files is slow: Noto Sans SC is about 100 unicode-range files per weight, fetched one after another for the variable font and again for its static instances, which took over three minutes on a cold font cache (the PNG export's share is the first half of that).
+  Fonts are cached under `data/.font-cache`, so later exports take seconds; Latin fonts are a handful of files and take seconds even the first time.
 - An SVG file used as an image (a `data:` URI; uploads are PNG, JPEG or WebP) is printed as Chromium draws it and is not checked inside: a filter within it turns its text into a picture.
 - A page with no background is white paper in the PDF, while the PNG export shows headless Chromium's dark default canvas there.
 - Uploaded images are embedded at their own resolution: JPEGs as they are, PNG and WebP losslessly.

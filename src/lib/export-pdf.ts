@@ -95,6 +95,7 @@ export type UnprintableSlideReason =
   | "gradient-text"
   | "mask"
   | "blend"
+  | "backface"
   | "overflow"
   | "unreadable"
   | "page-size"
@@ -155,6 +156,9 @@ export function unprintableSlideError(
     blend:
       "uses mix-blend-mode plus-lighter or plus-darker, which PDF has no equivalent for, so it would print as an ordinary overlay. " +
       "Ask the design agent to use another blend mode, such as screen or multiply",
+    backface:
+      "turns an element's back to the viewer (backface-visibility: hidden), which the screen hides but PDF printing shows, mirrored. " +
+      "Ask the design agent to remove the hidden face or hide it with display: none",
     unreadable:
       "could not be checked before printing, because part of it is hidden from inspection (a closed shadow root, an unreadable frame, or nesting too deep or a check too slow to complete). " +
       "Ask the design agent to rebuild the slide as plain HTML inside the page body",

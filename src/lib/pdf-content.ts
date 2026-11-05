@@ -251,11 +251,27 @@ function textString(bytes: string): string {
   return bytes.startsWith("\xfe\xff") ? utf16be(bytes.slice(2)) : bytes;
 }
 
+/** What drawing one form adds to the page's content. */
+interface FormDraw {
+  font: FontText | null;
+  replaced: boolean;
+  textShows: number;
+  pathPaints: number;
+  images: PdfPageContent["images"];
+  text: string;
+}
+
 interface Walk {
   doc: PDFDocument;
   result: PdfPageContent;
   visiting: Set<string>;
   fonts: Map<unknown, FontText | null>;
+  /**
+   * What each form added when drawn with a given font and replacement
+   * state, so a form drawn many times, or forms nested inside one another
+   * and shared, are read once rather than once per draw.
+   */
+  forms: Map<string, FormDraw[]>;
 }
 
 /**
@@ -308,10 +324,30 @@ function inspect(
         // A form can be drawn more than once, but never from inside itself.
         const key = ref instanceof PDFRef ? ref.toString() : name;
         if (walk.visiting.has(key)) continue;
+        const replacedHere = inActualText();
+        const drawn = walk.forms.get(key) ?? [];
+        const known = drawn.find((d) => d.font === font && d.replaced === replacedHere);
+        if (known) {
+          result.textShows += known.textShows;
+          result.pathPaints += known.pathPaints;
+          result.images.push(...known.images);
+          result.text += known.text;
+          continue;
+        }
+        const before = { textShows: result.textShows, pathPaints: result.pathPaints, images: result.images.length, text: result.text.length };
         walk.visiting.add(key);
         const own = stream.dict.lookupMaybe(PDFName.of("Resources"), PDFDict);
-        inspect(walk, decode(stream), own ?? resources, font, inActualText());
+        inspect(walk, decode(stream), own ?? resources, font, replacedHere);
         walk.visiting.delete(key);
+        drawn.push({
+          font,
+          replaced: replacedHere,
+          textShows: result.textShows - before.textShows,
+          pathPaints: result.pathPaints - before.pathPaints,
+          images: result.images.slice(before.images),
+          text: result.text.slice(before.text),
+        });
+        walk.forms.set(key, drawn);
       }
     }
   }
@@ -320,7 +356,7 @@ function inspect(
 /** Reads what one page of a loaded document draws. */
 export function inspectPdfPage(doc: PDFDocument, page: PDFPage): PdfPageContent {
   const result: PdfPageContent = { textShows: 0, text: "", pathPaints: 0, images: [] };
-  const walk: Walk = { doc, result, visiting: new Set(), fonts: new Map() };
+  const walk: Walk = { doc, result, visiting: new Set(), fonts: new Map(), forms: new Map() };
   inspect(walk, contentOf(doc, page.node.Contents()), page.node.Resources(), null, false);
   return result;
 }

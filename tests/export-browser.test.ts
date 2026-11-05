@@ -472,6 +472,7 @@ describe("export browser", () => {
       ["text-paint", /^Slide 2 draws text inside an SVG pattern or uses text as an SVG clip path/],
       ["mask", /^Slide 2 uses a CSS or SVG mask/],
       ["blend", /^Slide 2 uses mix-blend-mode plus-lighter or plus-darker/],
+      ["backface", /^Slide 2 turns an element's back to the viewer \(backface-visibility: hidden\)/],
       ["overflow", /^Slide 2 has content reaching past its edges/],
       ["unreadable", /^Slide 2 could not be checked before printing/],
     ])("refuses a slide whose check reports %s before printing, naming the slide", async (problem, message) => {
@@ -571,6 +572,18 @@ describe("export browser", () => {
       printable = () => ({ hasText: true, visibleText: "提高效率", problem: null });
       printed = () => textPdf(null);
       await expect(exportAllSlidePdfs(slides(1), "4:5")).rejects.toThrow(/^Slide 1 shows text that would not reach the PDF as text/);
+    });
+
+    it("refuses a page that lost characters the slide also shows elsewhere, counting each", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      // A heading in a font that cannot be embedded, and the same words in a
+      // Noto paragraph that prints: the page holds them once, the slide twice.
+      printable = () => ({ hasText: true, visibleText: "5 Tips 提高效率 提高效率", problem: null });
+      printed = () => unicodePdf("5 Tips 提高效率");
+
+      await expect(exportAllSlidePdfs(slides(1), "4:5")).rejects.toThrow(
+        /^Slide 1 shows text that would not reach the PDF as text \(such as "提", "高", "效", "率"\)\. /
+      );
     });
 
     it("refuses a slide whose document the DevTools protocol cannot read, as one nested too deeply", async () => {
