@@ -9,10 +9,12 @@ import {
   assetFilePath,
   attachAssets,
   beginCreativeRun,
+  beginDesign,
   carouselAssetIntegrity,
   committedTaskAssets,
   endCreativeRun,
   prepareCarouselRun,
+  prepareContinuation,
   prepareRetry,
   setCreativeStage,
   setCreativeTasks,
@@ -23,7 +25,7 @@ import { getCarousel, setCreativeBrief } from "./carousels";
 import type { BlockedCode, ChatStage } from "./chat-stream";
 import { mergeBrief } from "./creative-brief";
 import { capabilityStatus } from "./creative-capabilities";
-import { buildDesignMessage, type ResolvedImage } from "./creative-handoff";
+import { buildContinuationMessage, buildDesignMessage, type ResolvedImage } from "./creative-handoff";
 import { explicitCountOverLimit, imagePrompt, validatePlan, type PlanAsset, type ReadyPlan } from "./director-plan";
 import {
   GENERATION_TIMEOUT_MS,
@@ -66,6 +68,10 @@ export interface CreativeRunInput {
   references: ReferenceImage[];
   /** Set for an explicit retry of a blocked run. */
   retryRunId: string | null;
+  /** Set for an explicit Continue of an unfinished design (#127). */
+  continueRunId?: string | null;
+  /** Whether the Design Agent resumes the carousel's conversation, so a continuation need not repeat the original task. */
+  resumingSession?: boolean;
 }
 
 export type CreativeRunOutcome =
@@ -76,6 +82,8 @@ export type CreativeRunOutcome =
       designMessage: string;
       plan: ReadyPlan;
       assets: Map<string, ResolvedImage | null>;
+      /** Whether this design continues an unfinished one instead of starting from a new plan. */
+      continued: boolean;
     }
   | { kind: "blocked"; code: BlockedCode; message: string; retryRunId: string | null }
   | { kind: "cancelled" };
@@ -216,6 +224,7 @@ export async function prepareCreativeRun(
 ): Promise<CreativeRunOutcome> {
   const carouselId = input.carousel.id;
   if (input.retryRunId) return retryRun(input, events, signal);
+  if (input.continueRunId) return continueRun(input, events);
 
   const count = explicitCountOverLimit(input.message, input.carousel.slides.length);
   if (count !== null) {
@@ -266,6 +275,67 @@ async function retryRun(input: CreativeRunInput, events: CreativeRunEvents, sign
   } catch (err) {
     return endBeforeDesign(err, carouselId, runId, plan, prepared.message);
   }
+}
+
+/**
+ * An explicit Continue of the carousel's unfinished design: no sources, no
+ * planning and no images. The stored plan and the carousel as it is now
+ * decide what is still missing, and the Design Agent is told to make only
+ * that. Only the user starts one; nothing here retries on its own.
+ */
+async function continueRun(input: CreativeRunInput, events: CreativeRunEvents): Promise<CreativeRunOutcome> {
+  const carouselId = input.carousel.id;
+  const runId = input.continueRunId!;
+  let stored;
+  try {
+    stored = await prepareContinuation(carouselId, runId, isStoredPlan);
+  } catch (err) {
+    if (err instanceof AssetError) {
+      log("continue refused", { carouselId, runId, code: err.code }, "warn");
+      return { kind: "blocked", code: "continue_refused", message: err.message, retryRunId: null };
+    }
+    throw err;
+  }
+  const plan = stored.plan as ReadyPlan;
+  const assets = new Map<string, ResolvedImage | null>();
+  for (const asset of plan.execution.assets) {
+    const id = stored.assetIds[asset.key] ?? null;
+    assets.set(asset.key, id ? { url: `/uploads/${id}.png`, absPath: assetFilePath(id) } : null);
+  }
+  const carousel = await getCarousel(carouselId);
+  const slides = carousel?.slides ?? [];
+  log("continue", {
+    carouselId,
+    runId,
+    saved: slides.length,
+    expected: plan.execution.slideCount,
+    resumingSession: input.resumingSession === true,
+  });
+  events.stage("designing");
+  return {
+    kind: "design",
+    runId,
+    designMessage: buildContinuationMessage({
+      plan,
+      slides,
+      originalTask: stored.designMessage,
+      resumingSession: input.resumingSession === true,
+    }),
+    plan,
+    assets,
+    continued: true,
+  };
+}
+
+/** A stored plan written by `beginDesign` from a validated ready plan; checked for the parts a continuation reads. */
+function isStoredPlan(plan: unknown): boolean {
+  const p = plan as Partial<ReadyPlan> | null;
+  return (
+    p?.status === "ready" &&
+    typeof p.execution?.slideCount === "number" &&
+    Array.isArray(p.execution.slides) &&
+    Array.isArray(p.execution.assets)
+  );
 }
 
 async function readSources(
@@ -491,14 +561,15 @@ async function imagesThenHandoff(
   await setCreativeBrief(carouselId, mergeBrief(current?.creativeBrief, plan.briefUpdate, new Date().toISOString()));
 
   events.stage("designing");
-  await setCreativeStage(carouselId, runId, "designing");
-  return {
-    kind: "design",
-    runId,
-    designMessage: buildDesignMessage(input.message, { plan, assets, references: input.references, sources: sourceUrls }),
-    plan,
-    assets,
-  };
+  const designMessage = buildDesignMessage(input.message, { plan, assets, references: input.references, sources: sourceUrls });
+  // Kept so that an unfinished design can be continued without planning again.
+  const assetIds: Record<string, string | null> = {};
+  for (const asset of plan.execution.assets) {
+    const id = asset.operation === "reuse" ? asset.assetId : committed.get(asset.key);
+    assetIds[asset.key] = id && !unavailable.has(asset.key) ? id : null;
+  }
+  await beginDesign(carouselId, runId, { plan, designMessage, assetIds });
+  return { kind: "design", runId, designMessage, plan, assets, continued: false };
 }
 
 async function endBeforeDesign(

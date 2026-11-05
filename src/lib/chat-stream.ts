@@ -13,7 +13,12 @@ export type ChatErrorCode =
   | "start_failed"
   | "agent_failed"
   | "timed_out"
+  /** The operator's own `DESIGN_AGENT_MAX_BUDGET_USD` cap was reached. */
   | "budget_exceeded"
+  /** Claude refused to continue for a usage, rate or spending limit outside CreatorBrio. */
+  | "usage_limited"
+  | "budget_setting_invalid"
+  | "timeout_setting_invalid"
   | "session_not_found"
   | "run_failed";
 
@@ -59,6 +64,7 @@ export const BLOCKED_CODES = [
   "image_stage_timed_out",
   "storage_failed",
   "retry_refused",
+  "continue_refused",
 ] as const;
 export type BlockedCode = (typeof BLOCKED_CODES)[number];
 const BLOCKED_CODE_SET = new Set<string>(BLOCKED_CODES);
@@ -72,13 +78,19 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorCode, string> = {
   start_failed:
     "The design agent could not be started. Check that Claude Code is installed and working, then try again.",
   agent_failed:
-    "The design agent stopped unexpectedly before finishing. Send your message again to retry.",
+    "The design agent stopped unexpectedly before finishing. Slides it already saved are kept; select Continue to make only the missing ones, or send your message again.",
   timed_out:
-    "The design agent ran out of time and was stopped. Slides it already saved are kept; ask it to continue.",
+    "The design agent reached its time limit and was stopped. Slides it already saved are kept; select Continue to make only the missing ones. To allow longer runs, raise DESIGN_AGENT_TIMEOUT_SECONDS in .env.local and restart CreatorBrio.",
   budget_exceeded:
-    "The design agent reached its spending limit for this message and stopped. Slides it already saved are kept; ask it to continue.",
+    "The design agent reached the spending cap set by DESIGN_AGENT_MAX_BUDGET_USD and stopped. Slides it already saved are kept; raise or remove that cap in .env.local, restart CreatorBrio, then select Continue to make only the missing ones.",
+  usage_limited:
+    "Claude stopped the design agent because a usage limit on your Claude account was reached; this is not a CreatorBrio limit. Slides it already saved are kept; select Continue once your Claude usage is available again.",
+  budget_setting_invalid:
+    "The design agent's spending cap, DESIGN_AGENT_MAX_BUDGET_USD, is not a positive amount in US dollars, such as 2.50. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
+  timeout_setting_invalid:
+    "The design agent's time limit, DESIGN_AGENT_TIMEOUT_SECONDS, is not a whole number of seconds from 60 to 3600. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
   session_not_found:
-    "The previous conversation could not be resumed, so it has been reset. Send your message again to start a new conversation.",
+    "The previous conversation could not be resumed, so it has been reset. Send your message again, or select Continue, to carry on in a new conversation.",
   run_failed: "Something went wrong before the design started. Nothing was changed; send your message again.",
 };
 

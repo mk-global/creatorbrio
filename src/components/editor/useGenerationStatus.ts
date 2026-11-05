@@ -3,16 +3,32 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Interruption } from "@/lib/generation-status";
 
+/** An unfinished design the user can continue: its run and how far it got. */
+export interface ContinuationOffer {
+  runId: string;
+  saved: number;
+  expected: number;
+}
+
 export interface GenerationStatus {
   generating: boolean;
   interrupted: Interruption | null;
+  /** Set when the last design ended unfinished and can be continued. */
+  continuation?: ContinuationOffer | null;
 }
 
 /** How often a visible tab asks while nothing is generating, and while something is. */
 export const IDLE_POLL_MS = 2000;
 export const ACTIVE_POLL_MS = 1000;
 
-const NOT_GENERATING: GenerationStatus = { generating: false, interrupted: null };
+const NOT_GENERATING: GenerationStatus = { generating: false, interrupted: null, continuation: null };
+
+function offerOf(value: unknown): ContinuationOffer | null {
+  const v = value as Partial<ContinuationOffer> | null | undefined;
+  return typeof v?.runId === "string" && typeof v.saved === "number" && typeof v.expected === "number"
+    ? { runId: v.runId, saved: v.saved, expected: v.expected }
+    : null;
+}
 
 export interface WatchOptions {
   onStatus: (status: GenerationStatus) => void;
@@ -88,7 +104,7 @@ async function fetchGenerationStatus(carouselId: string): Promise<GenerationStat
   const res = await fetch(`/api/carousels/${carouselId}/generation`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Status request failed with ${res.status}`);
   const body: Partial<GenerationStatus> = await res.json();
-  return { generating: body.generating === true, interrupted: body.interrupted ?? null };
+  return { generating: body.generating === true, interrupted: body.interrupted ?? null, continuation: offerOf(body.continuation) };
 }
 
 /**
@@ -148,6 +164,7 @@ export function useGenerationStatus(carouselId: string, streaming: boolean) {
   return {
     generating,
     interrupted: generating ? null : status.interrupted,
+    continuation: generating ? null : (status.continuation ?? null),
     acceptSlides,
   };
 }
