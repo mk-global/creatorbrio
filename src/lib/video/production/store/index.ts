@@ -12,6 +12,7 @@ export type {
   LoadedProduction,
   LoadResult,
   MutationResult,
+  Precondition,
   ProductionSummary,
   RunStatus,
   StoreFailure,

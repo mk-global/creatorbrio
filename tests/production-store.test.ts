@@ -502,3 +502,45 @@ describe("agent runs across a restart", () => {
     expect((await loaded(open())).history.current.name).toBe(footageProduction().name);
   });
 });
+
+describe("confirmed commands (expectedGeneration)", () => {
+  it("apply only on the generation the caller saw, also when another writer commits in between", async () => {
+    const store = open();
+    ok(await store.create(footageProduction()));
+    ok(await store.apply(ID, rename(7, "Edited")));
+    expect(await store.undo(ID, { changeSetId: "cs-u1", at: at() }, { expectedGeneration: 1 })).toMatchObject({
+      status: "generation_mismatch",
+      expectedGeneration: 1,
+      actualGeneration: 2,
+    });
+
+    // The confirmed undo reads generation 2, then another store commits generation 3 before its link.
+    let release!: () => void;
+    const paused = new Promise<void>((r) => (release = r));
+    let reachedLink!: () => void;
+    const atLink = new Promise<void>((r) => (reachedLink = r));
+    let pauseOnce = true;
+    const slow = open({
+      fs: {
+        ...nodeFs,
+        async link(existing, target) {
+          if (pauseOnce && target.includes(`${path.sep}journal${path.sep}`)) {
+            pauseOnce = false;
+            reachedLink();
+            await paused;
+          }
+          return nodeFs.link(existing, target);
+        },
+      },
+    });
+    const pending = slow.undo(ID, { changeSetId: "cs-u2", at: at() }, { expectedGeneration: 2 });
+    await atLink;
+    ok(await open().label(ID, "meanwhile"));
+    release();
+    expect(await pending).toMatchObject({ status: "generation_mismatch", expectedGeneration: 2, actualGeneration: 3 });
+    expect((await loaded(open())).history.current.name).toBe("Edited");
+
+    expect(await store.recover(ID, { fromGeneration: 1 }, { expectedGeneration: 2 })).toMatchObject({ status: "generation_mismatch", actualGeneration: 3 });
+    ok(await store.undo(ID, { changeSetId: "cs-u3", at: at() }, { expectedGeneration: 3 }));
+  });
+});
