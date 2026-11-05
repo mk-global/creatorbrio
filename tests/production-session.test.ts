@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { clearedSessionCookie, sessionCookie, sha256, StudioSessions } from "@/lib/video/production/api/sessions";
+import { registerFixtureMedia } from "./helpers/media-fixtures";
 import { footageProduction } from "./helpers/production-fixtures";
 
 const run = promisify(execFile);
@@ -58,6 +59,7 @@ beforeEach(async () => {
   restart();
   await rm(path.join(dataDir, "video-auth"), { recursive: true, force: true });
   await rm(path.join(dataDir, "video"), { recursive: true, force: true });
+  await registerFixtureMedia(dataDir);
 });
 
 /** The operator's terminal action: runs the real script and reads the printed code. */

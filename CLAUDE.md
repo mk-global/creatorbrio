@@ -27,6 +27,7 @@ Derived from the MIT-licensed Open Carrusel project and now independently mainta
 - `src/lib/video/production/changes/` — the pure change-set engine for productions: strict typed operations, `applyChangeSet()` (revision check, atomic apply, admission, scope guards for agents) and in-memory history with undo/redo, labels and agent runs kept or discarded as one unit (WS1 #114)
 - `src/lib/video/production/store/` — the durable production store (WS1 #118): immutable journal records and content-addressed documents under `data/video/<productionId>/`, committed by an atomic hard-link compare-and-swap that holds across processes; typed failures, explicit recovery and interrupted-run decisions. See `docs/architecture/video-production-store.md`
 - `src/lib/video/production/api/` — the Production API handlers (WS1 #120): credential-based human and agent authority, bounded strict request parsing, stable typed errors; `sessions.ts` and `scripts/studio-pair.mjs` are browser pairing and sessions (WS1 #122)
+- `src/lib/video/media/`: the media registry (#140): content-addressed read-only originals under `data/video-media/`, strict ffprobe facts, derived preview files built by durable one-at-a-time jobs, and the asset ledger the production store admits against. See `docs/architecture/video-media-registry.md`
 
 ## API Routes
 
@@ -53,6 +54,7 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - `GET /api/fonts` — Google Fonts list
 - `POST/GET/DELETE /api/video/session`: pair a browser with a one-time code from `npm run studio:pair` (printed only in the operator's terminal), check its session, sign out. The session is an HttpOnly, SameSite=Strict cookie scoped to `/api/video`; cookie requests also need `X-CreatorBrio-Request: studio`, same-origin fetch metadata and, on writes, the app's exact Origin. `npm run studio:pair -- --revoke-all` signs out every browser
 - `/api/video/productions`, `/api/video/productions/[id]` and its `changes`, `undo`, `redo`, `labels`, `labels/[name]/restore`, `runs`, `runs/[runId]/decision` and `recover` routes: the Video Studio Production API (WS1 #120). Every write goes through `ProductionStore`. Authority comes from a credential, never the body: the local human key (`X-CreatorBrio-Human-Key`, from `data/video-studio.key`, for API clients), a paired browser's HttpOnly session cookie (WS1 #122), or a per-run agent token. Destructive commands need `expectedGeneration`. Codes and limits are in `docs/architecture/video-production-api.md`
+- `/api/video/media`, `/api/video/media/[id]`, its `proxy` (retry a failed job) and `files/[name]` routes: the media registry (#140). People import local files by absolute path; agents are refused. Derived files support Range, and a paired browser's `<video>`, `<audio>` or `<img>` may read them without the Studio header only with `Sec-Fetch-Site: same-origin` and a media `Sec-Fetch-Dest`
 
 ## Conventions
 

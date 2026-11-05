@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { admitProduction } from "@/lib/video/production";
 import type { ProductionHistory } from "@/lib/video/production/changes";
 import { generationFile, nodeFs, ProductionStore, type LoadedProduction, type MutationResult, type StoreFs } from "@/lib/video/production/store";
-import { footageProduction, hybridProduction, scriptProduction } from "./helpers/production-fixtures";
+import type { LedgerMedia } from "@/lib/video/production";
+import { footageProduction, hybridProduction, MEDIA, scriptProduction } from "./helpers/production-fixtures";
 
 const ID = "prod-footage";
 const NOW = () => "2026-11-04T12:00:00.000Z";
@@ -542,5 +543,86 @@ describe("confirmed commands (expectedGeneration)", () => {
 
     expect(await store.recover(ID, { fromGeneration: 1 }, { expectedGeneration: 2 })).toMatchObject({ status: "generation_mismatch", actualGeneration: 3 });
     ok(await store.undo(ID, { changeSetId: "cs-u3", at: at() }, { expectedGeneration: 3 }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("admission against the asset ledger", () => {
+  const HOUR = 3_600_000_000;
+  function fullLedger(): Map<string, LedgerMedia> {
+    return new Map<string, LedgerMedia>([
+      [MEDIA.aRoll, { kind: "video", durationUs: HOUR }],
+      [MEDIA.bRoll, { kind: "video", durationUs: HOUR }],
+      [MEDIA.music, { kind: "audio", durationUs: HOUR }],
+      [MEDIA.logo, { kind: "image" }],
+      [MEDIA.narration, { kind: "audio", durationUs: HOUR }],
+      [MEDIA.illustration, { kind: "image" }],
+      [MEDIA.sfx, { kind: "audio", durationUs: HOUR }],
+    ]);
+  }
+  const codes = (result: MutationResult) => (result.status === "rejected" ? result.issues.map((i) => i.code) : [result.status]);
+
+  it("creates a production whose media are all registered", async () => {
+    const ledger = fullLedger();
+    expect(ok(await open({ ledger: async () => ledger }).create(footageProduction())).generation).toBe(1);
+  });
+
+  it("refuses unregistered media, a kind the ledger contradicts and a source range past the media's end", async () => {
+    const missing = fullLedger();
+    missing.delete(MEDIA.music);
+    expect(codes(await open({ ledger: async () => missing }).create(footageProduction()))).toContain("dangling_reference");
+
+    const wrongKind = fullLedger();
+    wrongKind.set(MEDIA.logo, { kind: "audio", durationUs: HOUR });
+    expect(codes(await open({ ledger: async () => wrongKind }).create(footageProduction()))).toContain("inconsistent");
+
+    // clip-v2 uses the a-roll from 2.5 s to 4 s.
+    const short = fullLedger();
+    short.set(MEDIA.aRoll, { kind: "video", durationUs: 3_000_000 });
+    const refused = await open({ ledger: async () => short }).create(footageProduction());
+    expect(refused.status).toBe("rejected");
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("admits changes, undo and redo against the ledger as it is at that moment", async () => {
+    let ledger = fullLedger();
+    const store = open({ ledger: async () => ledger });
+    const base = ok(await store.create(footageProduction())).revision;
+    ok(await store.apply(ID, rename(base, "Renamed")));
+    ok(await store.apply(ID, { ...rename(base + 1, "Renamed"), ops: [{ op: "addMedia", media: { mediaId: MEDIA.sfx, role: "sfx", label: "Whoosh" } }], summary: "Add a sound" }));
+
+    // The sound is no longer registered: nothing that keeps it can be committed.
+    ledger = fullLedger();
+    ledger.delete(MEDIA.sfx);
+    expect(codes(await store.apply(ID, rename(base + 2, "Again")))).toContain("dangling_reference");
+    // Undo restores a state without the sound, which the ledger admits.
+    ok(await store.undo(ID, { changeSetId: "cs-undo", at: at() }));
+    // Redo would bring the unregistered sound back.
+    expect(codes(await store.redo(ID, { changeSetId: "cs-redo", at: at() }))).toContain("dangling_reference");
+
+    // A shorter a-roll makes even the undo target inadmissible.
+    ledger = fullLedger();
+    ledger.set(MEDIA.aRoll, { kind: "video", durationUs: 3_000_000 });
+    const undone = await store.undo(ID, { changeSetId: "cs-undo-2", at: at() });
+    expect(undone.status).toBe("rejected");
+    expect((await loaded(store)).history.current.name).toBe("Renamed");
+  });
+
+  it("reports a ledger that cannot be read as an I/O failure and writes nothing", async () => {
+    const ledger = fullLedger();
+    let broken = false;
+    const store = open({
+      ledger: async () => {
+        if (broken) throw Object.assign(new Error("registry unreadable"), { code: "EIO" });
+        return ledger;
+      },
+    });
+    const base = ok(await store.create(footageProduction())).revision;
+    broken = true;
+    const result = await store.apply(ID, rename(base, "Renamed"));
+    expect(result).toMatchObject({ status: "io_error", operation: "ledger", code: "EIO" });
+    expect(await store.create({ ...footageProduction(), id: "prod-other" })).toMatchObject({ status: "io_error", operation: "ledger" });
+    expect((await loaded(store)).generation).toBe(1);
   });
 });

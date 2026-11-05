@@ -76,5 +76,6 @@ The details are in [creative-workflow.md](creative-workflow.md).
 - [creative-workflow.md](creative-workflow.md): stages, outcomes, retry, cancellation, limits and the generated-image lifecycle.
 - [design-decisions.md](design-decisions.md): why the system is shaped this way, and the trade-offs.
 - [video-production-store.md](video-production-store.md): the Video Studio production store (not yet used by the app): layout, commit protocol, concurrency and crash guarantees, recovery.
+- [video-media-registry.md](video-media-registry.md): the Video Studio media registry and asset ledger: import by path, derived preview files and their jobs, HDR proxies.
 - [video-production-api.md](video-production-api.md): the Video Studio Production API (no UI uses it yet): endpoints, human and agent authority, confirmation, error codes.
 - [../PROVENANCE.md](../PROVENANCE.md) and [../MAINTAINING.md](../MAINTAINING.md): origin, licence and maintenance.
