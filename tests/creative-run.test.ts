@@ -43,7 +43,7 @@ const argv = process.argv.slice(2);
 fs.writeFileSync(path.join(dir, "pid"), String(process.pid));
 fs.writeFileSync(path.join(dir, "argv.json"), JSON.stringify(argv));
 const scenario = fs.readFileSync(path.join(dir, "scenario"), "utf8");
-const task = argv[argv.indexOf("-p") + 1];
+const task = argv[argv.indexOf("--") + 1];
 const emit = (e) => process.stdout.write(JSON.stringify(e) + "\\n");
 emit({ type: "system", subtype: "init", session_id: "${SESSION}" });
 if (scenario === "hang") { process.on("SIGTERM", () => process.exit(143)); setInterval(() => {}, 1000); return; }
@@ -209,7 +209,7 @@ const stages = (events: ChatStreamEvent[]) => of(events, "stage").map((e) => e.s
 const designSpawned = async () => (await readdir(fakeDir)).includes("argv.json");
 const taskMessage = async () => {
   const argv: string[] = JSON.parse(await readFile(path.join(fakeDir, "argv.json"), "utf8"));
-  return argv[argv.indexOf("-p") + 1];
+  return argv[argv.indexOf("--") + 1];
 };
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 

@@ -55,7 +55,7 @@ export function InterruptedExportNotice({
             {slideCount === 0
               ? "No slides were saved."
               : `The ${slideCount} slide${slideCount === 1 ? " is" : "s are"} saved, but the carousel may be incomplete.`}{" "}
-            Ask the AI to continue in the chat, or use the slides as they are.
+            Select Continue in the chat to make only the missing slides, or use the slides as they are.
           </p>
           {error && (
             <p role="alert" className="text-xs text-destructive mt-1 break-words">

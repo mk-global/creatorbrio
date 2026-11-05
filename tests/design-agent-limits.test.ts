@@ -66,6 +66,18 @@ const dir = process.env.FAKE_CLAUDE_DIR;
 writeFileSync(path.join(dir, "pid"), String(process.pid));
 appendFileSync(path.join(dir, "argv.jsonl"), JSON.stringify(process.argv.slice(2)) + "\\n");
 const s = JSON.parse(readFileSync(path.join(dir, "scenario.json"), "utf8"));
+// Options are parsed like the real CLI's: anything before "--" that starts
+// with "-" must be a known option, or the CLI refuses it before running.
+const VALUED = new Set(["--output-format", "--append-system-prompt", "--allowedTools", "--max-budget-usd", "--name", "--resume"]);
+const FLAGS = new Set(["-p", "--include-partial-messages", "--verbose"]);
+const args = process.argv.slice(2);
+for (let i = 0; i < args.length && args[i] !== "--"; i++) {
+  if (VALUED.has(args[i])) i++;
+  else if (args[i].startsWith("-") && !FLAGS.has(args[i])) {
+    process.stderr.write("error: unknown option '" + args[i].slice(0, 40) + "'\\n");
+    process.exit(1);
+  }
+}
 if (s.ignoreSigterm) process.on("SIGTERM", () => {});
 const resumeAt = process.argv.indexOf("--resume");
 const requested = resumeAt === -1 ? null : process.argv[resumeAt + 1];
@@ -213,7 +225,7 @@ async function invocations(): Promise<string[][]> {
     .split("\n")
     .map((line) => JSON.parse(line) as string[]);
 }
-const taskOf = (argv: string[]) => argv[argv.indexOf("-p") + 1];
+const taskOf = (argv: string[]) => argv[argv.indexOf("--") + 1];
 
 async function statusOf(id: string) {
   const res = await generationStatus(new Request(`http://localhost:3000/api/carousels/${id}/generation`), {
@@ -340,6 +352,19 @@ describe("the Design Agent's spending cap (#127)", () => {
   });
 });
 
+describe("the task reaches the CLI as the task, never as an option (#127)", () => {
+  it("delivers a brief that starts with a Markdown list, which the CLI refused as an unknown option", async () => {
+    await play({ after: [success(0.2)] });
+    const carousel = await createCarousel("Dash", "4:5");
+    const message = "- Slide 1: the hook\n- Slide 2: the proof";
+    const events = await readEvents(await postChat({ message, carouselId: carousel.id }));
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    const [argv] = await invocations();
+    expect(argv.at(-2)).toBe("--");
+    expect(taskOf(argv).startsWith(`${message}\n\n`)).toBe(true);
+  });
+});
+
 describe("the Design Agent's execution deadline (#127)", () => {
   it.each([
     ["", 900_000],
@@ -373,7 +398,8 @@ describe("the Design Agent's execution deadline (#127)", () => {
     const parser = createChatStreamParser();
     const events: ChatStreamEvent[] = [];
     while (!events.some((e) => e.type === "token")) {
-      const { value } = await reader.read();
+      const { done, value } = await reader.read();
+      if (done) throw new Error("The stream ended before the agent replied");
       events.push(...parser.push(decoder.decode(value, { stream: true })));
     }
     await agentSaves(carousel.id, 1, 3);
@@ -403,7 +429,11 @@ describe("the Design Agent's execution deadline (#127)", () => {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let raw = "";
-    while (!raw.includes('"type":"token"')) raw += decoder.decode((await reader.read()).value, { stream: true });
+    while (!raw.includes('"type":"token"')) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error(`The stream ended before the agent replied: ${raw}`);
+      raw += decoder.decode(value, { stream: true });
+    }
     const pid = Number(await readFile(path.join(fakeDir, "pid"), "utf8"));
     await vi.advanceTimersByTimeAsync(60_000);
     // Time for the stop to be delivered and ignored; setImmediate is not faked.

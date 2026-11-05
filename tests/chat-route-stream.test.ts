@@ -361,7 +361,7 @@ describe("chat message limits (Invalid message incident)", () => {
     expect(events.some((e) => e.type === "error")).toBe(false);
     expect(director.requests[0].message).toBe(message);
     const args = await argv();
-    const task = args[args.indexOf("-p") + 1];
+    const task = args[args.indexOf("--") + 1];
     // The whole message, then the plan: nothing truncated or re-encoded.
     expect(task.startsWith(`${message}\n\n`)).toBe(true);
     // Linux allows 128 KiB in one argument; the task message must fit.
@@ -439,7 +439,7 @@ describe("a fully specified ten-page request reaches the Design Agent (#124)", (
     expect(director.requests).toHaveLength(1);
     expect(director.requests[0].sources).toEqual([]);
     const args = await argv();
-    const task = args[args.indexOf("-p") + 1];
+    const task = args[args.indexOf("--") + 1];
     expect(task.startsWith(`${TEN_PAGE_BRIEF}\n\n`)).toBe(true);
     expect(task).toContain("Slides to produce: 10 ");
   });

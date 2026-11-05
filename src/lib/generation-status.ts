@@ -386,6 +386,6 @@ const INTERRUPTION_CAUSE: Record<InterruptionReason, string> = {
 export function interruptedExportError(reason: InterruptionReason): string {
   return (
     `The last generation ${INTERRUPTION_CAUSE[reason]} before it finished, so these slides may be incomplete. ` +
-    "Ask the AI to continue, or confirm in the editor that you want to use the slides as they are."
+    "Select Continue in the chat to make only the missing slides, or confirm in the editor that you want to use the slides as they are."
   );
 }

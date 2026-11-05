@@ -69,7 +69,6 @@ export function designAgentArgs(options: {
 }): string[] {
   return [
     "-p",
-    options.taskMessage,
     "--output-format",
     "stream-json",
     "--include-partial-messages",
@@ -86,5 +85,10 @@ export function designAgentArgs(options: {
     "--name",
     "creatorbrio-chat",
     ...(options.resumeSessionId ? ["--resume", options.resumeSessionId] : []),
+    // The task comes last, after "--", so the CLI never reads it as an option:
+    // a task beginning with "-" (a Markdown list, or a continuation's marker)
+    // was refused as "unknown option" before the agent ever ran (#127).
+    "--",
+    options.taskMessage,
   ];
 }
