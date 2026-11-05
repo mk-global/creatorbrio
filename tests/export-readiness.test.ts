@@ -147,6 +147,7 @@ function requestExport(id: string, format?: string) {
 interface Status {
   generating: boolean;
   interrupted: { reason: string; endedAt: string } | null;
+  continuation: { runId: string; saved: number; expected: number } | null;
 }
 
 async function statusOf(id: string): Promise<Status> {
@@ -213,7 +214,7 @@ describe("export while the design agent is generating", () => {
     expect(streamed).toContain("event: done");
 
     expect(isGenerating(carousel.id)).toBe(false);
-    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null });
+    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null, continuation: null });
 
     const exported = await requestExport(carousel.id);
     expect(exported.status).toBe(200);
@@ -250,7 +251,7 @@ describe("export while the design agent is generating", () => {
     expect((await getCarousel(carousel.id))!.slides).toHaveLength(2);
 
     expect((await useSlidesAsTheyAre(carousel.id)).status).toBe(200);
-    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null });
+    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null, continuation: null });
     expect((await requestExport(carousel.id)).status).toBe(200);
   });
 
@@ -275,7 +276,7 @@ describe("export while the design agent is generating", () => {
     await finishRun(0);
     await second.text();
 
-    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null });
+    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null, continuation: null });
     expect((await requestExport(carousel.id)).status).toBe(200);
   });
 
@@ -393,7 +394,12 @@ describe("export while the design agent is generating", () => {
     await finishRun(1);
     await res.text();
 
-    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null });
+    expect(await statusOf(carousel.id)).toEqual({
+      generating: false,
+      interrupted: null,
+      // The design did not finish, so it can still be continued (#127); export is not held back.
+      continuation: expect.objectContaining({ saved: 1, expected: 1 }),
+    });
     expect((await requestExport(carousel.id)).status).toBe(200);
   });
 });

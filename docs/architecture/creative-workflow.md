@@ -118,7 +118,7 @@ The plan and message are stored as soon as a plan with images is accepted, so a 
 
 Stopping a run, closing the tab or reloading cancels the request.
 Before design, the run stops waiting for linked pages, stops the Director's process, aborts the image request in progress and attaches nothing; the slides are unchanged and staged images are removed.
-During design, the Design Agent is stopped as before.
+During design, the Design Agent is stopped as before: the CLI is asked to exit and killed if it has not within five seconds, and the slides it saved are kept.
 The image service may keep generating an image it already started until it finishes or times out, so an immediate retry can find it busy.
 
 ### Limits
@@ -126,15 +126,36 @@ The image service may keep generating an image it already started until it finis
 | Limit | Value |
 |---|---|
 | Linked pages per message | 3, read within 30 seconds in total |
-| Director | $0.25 and 120 seconds per message |
+| Director | 120 seconds per message; no spending cap unless `DIRECTOR_MAX_BUDGET_USD` sets one |
 | Generated images per message | 5, and never more than the slide count |
 | One image | 150 seconds, or less when the stage has less time left |
 | Image stage | 12 minutes |
-| Design Agent | $1.00 and 8 minutes, unchanged |
+| Design Agent | 15 minutes by default (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600 seconds); no spending cap unless `DESIGN_AGENT_MAX_BUDGET_USD` sets one |
 
-A run can therefore hold the chat request open for about 23 minutes in the worst case.
+A run can therefore hold the chat request open for about 30 minutes in the worst case with the default settings.
 The route declares a matching `maxDuration`, which a self-hosted Next.js server does not enforce; these limits are the real bound.
 The Director runs on every message, including small edits, which adds its planning time and cost to each message.
+
+### Design limits and an unfinished design (#127)
+
+The Design Agent had a fixed USD 1.00 cap and a fixed 8-minute limit.
+The CLI's cost estimate grows with every slide's tool call, so the cap stopped legitimate 8-to-10-slide carousels part-way.
+Now the Design Agent has no cap of its own unless the operator sets `DESIGN_AGENT_MAX_BUDGET_USD` (an invalid value is refused before anything runs), and its deadline is `DESIGN_AGENT_TIMEOUT_SECONDS`, 15 minutes by default, after which the CLI is stopped and, if it ignores that, killed five seconds later.
+Both are separate from the Director's settings. The account's own provider limits are unchanged.
+
+How a design ends is reported distinctly: the operator's cap (`budget_exceeded`), a usage, rate or spending limit outside CreatorBrio as the CLI reports it (`usage_limited`, never blamed on CreatorBrio), the deadline (`timed_out`), Stop (no error), a lost session (`session_not_found`), a setting that is not valid, or any other failure (`agent_failed`).
+The `[chat] run finished` log line carries the run ID, the stage, the failure category, the configured cap and deadline, the duration, the CLI's token usage and estimated cost, the slides saved and planned, and whether Continue is available; never the message, the plan or slide copy.
+The Director logs `[director] plan finished` and the exporter `[export]`, so a failure's origin is always visible.
+
+From the moment design starts, the run record keeps the validated plan, the exact task the Design Agent was given and each plan image's asset ID.
+A design that ends without completing (Stop, failure, timeout, a cap or limit, or a server restart) keeps them, and every saved slide; the carousel stays interrupted for export as before.
+`GET /api/carousels/[id]/generation` then reports `continuation: { runId, saved, expected }`, and the chat shows "N of M planned slides saved" with **Continue**.
+Continue sends `continueRunId`: no linked pages, no planning and no images run again.
+The task message lists the saved slides by ID in order, tells the agent to keep them unchanged and to make only the plan's missing slides one at a time, checking the count before each, and stops at the planned count.
+When the Design Agent resumes the run's own conversation the original task is already there; when it cannot (no session, or `session_not_found`, after which Continue is still offered), the stored task is appended for reference.
+A completed continuation clears the offer and the interruption, and runs the usual conformance check against the stored plan.
+The offer is withdrawn when the user accepts the slides as they are, when a new request replaces the run, or 24 hours after the run ended; a stale or foreign `continueRunId` is refused and changes nothing.
+Nothing continues on its own.
 
 ### Verifying the workflow end to end
 

@@ -59,7 +59,7 @@ Background replacement is the only edit. When the user asks to remove something 
 # Slide count
 
 You never choose a slide count of your own. Use the first rule that applies, with its basis:
-- "user-explicit": a new request whose message states a count. The input lists the counts the server found; use one of them.
+- "user-explicit": a new request whose message states a count. The input lists the counts the server found; use one of them. A stated slide count always applies. A carousel exported as a document has one page per slide, so a length in pages ("10 pages", "a ten-page PDF") is a slide count when it describes what to make; a page count that describes a source ("my 40-page ebook") is not, and the other rules then apply.
 - "existing": a revision keeps the carousel's current count.
 - "user-change": a revision where the user asks to add or remove slides.
 - "single-cover": a new request for a cover (the input says whether the message mentions one); one slide.

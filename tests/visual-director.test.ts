@@ -18,11 +18,13 @@ vi.mock("@/lib/claude-path", () => ({
 }));
 
 const {
-  DIRECTOR_BUDGET_USD,
+  DIRECTOR_BUDGET_ENV,
   DIRECTOR_PLAN_SCHEMA,
+  DIRECTOR_TIMEOUT_MS,
   DIRECTOR_TOOLS,
   buildDirectorInput,
   directorArgs,
+  directorBudgetCap,
   directorFailureMessage,
   runDirector,
 } = await import("@/lib/visual-director");
@@ -30,6 +32,7 @@ const { capabilityStatus } = await import("@/lib/creative-capabilities");
 const { ASSET_OPERATIONS, EDIT_KINDS, PLAN_FIELDS, SLIDE_COUNT_BASES, TREATMENTS } = await import("@/lib/director-plan");
 const { IMAGE_DIMENSIONS } = await import("@/lib/image-service");
 const { EMPTY_BRIEF_UPDATE } = await import("@/lib/creative-brief");
+const { TEN_PAGE_BRIEF } = await import("./fixtures/ten-page-brief");
 
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -192,6 +195,8 @@ beforeEach(async () => {
   await writeFile(claudePath, FAKE_CLAUDE);
   await chmod(claudePath, 0o755);
   process.env.FAKE_CLAUDE_DIR = fakeDir;
+  // No spending cap unless a test sets one, whatever the machine's environment says.
+  vi.stubEnv(DIRECTOR_BUDGET_ENV, undefined);
   process.chdir(workdir);
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -200,6 +205,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   try {
     process.kill(Number(await recorded("pid")), "SIGKILL");
   } catch {
@@ -249,7 +255,7 @@ describe("runDirector", () => {
     expect(result).toMatchObject({ ok: true, plan: { status: "ready" }, usage: { costUsd: 0.07, turns: 3, deniedReads: 0 } });
   });
 
-  it("runs isolated: path-scoped Read only, no settings, MCP, memory or session, and its own budget", async () => {
+  it("runs isolated: path-scoped Read only, no settings, MCP, memory or session, and no spending cap by default", async () => {
     await play("plan");
     await runDirector(await request());
     const argv: string[] = JSON.parse(await recorded("argv.json"));
@@ -263,13 +269,13 @@ describe("runDirector", () => {
     expect(argv).toContain("--strict-mcp-config");
     expect(after("--setting-sources")).toBe("");
     expect(JSON.parse(after("--settings"))).toEqual({ autoMemoryEnabled: false });
-    expect(after("--max-budget-usd")).toBe(String(DIRECTOR_BUDGET_USD));
+    expect(argv).not.toContain("--max-budget-usd");
     expect(after("--output-format")).toBe("json");
     expect(JSON.parse(after("--json-schema")).type).toBe("object");
     for (const forbidden of ["--resume", "--session-id", "--continue", "--dangerously-skip-permissions", "--add-dir"]) {
       expect(argv).not.toContain(forbidden);
     }
-    expect(argv).toEqual(directorArgs(cwd));
+    expect(argv).toEqual(directorArgs(cwd, null));
   });
 
   it("sends the request on stdin, never in the process arguments", async () => {
@@ -331,14 +337,43 @@ describe("runDirector", () => {
     ["exit-1", "agent_failed"],
     ["is-error", "agent_failed"],
     ["garbage", "agent_failed"],
-    ["budget", "budget_exceeded"],
     ["no-output", "invalid_output"],
   ])("maps the %s outcome to %s, with no retry", async (scenario, code) => {
     await play(scenario);
     const result = await runDirector(await request());
     expect(result).toMatchObject({ ok: false, code });
     // One invocation: the fake overwrote its pid file once and nothing re-ran it.
-    expect(JSON.parse(await recorded("argv.json"))).toEqual(directorArgs(await recorded("cwd")));
+    expect(JSON.parse(await recorded("argv.json"))).toEqual(directorArgs(await recorded("cwd"), null));
+  });
+
+  it("tells the user what to do when a plan is refused only for its slide count (#124)", async () => {
+    // The founder's refusal: user-explicit, with no count the server recognised in the message.
+    const wrongCount = coverPlan();
+    wrongCount.execution.slideCountBasis = "user-explicit";
+    await play("plan", wrongCount);
+    const result = await runDirector(await request());
+    expect(result).toMatchObject({ ok: false, code: "slide_count_mismatch" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.errors).toEqual(["execution.slideCountBasis: user-explicit needs a new request that states a count"]);
+    const message = directorFailureMessage(result.code);
+    expect(message).toMatch(/how many slides/);
+    expect(message).toMatch(/\b20\b/);
+    expect(message).not.toMatch(/rephrase/);
+    // True whether or not the message stated a count: it never claims the user asked for one.
+    expect(message).not.toMatch(/asked for/);
+    expect(message).not.toContain("Lisbon");
+  });
+
+  it("keeps a plan with any other violation as an invalid plan, even when its slide count is also wrong", async () => {
+    const mixed = coverPlan();
+    mixed.execution.slideCountBasis = "user-explicit";
+    mixed.execution.slides[0].assetRefs = ["ref-of-another-carousel"];
+    await play("plan", mixed);
+    const result = await runDirector(await request());
+    expect(result).toMatchObject({ ok: false, code: "invalid_plan" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.errors?.some((v) => v.startsWith("execution.slideCount"))).toBe(true);
+    expect(result.errors?.some((v) => !v.startsWith("execution.slideCount"))).toBe(true);
   });
 
   it("refuses an invalid plan and keeps the violations for the log only", async () => {
@@ -379,6 +414,10 @@ describe("runDirector", () => {
     expect(console.warn).not.toHaveBeenCalled();
   });
 
+  it("keeps its mandatory 120-second time limit", () => {
+    expect(DIRECTOR_TIMEOUT_MS).toBe(120_000);
+  });
+
   it("stops a Director that runs past its time limit, killing it if it ignores SIGTERM", async () => {
     await play("hang");
     const result = await runDirector(await request(), { timeoutMs: 300 });
@@ -399,6 +438,87 @@ describe("runDirector", () => {
   it("reports a CLI that cannot be started", async () => {
     claudePath = path.join(fakeDir, "missing-claude");
     expect(await runDirector(await request())).toMatchObject({ ok: false, code: "start_failed" });
+  });
+});
+
+describe("the Director's optional spending cap", () => {
+  const argvOfRun = async () => JSON.parse(await recorded("argv.json")) as string[];
+
+  it.each(["", "   "])("treats a blank setting (%j) as no cap", async (value) => {
+    vi.stubEnv(DIRECTOR_BUDGET_ENV, value);
+    await play("plan");
+    expect(await runDirector(await request())).toMatchObject({ ok: true });
+    expect(await argvOfRun()).not.toContain("--max-budget-usd");
+  });
+
+  it.each([
+    ["0.75", "0.75"],
+    ["2", "2"],
+    [" 1.50 ", "1.5"],
+  ])("passes a configured cap of %j to the CLI as %s", async (value, passed) => {
+    vi.stubEnv(DIRECTOR_BUDGET_ENV, value);
+    await play("plan");
+    expect(await runDirector(await request())).toMatchObject({ ok: true });
+    const argv = await argvOfRun();
+    expect(argv.filter((a) => a === "--max-budget-usd")).toHaveLength(1);
+    expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe(passed);
+    expect(argv).toEqual(directorArgs(await recorded("cwd"), Number(passed)));
+  });
+
+  it.each(["abc", "0", "0.00", "-1", "Infinity", "NaN", "1e3", "0.5usd", "$1", "1,5", ".5", "1."])(
+    "refuses the setting %j before preparing a working directory or starting the CLI",
+    async (value) => {
+      vi.stubEnv(DIRECTOR_BUDGET_ENV, value);
+      // The Director's working directory is made under the system temporary
+      // directory, so an empty one shows that nothing was prepared.
+      const tmp = path.join(workdir, "tmp");
+      await mkdir(tmp);
+      vi.stubEnv("TMPDIR", tmp);
+      await play("plan");
+
+      const result = await runDirector(await request());
+
+      expect(result).toMatchObject({ ok: false, code: "budget_setting_invalid", usage: { costUsd: null, turns: null } });
+      await expect(recorded("argv.json")).rejects.toThrow();
+      expect(await readdir(tmp)).toEqual([]);
+      if (result.ok) throw new Error("unreachable");
+      expect(directorFailureMessage(result.code)).toContain(DIRECTOR_BUDGET_ENV);
+      const logged = JSON.stringify((console.warn as unknown as { mock: { calls: unknown[] } }).mock.calls);
+      expect(logged).toContain("budget_setting_invalid");
+      expect(logged).not.toContain(MESSAGE);
+    }
+  );
+
+  it("reports a configured cap that was reached as that cap, once, and never as a request to simplify", async () => {
+    vi.stubEnv(DIRECTOR_BUDGET_ENV, "0.5");
+    await play("budget");
+
+    const result = await runDirector(await request());
+
+    expect(result).toMatchObject({ ok: false, code: "budget_exceeded", usage: { costUsd: 0.07, turns: 3 } });
+    // One invocation, with the cap: the fake recorded these arguments once and nothing re-ran it.
+    const argv = await argvOfRun();
+    expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+    expect(argv).toEqual(directorArgs(await recorded("cwd"), 0.5));
+    if (result.ok) throw new Error("unreachable");
+    const message = directorFailureMessage(result.code);
+    expect(message).toContain(DIRECTOR_BUDGET_ENV);
+    expect(message).not.toMatch(/simpl/i);
+  });
+
+  it("reads the setting as a positive dollar amount or nothing", () => {
+    expect(directorBudgetCap(undefined)).toEqual({ ok: true, usd: null });
+    expect(directorBudgetCap(" ")).toEqual({ ok: true, usd: null });
+    expect(directorBudgetCap("0.25")).toEqual({ ok: true, usd: 0.25 });
+    expect(directorBudgetCap("10")).toEqual({ ok: true, usd: 10 });
+    expect(directorBudgetCap("-0.25")).toEqual({ ok: false });
+    expect(directorBudgetCap("0")).toEqual({ ok: false });
+  });
+
+  it("never tells the user to simplify a valid request", () => {
+    for (const code of ["budget_exceeded", "timed_out", "agent_failed", "invalid_output"] as const) {
+      expect(directorFailureMessage(code)).not.toMatch(/simpl/i);
+    }
   });
 });
 
@@ -438,6 +558,13 @@ describe("buildDirectorInput", () => {
     expect(input).toContain("Serious tone");
     // A relationship to an image the carousel no longer has is not shown.
     expect(input).not.toContain("ref-gone");
+  });
+
+  it("tells the Director the length a request states in pages (#124)", async () => {
+    const input = buildDirectorInput(await request({ message: TEN_PAGE_BRIEF, assets: [], references: [] }), files);
+    // On main the Director was told only that the message stated no slide count.
+    expect(input).toContain("Slide counts stated in the message: none");
+    expect(input).toMatch(/Page counts stated in the message: 10\b/);
   });
 
   it("describes a revision by its current slides", async () => {

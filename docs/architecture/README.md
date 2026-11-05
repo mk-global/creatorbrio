@@ -42,7 +42,7 @@ flowchart LR
 | Handoff and conformance | The Design Agent's visual plan section, and the check after design | `src/lib/creative-handoff.ts` |
 | Design Agent | Writes the copy and builds every slide in HTML and CSS through the app's API | `src/lib/chat-system-prompt.ts` |
 | Storage | JSON files with a per-file lock and atomic writes, plus uploaded files | `src/lib/data.ts`, `data/`, `public/uploads/` |
-| Rendering and export | One shared slide document for preview and export; Puppeteer screenshots in one headless browser per server process | `src/lib/slide-html.ts`, `src/lib/export-slides.ts` |
+| Rendering and export | One shared slide document for preview and export, rendered in one headless browser per server process: screenshots for PNG, native Chromium printing for the LinkedIn PDF, merged page by page without re-rendering | `src/lib/slide-html.ts`, `src/lib/export-slides.ts`, `src/lib/print-check.ts`, `src/lib/export-pdf.ts`, `src/lib/pdf-shadows.ts`, `src/lib/pdf-content.ts`, `src/lib/fonts.ts` |
 
 ## How a request flows
 
@@ -75,4 +75,6 @@ The details are in [creative-workflow.md](creative-workflow.md).
 - [visual-director.md](visual-director.md): how the Director reasons, the Creative Brief, capabilities, the plan and its evaluation.
 - [creative-workflow.md](creative-workflow.md): stages, outcomes, retry, cancellation, limits and the generated-image lifecycle.
 - [design-decisions.md](design-decisions.md): why the system is shaped this way, and the trade-offs.
+- [video-production-store.md](video-production-store.md): the Video Studio production store (not yet used by the app): layout, commit protocol, concurrency and crash guarantees, recovery.
+- [video-production-api.md](video-production-api.md): the Video Studio Production API (no UI uses it yet): endpoints, human and agent authority, confirmation, error codes.
 - [../PROVENANCE.md](../PROVENANCE.md) and [../MAINTAINING.md](../MAINTAINING.md): origin, licence and maintenance.

@@ -23,6 +23,10 @@ Derived from the MIT-licensed Open Carrusel project and now independently mainta
 - `src/lib/data.ts` — JSON storage with proper async-mutex and atomic writes
 - `src/lib/carousels.ts` — Carousel and slide CRUD with version history
 - `src/lib/claude-path.ts` — Portable Claude CLI discovery
+- `src/types/production.ts`, `src/lib/video/production/` — Video Studio Production v2 document types and `admitProduction()`, the pure validator every production document must pass (WS1)
+- `src/lib/video/production/changes/` — the pure change-set engine for productions: strict typed operations, `applyChangeSet()` (revision check, atomic apply, admission, scope guards for agents) and in-memory history with undo/redo, labels and agent runs kept or discarded as one unit (WS1 #114)
+- `src/lib/video/production/store/` — the durable production store (WS1 #118): immutable journal records and content-addressed documents under `data/video/<productionId>/`, committed by an atomic hard-link compare-and-swap that holds across processes; typed failures, explicit recovery and interrupted-run decisions. See `docs/architecture/video-production-store.md`
+- `src/lib/video/production/api/` — the Production API handlers (WS1 #120): credential-based human and agent authority, bounded strict request parsing, stable typed errors
 
 ## API Routes
 
@@ -30,7 +34,7 @@ Served by the running app, on whichever port it was started with. The origin the
 design agent is told to call is derived per request by `resolveAppOrigin()` in
 `src/lib/request-origin.ts`; never hardcode a port in the system prompt.
 
-- `POST /api/chat`: Claude CLI subprocess streaming typed SSE events (`token`, `result`, `error` with a stable `code` and a user-facing `message`, `done` with the `sessionId` to resume). Body `{ message, carouselId, sessionId? }`; `message` is at most 32,000 characters (`MAX_CHAT_MESSAGE_LENGTH` in `src/lib/chat-stream.ts`, derived from the Design Agent's single-argument limit), and an empty or longer one is refused with 400 and an `error` stating why, never truncated; `sessionId` must be a Claude session UUID and resumes that carousel's conversation, anything else is refused with 400. Answers 409 while the carousel already has an active run. The contract lives in `src/lib/chat-stream.ts`
+- `POST /api/chat`: Claude CLI subprocess streaming typed SSE events (`token`, `result`, `error` with a stable `code` and a user-facing `message`, `done` with the `sessionId` to resume). Body `{ message, carouselId, sessionId? }`; `message` is at most 32,000 characters (`MAX_CHAT_MESSAGE_LENGTH` in `src/lib/chat-stream.ts`, derived from the Design Agent's single-argument limit), and an empty or longer one is refused with 400 and an `error` stating why, never truncated; `sessionId` must be a Claude session UUID and resumes that carousel's conversation, anything else is refused with 400. Answers 409 while the carousel already has an active run. `continueRunId` (the generation status's `continuation.runId`) continues an unfinished design from its stored plan without planning again. The Design Agent has no spending cap unless `DESIGN_AGENT_MAX_BUDGET_USD` sets one, and a deadline of `DESIGN_AGENT_TIMEOUT_SECONDS` (default 900); both are separate from the Visual Director's and live in `src/lib/design-agent.ts`. The contract lives in `src/lib/chat-stream.ts`
 - `GET/POST /api/carousels` — List/create carousels
 - `GET/PUT/DELETE /api/carousels/[id]` — Single carousel
 - `POST /api/carousels/[id]/slides` — Add slide
@@ -39,7 +43,7 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - `POST /api/carousels/[id]/slides/[slideId]/undo` — Undo slide change
 - `GET/POST/DELETE /api/carousels/[id]/references`: reference images. `POST` takes `{ url, name }`, where `url` must be an image upload's `/uploads/<uuid>.png` path naming an existing PNG file; anything else is refused with 400. The server derives the file's path itself, and only references that still pass this check are listed in the agent's prompt
 - `POST /api/carousels/[id]/export` — Export all slides to PNG ZIP (default, or `?format=png`) or to one LinkedIn PDF (`?format=pdf`); a one-slide carousel also as that single PNG (`?format=single-png`). Answers 409 while a chat run is still generating the carousel, or after one was stopped, failed or timed out having changed slides
-- `GET/DELETE /api/carousels/[id]/generation` — `{ generating, interrupted }`: whether a chat run is still writing this carousel's slides, and whether the last one ended without finishing after changing the slides' content or order (kept in `data/generation-runs.json`). `DELETE` is the user accepting an interrupted carousel's slides as they are
+- `GET/DELETE /api/carousels/[id]/generation` — `{ generating, interrupted, continuation }`: whether a chat run is still writing this carousel's slides, whether the last one ended without finishing after changing the slides' content or order (kept in `data/generation-runs.json`), and whether its unfinished design can be continued (`{ runId, saved, expected }`). `DELETE` is the user accepting an interrupted carousel's slides as they are, which also withdraws the Continue
 - `GET/PUT /api/brand`: the default brand's configuration (kept for compatibility)
 - `GET/POST /api/brands`: list brands with `defaultBrandId`, or create a brand
 - `GET/PUT /api/brands/[id]`: one brand's configuration
@@ -47,13 +51,14 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - `GET/POST /api/templates` — Templates
 - `POST /api/upload` — Upload (images PNG/JPG/WebP, fonts WOFF2/TTF; max 10MB, type checked by magic bytes)
 - `GET /api/fonts` — Google Fonts list
+- `/api/video/productions`, `/api/video/productions/[id]` and its `changes`, `undo`, `redo`, `labels`, `labels/[name]/restore`, `runs`, `runs/[runId]/decision` and `recover` routes: the Video Studio Production API (WS1 #120). Every write goes through `ProductionStore`. Authority comes from a credential, never the body: the local human key (`X-CreatorBrio-Human-Key`, from `data/video-studio.key`) or a per-run agent token. Destructive commands need `expectedGeneration`. Codes and limits are in `docs/architecture/video-production-api.md`
 
 ## Conventions
 
 - Components max ~300 lines per file
 - Use `cn()` from `src/lib/utils.ts` for class merging
 - Types in `src/types/`, libs in `src/lib/`, components in `src/components/`
-- All data mutations go through `src/lib/data.ts` (never direct fs writes for JSON)
+- All data mutations go through `src/lib/data.ts` (never direct fs writes for JSON), except Video Studio productions, which go through the production store and its cross-process commit protocol
 - Update routes never pass a parsed request body straight to a mutator. They select the fields the endpoint defines as mutable via `src/lib/api-input.ts`; everything else is server-owned
 - iframe slides always use `sandbox=""` attribute (no JavaScript execution)
 - The Claude subprocess gets `--allowedTools Bash WebFetch Read`: `Bash` to curl the local API routes, `WebFetch` to research while designing, `Read` to view reference images

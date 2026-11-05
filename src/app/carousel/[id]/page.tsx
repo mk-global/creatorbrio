@@ -287,6 +287,7 @@ export default function CarouselEditorPage({ params }: PageProps) {
               onStreamStart={handleStreamStart}
               onStreamEnd={handleStreamEnd}
               chatInputRef={chatInputRef}
+              continuation={generation.continuation}
             />
           </div>
         )}

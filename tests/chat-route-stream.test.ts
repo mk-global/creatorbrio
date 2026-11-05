@@ -12,7 +12,8 @@ import {
   sessionAfterRun,
   type ChatStreamEvent,
 } from "@/lib/chat-stream";
-import { stubDirector } from "./helpers/stub-director";
+import { stubDirector, typographyPlanFor } from "./helpers/stub-director";
+import { TEN_PAGE_BRIEF } from "./fixtures/ten-page-brief";
 
 // These tests cover the Design Agent run; the Visual Director is stubbed with an image-free plan.
 let director: ReturnType<typeof stubDirector>;
@@ -236,7 +237,8 @@ describe("chat errors after streaming starts (#3)", () => {
     expect(events[3]).toEqual({
       type: "error",
       code: "agent_failed",
-      message: "The design agent stopped unexpectedly before finishing. Send your message again to retry.",
+      message:
+        "The design agent stopped unexpectedly before finishing. Slides it already saved are kept; select Continue to make only the missing ones, or send your message again.",
     });
     expectNoDiagnostics(raw);
     const run = events.reduce(reduceChatRun, INITIAL_CHAT_RUN);
@@ -251,15 +253,21 @@ describe("chat errors after streaming starts (#3)", () => {
 
   it("reports an error result once, with its own code, and never as a reply", async () => {
     await play("budget");
-    const carousel = await createCarousel("Errors", "4:5");
-    const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
+    // Only an operator's own cap is reported as CreatorBrio's (#127).
+    process.env.DESIGN_AGENT_MAX_BUDGET_USD = "2.5";
+    try {
+      const carousel = await createCarousel("Errors", "4:5");
+      const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
 
-    expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
-    expect(events[3]).toMatchObject({ type: "error", code: "budget_exceeded" });
-    expectNoDiagnostics(raw);
+      expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
+      expect(events[3]).toMatchObject({ type: "error", code: "budget_exceeded" });
+      expectNoDiagnostics(raw);
+    } finally {
+      delete process.env.DESIGN_AGENT_MAX_BUDGET_USD;
+    }
   });
 
-  it("reports a timeout kill, which exits without a code", async () => {
+  it("reports a timeout kill at the default 15-minute deadline, which exits without a code", async () => {
     await play("hang");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const carousel = await createCarousel("Errors", "4:5");
@@ -276,7 +284,10 @@ describe("chat errors after streaming starts (#3)", () => {
       events.push(...parser.push(text));
     }
 
+    // Still running at the old 8-minute limit and just before the deadline (#127).
     await vi.advanceTimersByTimeAsync(480_000);
+    expect(isGenerating(carousel.id)).toBe(true);
+    await vi.advanceTimersByTimeAsync(900_000 - 480_000);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -350,7 +361,7 @@ describe("chat message limits (Invalid message incident)", () => {
     expect(events.some((e) => e.type === "error")).toBe(false);
     expect(director.requests[0].message).toBe(message);
     const args = await argv();
-    const task = args[args.indexOf("-p") + 1];
+    const task = args[args.indexOf("--") + 1];
     // The whole message, then the plan: nothing truncated or re-encoded.
     expect(task.startsWith(`${message}\n\n`)).toBe(true);
     // Linux allows 128 KiB in one argument; the task message must fit.
@@ -395,4 +406,41 @@ describe("chat message limits (Invalid message incident)", () => {
       expect(isGenerating(carousel.id)).toBe(false);
     }
   );
+});
+
+describe("a fully specified ten-page request reaches the Design Agent (#124)", () => {
+  it("plans the ten pages as ten slides, with no images or sources, and hands the whole brief to the Design Agent", async () => {
+    // The plan the founder's Director returned for this request: the user's ten pages, as stated.
+    director.restore();
+    director = stubDirector((request) => {
+      const plan = typographyPlanFor(request);
+      const slides = Array.from({ length: 10 }, (_, i) => ({
+        index: i + 1,
+        visualIntent: "The page's approved copy, set in type with a quiet diagram",
+        treatment: "typography",
+        assetRefs: [] as string[],
+        styleReferenceIds: [] as string[],
+      }));
+      return {
+        ...plan,
+        execution: { ...plan.execution, requestType: "new", slideCount: 10, slideCountBasis: "user-explicit", slides, assets: [] },
+      };
+    });
+    await play("success");
+    const carousel = await createCarousel("Ten pages", "4:5");
+
+    const { events } = await readEvents(await postChat({ carouselId: carousel.id, message: TEN_PAGE_BRIEF }));
+
+    // On main this run was blocked as plan_failed before the Design Agent started.
+    expect(events.filter((e) => e.type === "blocked" || e.type === "error")).toEqual([]);
+    // Planning then designing: no image stage, so no image job ran.
+    expect(events.filter((e) => e.type === "stage")).toEqual(STAGES);
+    expect(events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
+    expect(director.requests).toHaveLength(1);
+    expect(director.requests[0].sources).toEqual([]);
+    const args = await argv();
+    const task = args[args.indexOf("--") + 1];
+    expect(task.startsWith(`${TEN_PAGE_BRIEF}\n\n`)).toBe(true);
+    expect(task).toContain("Slides to produce: 10 ");
+  });
 });

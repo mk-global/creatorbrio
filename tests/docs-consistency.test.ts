@@ -5,7 +5,14 @@ import path from "node:path";
 import { MAX_SLIDES } from "@/types/carousel";
 import { DEFAULT_BRAND } from "@/types/brand";
 import { buildSystemPrompt } from "@/lib/chat-system-prompt";
-import { DIRECTOR_BUDGET_USD, DIRECTOR_TIMEOUT_MS, DIRECTOR_TOOLS } from "@/lib/visual-director";
+import { DIRECTOR_BUDGET_ENV, DIRECTOR_TIMEOUT_MS, DIRECTOR_TOOLS } from "@/lib/visual-director";
+import {
+  DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS,
+  DESIGN_AGENT_BUDGET_ENV,
+  DESIGN_AGENT_TIMEOUT_ENV,
+  MAX_DESIGN_AGENT_TIMEOUT_SECONDS,
+  MIN_DESIGN_AGENT_TIMEOUT_SECONDS,
+} from "@/lib/design-agent";
 import type { Carousel } from "@/types/carousel";
 
 // CLAUDE.md is read by the assistant working on this repository, so a stale
@@ -73,8 +80,28 @@ describe("the Visual Director's architecture page matches the code", () => {
     expect(allowedToolsInChatRoute()).not.toEqual([...DIRECTOR_TOOLS]);
   });
 
-  it("states the Director's budget and time limit", () => {
-    expect(page).toContain(`$${DIRECTOR_BUDGET_USD.toFixed(2)} and ${DIRECTOR_TIMEOUT_MS / 1000} seconds`);
+  it("states the Director's mandatory time limit and its optional spending cap", () => {
+    expect(page).toContain(`a mandatory ${DIRECTOR_TIMEOUT_MS / 1000}-second timeout`);
+    expect(page).toContain(`\`${DIRECTOR_BUDGET_ENV}\``);
+    expect(readme, "README should list the Director's spending-cap setting").toContain(`\`${DIRECTOR_BUDGET_ENV}\``);
+  });
+});
+
+describe("the Design Agent's limits are documented as the code sets them (#127)", () => {
+  const workflow = readFileSync(path.join(repoRoot, "docs/architecture/creative-workflow.md"), "utf-8");
+
+  it("states the optional cap and the default deadline, and no fixed dollar cap", () => {
+    for (const doc of [readme, claudeMd, workflow]) {
+      expect(doc).toContain(`\`${DESIGN_AGENT_BUDGET_ENV}\``);
+      expect(doc).toContain(`\`${DESIGN_AGENT_TIMEOUT_ENV}\``);
+      expect(doc).not.toMatch(/capped at USD 1\.00|\$1\.00 and 8 minutes/);
+    }
+    expect(DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS).toBe(900);
+    expect(readme).toContain(`${DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS / 60}-minute time limit`);
+    expect(readme).toContain(`${MIN_DESIGN_AGENT_TIMEOUT_SECONDS} to ${MAX_DESIGN_AGENT_TIMEOUT_SECONDS}`);
+    expect(workflow).toContain(`${MIN_DESIGN_AGENT_TIMEOUT_SECONDS} to ${MAX_DESIGN_AGENT_TIMEOUT_SECONDS} seconds`);
+    expect(claudeMd).toContain(`(default ${DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS})`);
+    expect(chatRoute).not.toMatch(/"--max-budget-usd",\s*\n\s*"\d/);
   });
 });
 

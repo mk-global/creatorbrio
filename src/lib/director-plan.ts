@@ -160,21 +160,47 @@ const NUMBER_WORDS = [
   "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
   "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
 ];
-const COUNT_PATTERN = new RegExp(`\\b(\\d{1,2}|${NUMBER_WORDS.join("|")})(?:\\s*-\\s*|\\s+)slides?\\b`, "gi");
+/** Whitespace within one line: a number on one line never counts a noun on the next. */
+const INLINE_SPACE = "[^\\S\\r\\n\\v\\f\\u2028\\u2029]";
+// Not the tail of a ratio, decimal, list, fraction or compound ("4:5", "2.5",
+// "1,5", "3/10", "twenty-five"), and on the same line as its noun.
+const countPattern = (noun: string) =>
+  new RegExp(
+    `(?<![:.,/-])\\b(\\d{1,2}|${NUMBER_WORDS.join("|")})(?:${INLINE_SPACE}*-${INLINE_SPACE}*|${INLINE_SPACE}+)${noun}s?\\b`,
+    "gi"
+  );
+const SLIDE_COUNT_PATTERN = countPattern("slide");
+const PAGE_COUNT_PATTERN = countPattern("page");
 
 /**
- * Every explicit slide count in a message: a number from 1 to 99, as digits
- * or as an English word up to twenty, followed by "slide" or "slides",
- * optionally hyphenated ("5 slides", "five-slide").
+ * Every count in a message that a number from 1 to 99, as digits or as an
+ * English word up to twenty, gives to the noun on the same line, optionally
+ * hyphenated ("5 slides", "five-slide"). A number after the noun ("slide 3",
+ * "Page 01") is a label, not a count.
  */
-export function explicitSlideCounts(message: string): number[] {
+function countsIn(message: string, pattern: RegExp): number[] {
   const counts = new Set<number>();
-  for (const match of message.matchAll(COUNT_PATTERN)) {
+  for (const match of message.matchAll(pattern)) {
     const token = match[1].toLowerCase();
     const n = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS.indexOf(token) + 1;
     if (n >= 1 && n <= 99) counts.add(n);
   }
   return [...counts].sort((a, b) => a - b);
+}
+
+/** Every explicit slide count in a message ("5 slides", "five-slide"); each one binds a new request. */
+export function explicitSlideCounts(message: string): number[] {
+  return countsIn(message, SLIDE_COUNT_PATTERN);
+}
+
+/**
+ * Every length a message states in pages ("10 pages", "a ten-page PDF").
+ * A document carousel's pages are its slides, but a page count can also
+ * describe a source ("my 40-page ebook"), so it never binds a plan: it only
+ * lets the Director plan that many slides as "user-explicit" (#124).
+ */
+export function explicitPageCounts(message: string): number[] {
+  return countsIn(message, PAGE_COUNT_PATTERN);
 }
 
 /** Whether the message asks for a cover, the only case a single slide is inferred. */
@@ -324,9 +350,12 @@ function validateSlideCount(
     return;
   }
   switch (basis) {
-    case "user-explicit":
-      e.add("execution.slideCountBasis", "user-explicit needs a new request that states a count");
+    case "user-explicit": {
+      const pages = isNew ? explicitPageCounts(context.message) : [];
+      if (pages.length === 0) e.add("execution.slideCountBasis", "user-explicit needs a new request that states a count");
+      else if (!pages.includes(slideCount)) e.add("execution.slideCount", "must equal the count the message states");
       break;
+    }
     case "existing":
       if (isNew) e.add("execution.slideCountBasis", "existing applies only to a revision");
       else if (slideCount !== context.currentSlideCount) e.add("execution.slideCount", "must equal the carousel's current count");

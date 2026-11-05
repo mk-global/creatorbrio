@@ -21,9 +21,12 @@ A separate Visual Director decides what the content is for, who it is for, the c
 
 Why: deciding what to communicate and deciding how to lay it out are different jobs.
 Asking one agent to do both in one pass tends to skip the first: it starts composing before it has asked whether imagery helps at all.
-A separate, stateless step with its own budget makes that reasoning explicit, reviewable and testable.
+A separate, stateless step with its own time limit makes that reasoning explicit, reviewable and testable.
 
-Cost: every chat message pays for one extra model call (up to $0.25 and two minutes, typically far less), including small edits.
+Cost: every chat message pays for one extra model call, bounded by a two-minute timeout, including small edits.
+The Director originally also had a fixed $0.25 spending cap; it refused legitimate detailed requests outright, so it was removed (#116).
+A cap is now an operator choice (`DIRECTOR_MAX_BUDGET_USD`), and each run's cost is logged.
+The Design Agent's fixed $1.00 cap stopped legitimate long carousels part-way for the same reason, and became an operator choice too (`DESIGN_AGENT_MAX_BUDGET_USD`, #127), with its own configurable deadline.
 
 ## Plans have advisory and binding parts
 

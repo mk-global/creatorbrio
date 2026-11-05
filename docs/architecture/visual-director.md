@@ -140,13 +140,18 @@ The Director never picks a slide count of its own.
 The first applicable rule wins, and the plan records which one it used:
 
 1. A new request that states a count uses it (`user-explicit`).
+   A count in slides always applies.
+   A carousel exported as a document has one page per slide, so a length in pages ("10 pages", "a ten-page PDF") can also be planned as `user-explicit` (#124).
+   A page count is never binding, because it can describe a source instead ("my 40-page ebook"): the Director decides, and the validator only checks that a `user-explicit` count is one the message states.
+   A count is read only from a number on the same line as its noun, never from the end of a ratio, decimal or compound ("4:5", "2.5", "twenty-five").
+   Only a slide count over the maximum is refused before planning.
 2. A revision keeps its current count (`existing`), unless the user asks to add or remove slides (`user-change`).
 3. A new request for a cover is one slide (`single-cover`).
 4. Any other new request uses the Design Agent's own default arc of eight slides (`baseline-default`).
 
 At most five images are generated per request, and never more than the slide count.
 
-## Isolation and budget
+## Isolation and limits
 
 The Director runs as its own Claude CLI invocation, separate from the Design Agent's session.
 
@@ -156,11 +161,16 @@ Director tools: `Read`
 - No user or project settings, no MCP servers and no automatic memory are loaded.
 - No session is written or resumed, so the Director cannot touch the Design Agent's conversation.
 - Its input arrives on standard input, never in the process arguments.
-- Each run has its own limits: $0.25 and 120 seconds.
+- Each run is bounded by a mandatory 120-second timeout, after which the Director is stopped (and killed if it ignores the stop); cancelling the request stops it the same way.
+- There is no spending cap by default.
+  An operator who wants one sets `DIRECTOR_MAX_BUDGET_USD` in `.env.local` to a positive amount in US dollars, such as `0.75`, and restarts the server; only then is the CLI given `--max-budget-usd`.
+  A value that is not a plain positive amount is refused before anything starts, with the outcome "spending cap setting invalid", rather than ignored.
+  A run that reaches a configured cap ends as "budget exceeded" and the user is told which setting stopped it.
+  Each run's cost, duration and the cap in force are recorded in the `[director] plan finished` log line.
 
 These are the CLI's permission rules, a policy boundary rather than operating-system isolation: the CLI runs as the same account as the app.
 
-Every outcome is typed (`runDirector` in `src/lib/visual-director.ts`): planned, start failure, timeout, cancellation, budget exceeded, agent failure, no output, invalid plan, or a missing capability.
+Every outcome is typed (`runDirector` in `src/lib/visual-director.ts`): planned, start failure, timeout, cancellation, budget exceeded, spending cap setting invalid, agent failure, no output, invalid plan, a plan refused only for its slide count (which tells the user to say how many slides they want), or a missing capability.
 There is no automatic re-plan.
 The server log records counts and outcome codes only, never the message, page text or plan text.
 
