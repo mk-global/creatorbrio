@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "studio:pair": "node scripts/studio-pair.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -50,6 +51,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
+    "jiti": "2.6.1",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.11"
