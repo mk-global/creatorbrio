@@ -3,10 +3,10 @@ import type { AspectRatio } from "@/types/carousel";
 /**
  * Export formats offered by `POST /api/carousels/[id]/export`.
  *
- * Every format packages the same rendered PNGs: `png` zips them, `pdf` places
- * each one on its own page, and `single-png` answers with the one PNG of a
- * one-slide carousel as it is. This module has no server dependencies so the
- * editor can import it too.
+ * Every format renders the same slide documents: `png` zips one PNG per slide,
+ * `single-png` answers with the one PNG of a one-slide carousel as it is, and
+ * `pdf` prints each slide natively to a page with real text. This module has no
+ * server dependencies so the editor can import it too.
  */
 export type ExportFormat = "png" | "pdf" | "single-png";
 

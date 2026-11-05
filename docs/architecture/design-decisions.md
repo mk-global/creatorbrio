@@ -26,6 +26,7 @@ A separate, stateless step with its own time limit makes that reasoning explicit
 Cost: every chat message pays for one extra model call, bounded by a two-minute timeout, including small edits.
 The Director originally also had a fixed $0.25 spending cap; it refused legitimate detailed requests outright, so it was removed (#116).
 A cap is now an operator choice (`DIRECTOR_MAX_BUDGET_USD`), and each run's cost is logged.
+The Design Agent's fixed $1.00 cap stopped legitimate long carousels part-way for the same reason, and became an operator choice too (`DESIGN_AGENT_MAX_BUDGET_USD`, #127), with its own configurable deadline.
 
 ## Plans have advisory and binding parts
 

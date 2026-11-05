@@ -8,6 +8,15 @@ import type { Slide } from "@/types/carousel";
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
 vi.mock("puppeteer", () => ({ default: { launch } }));
 
+// The fonts each export asks for, recorded instead of fetched.
+const { fontRequests } = vi.hoisted(() => ({ fontRequests: [] as { families: string[]; options: unknown }[] }));
+vi.mock("@/lib/fonts", () => ({
+  getInlinedFontCSS: async (families: string[], options: unknown) => {
+    fontRequests.push({ families, options });
+    return "";
+  },
+}));
+
 type ExportSlides = typeof import("@/lib/export-slides");
 
 const STATE_KEY = Symbol.for("creatorbrio.export-browser");
@@ -25,6 +34,25 @@ interface FakeBrowser {
 
 let png: Buffer;
 let browsers: FakeBrowser[];
+/** What the in-page text check reports for every slide, keyed by slide HTML. */
+let printable: (html: string) => Check | Promise<Check>;
+/** The PDF a page prints, keyed by slide HTML. */
+let printed: (html: string) => Promise<Uint8Array>;
+/** The options each print was called with. */
+let printOptions: Record<string, unknown>[];
+let mediaTypes: (string | null)[];
+/** The calls each page received that set up how the slide loads and prints, in order. */
+let pageSetup: string[][];
+/** Stylesheets added to pages after loading. */
+let addedStyles: string[];
+/** Whether the loaded page's body is exactly the slide's box. */
+let bodyIsSlide: boolean;
+/** The document as the DevTools protocol describes it, keyed by slide HTML. */
+let documentTree: (html: string) => unknown;
+/** What the check reports in each frame inside the slide, or an error it throws there. */
+let frameChecks: (html: string) => (Check | Error)[];
+/** A protocol failure reading the document, keyed by slide HTML, or null. */
+let documentError: (html: string) => Error | null;
 /** When set, pages opened from now on wait for it before their screenshot. */
 let screenshotGate: Promise<void> | null;
 
@@ -38,11 +66,61 @@ function fakeBrowser(): FakeBrowser {
       browser.openPages++;
       const gate = screenshotGate;
       let open = true;
-      return {
+      let html = "";
+      const setup: string[] = [];
+      pageSetup.push(setup);
+      const page = {
         setViewport: async () => {},
-        setContent: async () => {},
+        setJavaScriptEnabled: async (enabled: boolean) => {
+          setup.push(`scripts:${enabled}`);
+        },
+        setContent: async (content: string) => {
+          setup.push("load");
+          html = content;
+        },
+        addStyleTag: async ({ content }: { content: string }) => {
+          setup.push("style");
+          addedStyles.push(content);
+        },
         waitForFunction: async () => {},
-        evaluate: async () => undefined,
+        // The text check is the only evaluation whose result is used.
+        evaluate: async (fn: { name: string }) => {
+          if (fn.name === "bodyIsTheSlide") {
+            setup.push("measure");
+            return bodyIsSlide;
+          }
+          if (fn.name !== "readPrintableText") return undefined;
+          setup.push("check");
+          return printable(html);
+        },
+        createCDPSession: async () => ({
+          send: async (method: string) => {
+            expect(method).toBe("DOM.getDocument");
+            const error = documentError(html);
+            if (error) throw error;
+            return { root: documentTree(html) };
+          },
+          detach: async () => {},
+        }),
+        mainFrame: () => page,
+        frames: () => [
+          page,
+          ...frameChecks(html).map((check) => ({
+            evaluate: async (fn: { name: string }, isSlide: boolean) => {
+              expect([fn.name, isSlide]).toEqual(["readPrintableText", false]);
+              setup.push("check frame");
+              if (check instanceof Error) throw check;
+              return check;
+            },
+          })),
+        ],
+        emulateMediaType: async (type: string | null) => {
+          mediaTypes.push(type);
+        },
+        pdf: async (options: Record<string, unknown>) => {
+          printOptions.push(options);
+          return printed(html);
+        },
         screenshot: async () => {
           await gate;
           return png;
@@ -52,6 +130,7 @@ function fakeBrowser(): FakeBrowser {
           open = false;
         },
       };
+      return page;
     },
     async close() {
       browser.closes.push(browser.openPages);
@@ -80,6 +159,46 @@ function slides(count: number): Slide[] {
   }));
 }
 
+/** A one-page PDF at the 4:5 print size: text when `label` is set, else only a shape. */
+async function textPdf(label: string | null): Promise<Uint8Array> {
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([810, 1013.04]);
+  page.drawRectangle({ x: 0, y: 0, width: 810, height: 1013.04 });
+  if (label) {
+    page.drawText(label, { x: 10, y: 900, font: await doc.embedFont(StandardFonts.Helvetica) });
+  }
+  return doc.save();
+}
+
+/** What the in-page check reports for one document. */
+interface Check {
+  hasText: boolean;
+  visibleText: string;
+  problem: string | null;
+}
+
+/**
+ * A one-page PDF at the 4:5 print size showing `text` in a CID font with a
+ * Unicode map, one code per character, as Chromium writes text.
+ */
+async function unicodePdf(text: string): Promise<Uint8Array> {
+  const { PDFDocument, PDFName } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const ctx = doc.context;
+  const chars = [...text];
+  const hex = (n: number, digits: number) => n.toString(16).padStart(digits, "0");
+  const utf16 = (c: string) => [...c].map((_, i) => hex(c.charCodeAt(i), 4)).join("");
+  const entries = chars.map((c, i) => `<${hex(i + 1, 4)}> <${utf16(c)}>`).join(" ");
+  const map = `1 begincodespacerange <0000> <FFFF> endcodespacerange ${chars.length} beginbfchar ${entries} endbfchar`;
+  const font = ctx.obj({ Type: "Font", Subtype: "Type0", Encoding: "Identity-H", ToUnicode: ctx.register(ctx.flateStream(map)) });
+  const page = doc.addPage([810, 1013.04]);
+  page.node.set(PDFName.of("Resources"), ctx.obj({ Font: { F1: font } }));
+  const codes = chars.map((_, i) => hex(i + 1, 4)).join("");
+  page.node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream(`BT /F1 40 Tf 10 900 Td <${codes}> Tj ET`)));
+  return doc.save();
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => (resolve = r));
@@ -94,6 +213,10 @@ async function freshModule(): Promise<ExportSlides> {
 beforeEach(async () => {
   // Each test starts as a newly started server: no browser and a cold module.
   delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
+  fontRequests.length = 0;
+  documentTree = () => ({ nodeName: "#document", children: [] });
+  documentError = () => null;
+  frameChecks = () => [];
   png ??= await sharp({
     create: { width: 8, height: 10, channels: 3, background: { r: 10, g: 20, b: 30 } },
   })
@@ -101,6 +224,13 @@ beforeEach(async () => {
     .toBuffer();
   browsers = [];
   screenshotGate = null;
+  printable = () => ({ hasText: true, visibleText: "", problem: null });
+  printed = (html) => textPdf(html.includes("Slide 2") ? "Second" : "Any");
+  printOptions = [];
+  mediaTypes = [];
+  pageSetup = [];
+  addedStyles = [];
+  bodyIsSlide = true;
   launch.mockReset();
   launch.mockImplementation(launchFake);
 });
@@ -233,5 +363,280 @@ describe("export browser", () => {
 
     expect(launch).toHaveBeenCalledTimes(1);
     expect(browsers[0].closes).toEqual([]);
+  });
+
+  describe("native PDF printing", () => {
+    it("prints every slide in the one shared browser and closes every page", async () => {
+      const { exportAllSlidePdfs, exportAllSlides } = await freshModule();
+
+      const [pdfs] = await Promise.all([
+        exportAllSlidePdfs(slides(5), "4:5"),
+        exportAllSlides(slides(2), "4:5"),
+      ]);
+
+      expect(pdfs).toHaveLength(5);
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(browsers[0].openPages).toBe(0);
+      expect(browsers[0].closes).toEqual([]);
+    });
+
+    it("prints as the screen shows it, at the slide's exact size, without margins", async () => {
+      const { exportSlidePdf } = await freshModule();
+
+      await exportSlidePdf(slides(1)[0], "4:5");
+
+      expect(mediaTypes).toEqual(["screen"]);
+      expect(printOptions).toEqual([
+        {
+          width: "1080px",
+          height: "1350px",
+          printBackground: true,
+          margin: { top: 0, right: 0, bottom: 0, left: 0 },
+          tagged: false,
+          outline: false,
+          timeout: 30_000,
+        },
+      ]);
+    });
+
+    it("loads the slide without its scripts, as the preview does, and checks it with the print-only rules applied", async () => {
+      const { exportSlidePdf } = await freshModule();
+
+      await exportSlidePdf(slides(1)[0], "4:5");
+
+      expect(pageSetup).toEqual([["scripts:false", "load", "style", "measure", "style", "check"]]);
+      const [pageCss, clipCss] = addedStyles;
+      // The slide's own page rules and breaks cannot change the paper...
+      expect(pageCss).toMatch(/@page \{ size: 1080px 1350px !important; margin: 0 !important;/);
+      expect(pageCss).toMatch(/@top-center \{ content: none !important; \}/);
+      // Page breaks are left alone: overriding them would break column
+      // layouts, and a forced break does not start a page in a one-page print.
+      expect(pageCss).not.toMatch(/break-/);
+      // ...and the body, which already clips, becomes the containing block of
+      // positioned content, so print clips where the screen clips.
+      expect(clipCss).toBe("body { position: relative !important; }");
+    });
+
+    it("prints a slide that resizes its body without the clip, which would move what is positioned in it", async () => {
+      const { exportSlidePdf } = await freshModule();
+      bodyIsSlide = false;
+
+      await exportSlidePdf(slides(1)[0], "4:5");
+
+      expect(pageSetup).toEqual([["scripts:false", "load", "style", "measure", "check"]]);
+      expect(addedStyles).toHaveLength(1);
+      expect(addedStyles[0]).not.toMatch(/position/);
+    });
+
+    it("leaves the PNG export's loading exactly as it was", async () => {
+      const { exportSlide } = await freshModule();
+
+      await exportSlide(slides(1)[0], "4:5");
+
+      expect(pageSetup).toEqual([["load"]]);
+      expect(addedStyles).toEqual([]);
+    });
+
+    it("asks for static font instances for the PDF and leaves the PNG export's fonts as they were", async () => {
+      const { exportSlide, exportSlidePdf } = await freshModule();
+      const fonted: Slide = { ...slides(1)[0], html: `<div style="font-family: 'Inter'; font-style: italic">Hi</div>` };
+
+      await exportSlide(fonted, "4:5");
+      await exportSlidePdf(fonted, "4:5");
+
+      expect(fontRequests).toEqual([
+        { families: ["Inter"], options: { italic: true } },
+        { families: ["Inter"], options: { italic: true, instances: "static" } },
+      ]);
+    });
+
+    it("returns each slide's PDF in slide order", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      const { hexText, readPdfPages } = await import("./helpers/export-files");
+      printed = (html) => textPdf(html.match(/Slide \d+/)![0]);
+
+      const pdfs = await exportAllSlidePdfs(slides(7), "4:5");
+
+      expect(pdfs).toHaveLength(7);
+      for (const [i, bytes] of pdfs.entries()) {
+        const [page] = await readPdfPages(bytes);
+        expect(page.operators).toContain(hexText(`Slide ${i + 1}`));
+      }
+    });
+
+    it.each([
+      ["filter", /^Slide 2 applies a CSS filter to text/],
+      ["backdrop-filter", /^Slide 2 uses a frosted-glass effect \(backdrop-filter\)/],
+      ["box-reflect", /^Slide 2 reflects text \(-webkit-box-reflect\)/],
+      ["gradient-text", /^Slide 2 fills text with a gradient or image \(background-clip: text\)/],
+      ["text-paint", /^Slide 2 draws text inside an SVG pattern or uses text as an SVG clip path/],
+      ["mask", /^Slide 2 uses a CSS or SVG mask/],
+      ["blend", /^Slide 2 uses mix-blend-mode plus-lighter or plus-darker/],
+      ["backface", /^Slide 2 turns an element's back to the viewer \(backface-visibility: hidden\)/],
+      ["overflow", /^Slide 2 has content reaching past its edges/],
+      ["unreadable", /^Slide 2 could not be checked before printing/],
+    ])("refuses a slide whose check reports %s before printing, naming the slide", async (problem, message) => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printable = (html) => ({
+        hasText: true,
+        visibleText: "",
+        problem: html.includes("Slide 2") ? problem : null,
+      });
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+      await expect(attempt).rejects.toThrow(message);
+      // The refused slide was never printed, and no page was left open.
+      expect(printOptions).toHaveLength(2);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("refuses a slide holding a closed shadow root, which the in-page check cannot see into", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      documentTree = (html) => ({
+        children: [
+          {
+            children: html.includes("Slide 2")
+              ? [{ shadowRoots: [{ shadowRootType: "user-agent" }] }, { shadowRoots: [{ shadowRootType: "closed" }] }]
+              : [{ shadowRoots: [{ shadowRootType: "open" }, { shadowRootType: "user-agent" }] }],
+          },
+        ],
+      });
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toThrow(/^Slide 2 could not be checked before printing/);
+      expect(printOptions).toHaveLength(2);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("checks every frame inside the slide, and refuses an effect found in one", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      frameChecks = (html) =>
+        html.includes("Slide 2")
+          ? [{ hasText: false, visibleText: "", problem: null }, { hasText: true, visibleText: "", problem: "filter" }]
+          : [{ hasText: true, visibleText: "", problem: null }];
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toThrow(/^Slide 2 applies a CSS filter to text/);
+      expect(pageSetup[1]).toEqual(["scripts:false", "load", "style", "measure", "style", "check", "check frame", "check frame"]);
+      expect(printOptions).toHaveLength(2);
+    });
+
+    it("refuses a slide with a frame the check cannot run in", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      frameChecks = (html) => (html.includes("Slide 1") ? [new Error("Execution context was destroyed")] : []);
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).rejects.toThrow(/^Slide 1 could not be checked before printing/);
+    });
+
+    it("refuses a slide whose visible text reached the PDF only as a picture", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printed = (html) => textPdf(html.includes("Slide 2") ? null : "Fine");
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toMatchObject({ status: 422 });
+      await expect(attempt).rejects.toThrow(/^Slide 2 could only be printed as a picture/);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("accepts a page whose text holds every letter and digit the slide shows, however cased or composed", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      // Shown with an uppercase transform and printed with composed accents;
+      // punctuation, spaces and emoji are not compared.
+      printable = () => ({ hasText: true, visibleText: "Cafe\u0301 Straße, 10 🚀 1\uFE0F\u20E3!", problem: null });
+      printed = () => unicodePdf("CAFÉ STRASSE 10");
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).resolves.toHaveLength(2);
+    });
+
+    it("refuses a page that leaves out characters the slide shows, quoting them, before the picture check", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      // As Chromium prints Chinese that fell back to a font it cannot embed:
+      // the characters are simply absent from the page.
+      printable = (html) => ({ hasText: true, visibleText: html.includes("Slide 2") ? "5 Tips 提高效率" : "5 Tips", problem: null });
+      printed = () => unicodePdf("5 Tips");
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+      await expect(attempt).rejects.toThrow(
+        /^Slide 2 shows text that would not reach the PDF as text \(such as "提", "高", "效", "率"\)\. /
+      );
+      expect(browsers[0].openPages).toBe(0);
+
+      // A page with no text at all is named by what it lost, too.
+      printable = () => ({ hasText: true, visibleText: "提高效率", problem: null });
+      printed = () => textPdf(null);
+      await expect(exportAllSlidePdfs(slides(1), "4:5")).rejects.toThrow(/^Slide 1 shows text that would not reach the PDF as text/);
+    });
+
+    it("refuses a page that lost characters the slide also shows elsewhere, counting each", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      // A heading in a font that cannot be embedded, and the same words in a
+      // Noto paragraph that prints: the page holds them once, the slide twice.
+      printable = () => ({ hasText: true, visibleText: "5 Tips 提高效率 提高效率", problem: null });
+      printed = () => unicodePdf("5 Tips 提高效率");
+
+      await expect(exportAllSlidePdfs(slides(1), "4:5")).rejects.toThrow(
+        /^Slide 1 shows text that would not reach the PDF as text \(such as "提", "高", "效", "率"\)\. /
+      );
+    });
+
+    it("refuses a slide whose document the DevTools protocol cannot read, as one nested too deeply", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      documentError = (html) =>
+        html.includes("Slide 2") ? new Error("Protocol error (DOM.getDocument): Object reference chain is too long") : null;
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toThrow(/^Slide 2 could not be checked before printing/);
+      expect(printOptions).toHaveLength(2);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("refuses a slide whose check does not finish in time, and closes its page", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      vi.useFakeTimers();
+      try {
+        printable = (html) =>
+          html.includes("Slide 2") ? new Promise<Check>(() => {}) : { hasText: true, visibleText: "", problem: null };
+
+        const outcome = exportAllSlidePdfs(slides(2), "4:5").then(
+          () => null,
+          (error: Error) => error
+        );
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect((await outcome)?.message).toMatch(/^Slide 2 could not be checked before printing/);
+        expect(printOptions).toHaveLength(1);
+        expect(browsers[0].openPages).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("accepts a slide with no text at all, such as a full-bleed photo", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printable = () => ({ hasText: false, visibleText: "", problem: null });
+      printed = () => textPdf(null);
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).resolves.toHaveLength(2);
+    });
+
+    it("passes an unexpected print failure through unchanged for the route to report", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printed = async () => {
+        throw new Error("Protocol error (Page.printToPDF): Printing failed");
+      };
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).rejects.toThrow(
+        /Page\.printToPDF/
+      );
+      expect(browsers[0].openPages).toBe(0);
+    });
   });
 });

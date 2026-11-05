@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, ListChecks, RotateCcw } from "lucide-react";
+import { AlertTriangle, ListChecks, Play, RotateCcw } from "lucide-react";
 import { CHAT_STAGE_LABELS, type ChatStage } from "@/lib/chat-stream";
 
 /** How a creative run ended, kept with the chat history so a reload shows it. */
@@ -62,6 +62,51 @@ export function RunNotice({
           Retry
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * An unfinished design (#127): how many of the planned slides are saved, and
+ * a Continue that makes only the missing ones from the stored plan. Shown
+ * until the design completes, the slides are accepted as they are, or a new
+ * request replaces it.
+ */
+export function ContinueBar({
+  saved,
+  expected,
+  onContinue,
+  disabled,
+}: {
+  saved: number;
+  expected: number;
+  onContinue: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      className="mx-4 my-2 rounded-lg bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200"
+      role="status"
+    >
+      <div className="flex items-start gap-1.5">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div className="min-w-0">
+          <div className="font-medium">Design unfinished</div>
+          <p className="mt-0.5">
+            {Math.min(saved, expected)} of {expected} planned slides saved. Continue makes only the
+            {saved >= expected ? " remaining changes" : " missing slides"}; saved slides are kept as they are.
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onContinue}
+        disabled={disabled}
+        className="mt-2 inline-flex items-center gap-1 rounded-md border border-amber-600/40 px-2 py-1 font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Play className="h-3 w-3" />
+        Continue
+      </button>
     </div>
   );
 }

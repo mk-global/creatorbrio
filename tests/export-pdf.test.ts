@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { PDFDocument, PDFName, PDFString } from "pdf-lib";
 import {
-  buildSlidesPdf,
+  mergeSlidePdfs,
+  unprintableSlideError,
+  UnprintableSlideError,
   pdfPageSize,
   PdfExportError,
   PDF_POINTS_PER_PIXEL,
@@ -16,11 +19,14 @@ import {
 } from "@/lib/export-formats";
 import { DIMENSIONS, MAX_SLIDES } from "@/types/carousel";
 import type { AspectRatio } from "@/types/carousel";
+import { inspectPdf } from "@/lib/pdf-content";
 import {
+  chromiumPrintSize,
   detailedSlidePng,
-  imageTransform,
+  hexText,
   readPdfPages,
   rgbPixels,
+  slidePdf,
   syntheticSlidePng,
 } from "./helpers/export-files";
 
@@ -33,19 +39,6 @@ const PALETTE = [
   { r: 22, g: 160, b: 133 },
   { r: 241, g: 196, b: 15 },
 ];
-
-async function slidesFor(ratio: AspectRatio, count: number): Promise<Buffer[]> {
-  const { width, height } = DIMENSIONS[ratio];
-  return Promise.all(
-    Array.from({ length: count }, (_, i) =>
-      syntheticSlidePng(width, height, PALETTE[i % PALETTE.length], {
-        r: i * 40,
-        g: 255 - i * 40,
-        b: 128,
-      })
-    )
-  );
-}
 
 describe("PDF page size", () => {
   it("converts slide pixels to points at 72/96", () => {
@@ -62,13 +55,22 @@ describe("PDF page size", () => {
   });
 });
 
-describe("buildSlidesPdf", () => {
+describe("mergeSlidePdfs", () => {
+  async function slidesFor(ratio: AspectRatio, count: number): Promise<Uint8Array[]> {
+    const { width, height } = DIMENSIONS[ratio];
+    return Promise.all(
+      Array.from({ length: count }, (_, i) =>
+        slidePdf(`Slide ${i + 1}`, { slideWidth: width, slideHeight: height })
+      )
+    );
+  }
+
   it("produces a structurally valid, unencrypted PDF", async () => {
-    const bytes = await buildSlidesPdf(await slidesFor("4:5", 2), "4:5", {
+    const bytes = await mergeSlidePdfs(await slidesFor("4:5", 2), "4:5", {
       title: "Launch week",
     });
     const text = Buffer.from(bytes).toString("latin1");
-    // Object syntax only: compressed image data can contain any byte sequence.
+    // Object syntax only: compressed streams can contain any byte sequence.
     const objects = text.replace(/stream\r?\n[\s\S]*?endstream/g, "stream endstream");
 
     expect(text.startsWith("%PDF-1.")).toBe(true);
@@ -81,158 +83,203 @@ describe("buildSlidesPdf", () => {
     expect(objects).not.toMatch(/\/JavaScript|\/JS\b|\/AcroForm|\/OpenAction/);
     expect(objects).not.toMatch(/\/Annots\s*\[\s*[^\]\s]/);
 
-    const { PDFDocument } = await import("pdf-lib");
-    const doc = await PDFDocument.load(bytes);
+    // Loading with pdf-lib's defaults would overwrite the producer in memory.
+    const doc = await PDFDocument.load(bytes, { updateMetadata: false });
     expect(doc.isEncrypted).toBe(false);
     expect(doc.getTitle()).toBe("Launch week");
+    expect(doc.getCreator()).toBe("CreatorBrio");
+    expect(doc.getProducer()).toBe("CreatorBrio");
+    expect(doc.getCreationDate()).toBeInstanceOf(Date);
   });
 
-  it("creates exactly one page per slide", async () => {
+  it("creates exactly one page per slide, in slide order", async () => {
     for (const count of [1, 3, MAX_SLIDES]) {
       const pages = await readPdfPages(
-        await buildSlidesPdf(await slidesFor("1:1", count), "1:1")
+        await mergeSlidePdfs(await slidesFor("1:1", count), "1:1")
       );
       expect(pages).toHaveLength(count);
-      for (const page of pages) expect(page.images).toHaveLength(1);
+      pages.forEach((page, i) => expect(page.operators).toContain(hexText(`Slide ${i + 1}`)));
     }
   });
 
-  it("keeps slide order", async () => {
-    const pngs = await slidesFor("4:5", 4);
-    const pages = await readPdfPages(await buildSlidesPdf(pngs, "4:5"));
+  it("copies each page's drawing as it is: text stays text and nothing becomes an image", async () => {
+    const slides = await slidesFor("4:5", 3);
+    const merged = await inspectPdf(await mergeSlidePdfs(slides, "4:5"));
+    const originals = await Promise.all(slides.map(async (s) => (await inspectPdf(s))[0]));
 
-    for (const [i, page] of pages.entries()) {
-      const pixels = page.images[0].pixels;
-      // Bottom-right corner is background; top-left block is the marker.
-      const last = pixels.length - 3;
-      expect([...pixels.subarray(last, last + 3)]).toEqual([
-        PALETTE[i].r,
-        PALETTE[i].g,
-        PALETTE[i].b,
-      ]);
-      const marker = (50 * DIMENSIONS["4:5"].width + 50) * 3;
-      expect([...pixels.subarray(marker, marker + 3)]).toEqual([
-        i * 40,
-        255 - i * 40,
-        128,
-      ]);
+    expect(merged).toEqual(originals);
+    for (const page of merged) {
+      expect(page.textShows).toBeGreaterThan(0);
+      expect(page.pathPaints).toBeGreaterThan(0);
+      expect(page.images).toEqual([]);
     }
+    // The page's own operators, unchanged: the trim moves only the page box.
+    const sourceOps = (await readPdfPages(slides[1]))[0].operators;
+    const mergedOps = (await readPdfPages(await mergeSlidePdfs(slides, "4:5")))[1].operators;
+    expect(mergedOps).toBe(sourceOps);
+  });
+
+  it("keeps a slide's image as an image without re-encoding it", async () => {
+    const png = await syntheticSlidePng(240, 240, PALETTE[2]);
+    const slide = await slidePdf("Photo slide", { png });
+    const [page] = await readPdfPages(await mergeSlidePdfs([slide], "4:5"));
+    expect(page.images).toHaveLength(1);
+    expect(page.images[0].pixels.equals(await rgbPixels(png))).toBe(true);
+    expect(page.operators).toContain(hexText("Photo slide"));
   });
 
   for (const ratio of RATIOS) {
-    it(`gives ${ratio} slides ${ratio} pages of identical size`, async () => {
+    it(`trims each ${ratio} page to the slide's exact size, keeping its top edge`, async () => {
       const expected = pdfPageSize(ratio);
-      const pages = await readPdfPages(
-        await buildSlidesPdf(await slidesFor(ratio, 3), ratio)
-      );
+      const { width, height } = DIMENSIONS[ratio];
+      const [, printedHeight] = chromiumPrintSize(width, height);
+      const slides = await slidesFor(ratio, 3);
+      const pages = await readPdfPages(await mergeSlidePdfs(slides, ratio));
 
-      for (const page of pages) {
-        expect(page.width).toBe(expected.width);
-        expect(page.height).toBe(expected.height);
-      }
-      const [w, h] = ratio.split(":").map(Number);
-      expect(pages[0].width / pages[0].height).toBeCloseTo(w / h, 12);
-    });
-
-    it(`draws each ${ratio} slide edge to edge, unscaled relative to the page`, async () => {
-      const { width, height } = pdfPageSize(ratio);
-      const pages = await readPdfPages(
-        await buildSlidesPdf(await slidesFor(ratio, 2), ratio)
-      );
-
-      for (const page of pages) {
-        // The visible area is the whole page, upright.
-        expect(page.mediaBoxOrigin).toEqual({ x: 0, y: 0 });
-        expect(page.cropBox).toEqual({ x: 0, y: 0, width, height });
+      for (const [i, page] of pages.entries()) {
+        expect({ width: page.width, height: page.height }).toEqual(expected);
+        // The printed page's top edge, where the slide starts, stays the
+        // box's top edge; the rounding sliver falls below the box.
+        const bottom = printedHeight - expected.height;
+        expect(page.mediaBoxOrigin.x).toBe(0);
+        expect(page.mediaBoxOrigin.y).toBeCloseTo(bottom, 6);
+        expect(page.cropBox.x).toBe(0);
+        expect(page.cropBox.y).toBeCloseTo(bottom, 6);
+        expect({ width: page.cropBox.width, height: page.cropBox.height }).toEqual(expected);
+        expect(page.operators).toBe((await readPdfPages(slides[i]))[0].operators);
         expect(page.rotation).toBe(0);
-        // The image is scaled to exactly the page and placed at its origin: no
-        // crop, no offset, no rotation, no stretch to another ratio.
-        expect(imageTransform(page.operators)).toEqual([width, 0, 0, height, 0, 0]);
-        // Nothing but the image is painted: no text, paths or watermark. Every
-        // operator is one of save, transform, paint image, restore.
-        const ops = page.operators
-          .split("\n")
-          .map((line) => line.trim().split(/\s+/).pop())
-          .filter(Boolean);
-        expect(new Set(ops)).toEqual(new Set(["q", "cm", "Do", "Q"]));
-        expect(ops.filter((op) => op === "Do")).toHaveLength(1);
-        expect(page.images[0].width).toBe(DIMENSIONS[ratio].width);
-        expect(page.images[0].height).toBe(DIMENSIONS[ratio].height);
       }
     });
   }
 
-  it("embeds every PNG pixel unchanged", async () => {
-    // Noise stands in for text edges, gradients and photographs: any resampling
-    // or lossy compression would change some of these samples.
-    for (const ratio of RATIOS) {
-      const { width, height } = DIMENSIONS[ratio];
-      const pngs = [
-        await detailedSlidePng(width, height, 7),
-        await syntheticSlidePng(width, height, PALETTE[0]),
-      ];
-      const pages = await readPdfPages(await buildSlidesPdf(pngs, ratio));
+  it("takes a print that is already the exact size as it is", async () => {
+    const exact = await slidePdf("Exact", { size: [810, 1012.5] });
+    const [page] = await readPdfPages(await mergeSlidePdfs([exact], "4:5"));
+    expect(page).toMatchObject({ width: 810, height: 1012.5, mediaBoxOrigin: { x: 0, y: 0 } });
+  });
 
-      for (const [i, page] of pages.entries()) {
-        const image = page.images[0];
-        expect(image.colorSpace).toBe("/DeviceRGB");
-        expect(image.bitsPerComponent).toBe(8);
-        expect(image.hasSoftMask).toBe(false);
-        expect(image.pixels.equals(await rgbPixels(pngs[i]))).toBe(true);
-      }
-    }
+  it("trims a page whose box does not start at the origin from that box's top edge", async () => {
+    const source = await PDFDocument.load(await slidePdf("Offset"));
+    const [, printedHeight] = chromiumPrintSize(1080, 1350);
+    source.getPage(0).setMediaBox(12, 30, 810, printedHeight);
+    const [page] = await readPdfPages(await mergeSlidePdfs([await source.save()], "4:5"));
+
+    expect(page).toMatchObject({ width: 810, height: 1012.5 });
+    expect(page.mediaBoxOrigin.x).toBe(12);
+    expect(page.mediaBoxOrigin.y).toBeCloseTo(30 + printedHeight - 1012.5, 6);
+  });
+
+  it("refuses a slide printed at another size rather than cropping or stretching it", async () => {
+    const fine = await slidePdf("Fine");
+    const square = await slidePdf("Square", { slideWidth: 1080, slideHeight: 1080 });
+    const attempt = mergeSlidePdfs([fine, square], "4:5");
+    await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+    await expect(attempt).rejects.toThrow(/^Slide 2 did not print as a single page at the slide's size\./);
+    // More than Chromium's 0.01 in rounding is a different size, not rounding.
+    const tooTall = await slidePdf("Too tall", { size: [810, 1012.5 + 0.8] });
+    await expect(mergeSlidePdfs([tooTall], "4:5")).rejects.toThrow(/^Slide 1 did not print as a single page/);
+    const tooShort = await slidePdf("Too short", { size: [810, 1012] });
+    await expect(mergeSlidePdfs([tooShort], "4:5")).rejects.toThrow(/^Slide 1 did not print as a single page/);
+  });
+
+  it("refuses a slide that printed to more than one page instead of dropping pages", async () => {
+    const two = await slidePdf("Overflow", { pages: 2 });
+    const one = await slidePdf("Fine");
+    const attempt = mergeSlidePdfs([one, two], "4:5");
+    await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+    await expect(attempt).rejects.toThrow(/^Slide 2 did not print as a single page at the slide's size\./);
+  });
+
+  it("leaves out the links Chromium turned into clickable areas, which the preview never shows", async () => {
+    const source = await PDFDocument.load(await slidePdf("Linked"));
+    const links = ["https://phish.example/", "javascript:alert(1)", "file:///etc/passwd"].map((uri) =>
+      source.context.register(
+        source.context.obj({
+          Type: "Annot",
+          Subtype: "Link",
+          Rect: [0, 0, 810, 1013.04],
+          A: { S: "URI", URI: PDFString.of(uri) },
+        })
+      )
+    );
+    source.getPage(0).node.set(PDFName.of("Annots"), source.context.obj(links));
+    const linked = await source.save({ useObjectStreams: false });
+    expect(Buffer.from(linked).toString("latin1")).toContain("/URI");
+
+    const merged = await mergeSlidePdfs([linked], "4:5");
+
+    const text = Buffer.from(merged).toString("latin1");
+    expect(text).not.toMatch(/\/Annots|\/URI|\/Link|javascript:|phish\.example|file:/);
+    const [page] = (await PDFDocument.load(merged)).getPages();
+    expect(page.node.get(PDFName.of("Annots"))).toBeUndefined();
+    // The page's own content is untouched.
+    expect((await inspectPdf(merged))[0].textShows).toBeGreaterThan(0);
+  });
+
+  it("refuses data that is not a PDF", async () => {
+    await expect(
+      mergeSlidePdfs([new Uint8Array(Buffer.from("not a pdf"))], "4:5")
+    ).rejects.toThrow();
   });
 
   it("lets other work run while it builds the PDF", async () => {
-    // pdf-lib decodes and compresses synchronously; without yielding between
-    // slides a timer could not fire until the whole PDF was finished.
-    const pngs = await Promise.all(
-      [1, 2, 3, 4].map((seed) => detailedSlidePng(1080, 1350, seed))
-    );
-    let ticks = 0;
-    const timer = setInterval(() => ticks++, 0);
+    // Copying pages is synchronous in pdf-lib; without yielding between slides
+    // nothing else on the server could run until the whole PDF was finished.
+    const slides = await slidesFor("4:5", 6);
+    let turns = 0;
+    let done = false;
+    const turn = () => {
+      if (done) return;
+      turns++;
+      setImmediate(turn);
+    };
+    setImmediate(turn);
     try {
-      await buildSlidesPdf(pngs, "4:5");
+      await mergeSlidePdfs(slides, "4:5");
     } finally {
-      clearInterval(timer);
+      done = true;
     }
-    expect(ticks).toBeGreaterThanOrEqual(pngs.length - 1);
+    expect(turns).toBeGreaterThanOrEqual(slides.length - 1);
   });
 
-  it("does not modify the PNG buffers it is given", async () => {
-    const pngs = await slidesFor("4:5", 2);
-    const copies = pngs.map((png) => Buffer.from(png));
-    await buildSlidesPdf(pngs, "4:5");
-    pngs.forEach((png, i) => expect(png.equals(copies[i])).toBe(true));
+  it("does not modify the slide PDFs it is given", async () => {
+    const slides = await slidesFor("4:5", 2);
+    const copies = slides.map((bytes) => Uint8Array.from(bytes));
+    await mergeSlidePdfs(slides, "4:5");
+    slides.forEach((bytes, i) => expect(Buffer.from(bytes).equals(Buffer.from(copies[i]))).toBe(true));
   });
 
   it("refuses an empty export", async () => {
-    const attempt = buildSlidesPdf([], "4:5");
+    const attempt = mergeSlidePdfs([], "4:5");
     await expect(attempt).rejects.toBeInstanceOf(PdfExportError);
     await expect(attempt).rejects.toMatchObject({ status: 400 });
   });
 
-  it("refuses a slide that would have to be stretched or cropped", async () => {
-    const square = await syntheticSlidePng(1080, 1080, PALETTE[0]);
-    await expect(buildSlidesPdf([square], "4:5")).rejects.toThrow(
-      /rendered at 1080x1080, expected 1080x1350/
-    );
-  });
-
-  it("refuses data that is not a PNG", async () => {
-    await expect(
-      buildSlidesPdf([Buffer.from("not an image")], "4:5")
-    ).rejects.toThrow();
-  });
-
   it("enforces the size limit with an actionable message", async () => {
-    const pngs = [await detailedSlidePng(1080, 1350, 3)];
-    const attempt = buildSlidesPdf(pngs, "4:5", { maxBytes: 1_000_000 });
+    const photo = await detailedSlidePng(1080, 1350, 3);
+    const slide = await slidePdf("Detailed", { png: photo });
+    // Just under the slide's own size: only the merged file shows it is over.
+    const attempt = mergeSlidePdfs([slide], "4:5", { maxBytes: slide.length - 1 });
     await expect(attempt).rejects.toBeInstanceOf(PdfExportError);
     await expect(attempt).rejects.toMatchObject({ status: 422 });
     await expect(attempt).rejects.toThrow(
-      /The PDF is \d+\.\d MB, above LinkedIn's 1\.0 MB limit\. Remove slides or use simpler, smaller images/
+      /^The PDF is \d+\.\d MB, above LinkedIn's \d+\.\d MB limit\. Remove slides or use simpler, smaller images/
     );
+  });
+
+  it("refuses before merging when the printed slides alone are already over the limit", async () => {
+    const photo = await detailedSlidePng(1080, 1350, 3);
+    const slides = await Promise.all([1, 2, 3].map((n) => slidePdf(`Detailed ${n}`, { png: photo })));
+    const printed = slides.reduce((total, s) => total + s.length, 0);
+    const load = vi.spyOn(PDFDocument, "load");
+    try {
+      const attempt = mergeSlidePdfs(slides, "4:5", { maxBytes: Math.floor(printed / 2) });
+      await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+      await expect(attempt).rejects.toThrow(/^The PDF would be over \d+\.\d MB, above LinkedIn's \d+\.\d MB limit\./);
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+    }
   });
 
   it("uses LinkedIn's document limits by default", async () => {
@@ -241,13 +288,45 @@ describe("buildSlidesPdf", () => {
     // CreatorBrio's own slide limit sits well inside LinkedIn's page limit.
     expect(MAX_SLIDES).toBeLessThanOrEqual(LINKEDIN_MAX_PDF_PAGES);
 
-    const tooMany = Array.from(
-      { length: LINKEDIN_MAX_PDF_PAGES + 1 },
-      () => Buffer.alloc(0)
-    );
-    const attempt = buildSlidesPdf(tooMany, "4:5");
+    const tooMany = Array.from({ length: LINKEDIN_MAX_PDF_PAGES + 1 }, () => new Uint8Array());
+    const attempt = mergeSlidePdfs(tooMany, "4:5");
     await expect(attempt).rejects.toMatchObject({ status: 422 });
     await expect(attempt).rejects.toThrow(/at most 300 pages/);
+  });
+});
+
+describe("refusing a slide that cannot be printed faithfully", () => {
+  it.each([
+    ["filter", /^Slide 4 applies a CSS filter to text, .*remove the filter from the text/],
+    ["backdrop-filter", /^Slide 4 uses a frosted-glass effect \(backdrop-filter\), which PDF printing drops along with text and shapes drawn over it\./],
+    ["box-reflect", /^Slide 4 reflects text \(-webkit-box-reflect\), .*remove the reflection/],
+    ["gradient-text", /^Slide 4 fills text with a gradient or image \(background-clip: text\), .*solid text colour/],
+    ["text-paint", /^Slide 4 draws text inside an SVG pattern or uses text as an SVG clip path, .*ordinary SVG or HTML text/],
+    ["mask", /^Slide 4 uses a CSS or SVG mask, .*gradient overlay or a plain shape/],
+    ["blend", /^Slide 4 uses mix-blend-mode plus-lighter or plus-darker, .*another blend mode/],
+    ["backface", /^Slide 4 turns an element's back to the viewer \(backface-visibility: hidden\), .*display: none/],
+    ["overflow", /^Slide 4 has content reaching past its edges .*keep everything inside the slide/],
+    ["unreadable", /^Slide 4 could not be checked before printing, .*plain HTML inside the page body/],
+    ["page-size", /^Slide 4 did not print as a single page at the slide's size\. .*print page rules \(@page\)/],
+    ["missing-text", /^Slide 4 shows text that would not reach the PDF as text\. .*system font that cannot be embedded.*Noto Sans SC/],
+    ["flattened", /^Slide 4 could only be printed as a picture, .*simplify the slide's visual effects/],
+  ] as const)("explains %s with the slide number and what to do", (reason, message) => {
+    const error = unprintableSlideError(4, reason);
+    expect(error).toBeInstanceOf(PdfExportError);
+    expect(error.status).toBe(422);
+    expect(error.message).toMatch(message);
+    expect(error.message).toMatch(/then export the PDF again\. The PNG export is not affected\.$/);
+  });
+
+  it("quotes a few of the characters a page would lose, so the user can find them", () => {
+    const error = unprintableSlideError(2, "missing-text", ["提", "高", "效", "率", "方", "法"]);
+    expect(error.message).toMatch(/^Slide 2 shows text that would not reach the PDF as text \(such as "提", "高", "效", "率", "方"\)\. /);
+  });
+
+  it("keeps slide text out of the internal error, which may be logged", () => {
+    const error = new UnprintableSlideError("missing-text", ["提"]);
+    expect(error.message).toBe("Slide cannot be printed as text: missing-text");
+    expect(error.characters).toEqual(["提"]);
   });
 });
 
