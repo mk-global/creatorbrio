@@ -1,4 +1,5 @@
 import { PDFDocument, PDFName } from "pdf-lib";
+import { rewriteMaskedShadows } from "./pdf-shadows";
 import type { AspectRatio } from "@/types/carousel";
 import { DIMENSIONS } from "@/types/carousel";
 
@@ -203,6 +204,7 @@ export async function mergeSlidePdfs(
     }
     // Removed before copying, so the copy never pulls in the link actions.
     source.getPage(0).node.delete(PDFName.of("Annots"));
+    rewriteMaskedShadows(source, source.getPage(0));
     const [page] = await pdf.copyPages(source, [0]);
     const box = page.getMediaBox();
     const extraWidth = box.width - expected.width;

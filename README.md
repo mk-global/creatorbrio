@@ -251,7 +251,9 @@ The print differs from the screenshot's page in four deliberate ways, each so th
 - Google Fonts are fetched as static instances, one file per weight, from the same family, so they embed as TrueType; Chromium embeds the variable files the preview uses as Type 3 glyphs, whose text Apple's Preview and Safari break into fragments.
 
 The print-only rules and the checks run on the page before printing live in [`src/lib/print-check.ts`](./src/lib/print-check.ts).
-[`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) then copies those pages, unchanged apart from removing links, into one document in slide order.
+[`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) then copies those pages into one document in slide order, unchanged apart from removing links and re-expressing blurred shadows.
+Chromium prints a blurred `box-shadow` or `text-shadow` as a fill under a luminosity soft mask, which Apple's renderers (Preview, Quick Look, Safari) draw wrongly: a text shadow as a solid block, a box shadow cut off.
+[`src/lib/pdf-shadows.ts`](./src/lib/pdf-shadows.ts) draws each one instead as an image of the shadow's colour carrying the same blur as its own soft mask, which Apple's renderers and poppler both draw as the screen does; it matches only that exact construct and leaves anything else as printed.
 While a chat run is still writing the carousel's slides, every format is refused with status 409.
 Pages are sized at 0.75 pt per pixel (72 pt per inch over 96 CSS pixels per inch), so a 1080×1350 slide becomes an 810×1012.5 pt page, keeping its exact aspect ratio.
 Chromium rounds the paper up to a hundredth of an inch (a 4:5 slide prints 1013.04 pt tall), so each page is trimmed to the slide's exact size from its top edge, where the slide is drawn.
@@ -281,9 +283,9 @@ Refused after printing:
 
 Printed, with a difference worth knowing:
 
-- A blurred shadow (`box-shadow`, `text-shadow`) is embedded as a small image with a soft mask; the text it belongs to stays text.
-  Chrome, poppler and Apple's Core Graphics draw it as on screen, but Apple's Preview (PDFKit) draws a blurred `box-shadow` only in part, even on Chromium's own unmerged print.
-- A radial gradient that fades to transparent is drawn as on screen by Chrome and Apple's readers, but not by poppler-based readers.
+- A blurred shadow (`box-shadow`, `text-shadow`) is embedded as an image of its blur, re-expressed by the merge as described above; the text it belongs to stays text.
+  An unblurred shadow stays a vector shape, and a `drop-shadow` filter on a shape prints as a picture of that shape.
+- A radial gradient that fades to transparent, such as a glow, is drawn as on screen by Apple's readers, but darker and muddier by poppler-based readers (most Linux PDF viewers).
 - Outlined text (`-webkit-text-stroke`) is printed by Chromium in two layers, the fill in the TrueType font and the outline in a Type 3 copy of it.
   Readers find and select the words whole, but copying or extracting the page's text returns them twice.
 - Text that is not painted, such as a visually hidden label, text clipped out of view or SVG text with neither fill nor stroke, is not expected in the PDF.

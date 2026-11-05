@@ -372,6 +372,48 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       return { pdf, page, png: png.buffer };
     }
 
+    // Chromium prints a blurred shadow as a fill under a luminosity soft
+    // mask, which Apple's renderers (Preview, Quick Look, Safari) draw wrongly:
+    // a text shadow as a solid block, a box shadow cut off. The merge draws
+    // each as an image carrying the blur as its own soft mask instead. If a
+    // Chromium update changed how shadows print, the count here would differ.
+    const card = (style: string) =>
+      `<div style="background:#fff;color:#1f3a4d;border-radius:24px;padding:40px;margin-bottom:60px;${style}">Card words</div>`;
+    const shadows: Record<string, [string, number]> = {
+      "a box shadow and a text shadow": [panel(card("box-shadow:0 30px 80px rgba(0,0,0,.35)") + `<p style="text-shadow:0 6px 14px rgba(0,0,0,.5)">Shadowed words</p>`), 2],
+      "coloured shadows": [panel(card("box-shadow:0 20px 60px rgba(196,98,45,.6)") + `<p style="text-shadow:0 4px 12px rgba(196,98,45,.8)">Shadowed words</p>`), 2],
+      "several shadows on one element": [panel(card("box-shadow:0 2px 4px rgba(0,0,0,.2),0 20px 60px rgba(0,0,0,.3)") + `<p style="text-shadow:0 2px 3px #c4622d,0 8px 20px rgba(0,0,0,.4)">Shadowed words</p>`), 4],
+      "an inset shadow": [panel(card("box-shadow:inset 0 10px 30px rgba(0,0,0,.4)")), 1],
+      "shadows inside an opacity group": [panel(`<div style="opacity:.85">${card("box-shadow:0 20px 60px rgba(0,0,0,.35)")}<p style="text-shadow:0 4px 12px rgba(0,0,0,.5)">Shadowed words</p></div>`), 2],
+      "a shadow inside a blend group": [panel(`<div style="mix-blend-mode:multiply">${card("box-shadow:0 20px 60px rgba(0,0,0,.35)")}</div>`), 1],
+    };
+    for (const [what, [html, count]] of Object.entries(shadows)) {
+      it(`draws ${what} as images with their own soft masks, matching the screen`, async () => {
+        const printed = await exportAllSlidePdfs([slide(html)], "4:5");
+        const masks = await withPdfFile(printed[0], (file) => uncompressed(file).match(/\/S \/Luminosity/g)?.length ?? 0);
+        expect(masks).toBe(count);
+
+        const { pdf, page, png } = await pageAndPng(html);
+        await withPdfFile(pdf, (file) => {
+          expect(uncompressed(file).match(/\/CBShadow\d+ Do/g)?.length ?? 0).toBe(count);
+          expect(pageWords(file, 1).length).toBeGreaterThan(0);
+        });
+        expect(await changedBlocks(page, png)).toBeLessThanOrEqual(MAX_CHANGED_BLOCKS);
+      }, 60_000);
+    }
+
+    it("prints a drop-shadow filter on a shape as a picture of it, with no masked fill to rewrite", async () => {
+      // A filter makes the element an image (and is refused around text), which
+      // every reader tried draws as the screen does.
+      const html = panel(`<div style="width:300px;height:300px;border-radius:50%;background:#c4622d;filter:drop-shadow(0 20px 30px rgba(0,0,0,.5))"></div>`);
+      const { pdf, page, png } = await pageAndPng(html);
+      await withPdfFile(pdf, (file) => {
+        expect(uncompressed(file)).not.toMatch(/\/S \/Luminosity|\/CBShadow/);
+        expect(pdfImages(file).length).toBeGreaterThan(0);
+      });
+      expect(await changedBlocks(page, png)).toBeLessThanOrEqual(MAX_CHANGED_BLOCKS);
+    }, 60_000);
+
     // [decoration, top edge of the shape when it is not inside the slide's top]
     const bleeds: Record<string, [string, number]> = {
       "past the right edge": [shape("position:absolute;top:200px;right:-300px;width:600px;height:600px;border-radius:50%"), 200],
