@@ -32,6 +32,7 @@ const { capabilityStatus } = await import("@/lib/creative-capabilities");
 const { ASSET_OPERATIONS, EDIT_KINDS, PLAN_FIELDS, SLIDE_COUNT_BASES, TREATMENTS } = await import("@/lib/director-plan");
 const { IMAGE_DIMENSIONS } = await import("@/lib/image-service");
 const { EMPTY_BRIEF_UPDATE } = await import("@/lib/creative-brief");
+const { TEN_PAGE_BRIEF } = await import("./fixtures/ten-page-brief");
 
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -345,6 +346,36 @@ describe("runDirector", () => {
     expect(JSON.parse(await recorded("argv.json"))).toEqual(directorArgs(await recorded("cwd"), null));
   });
 
+  it("tells the user what to do when a plan is refused only for its slide count (#124)", async () => {
+    // The founder's refusal: user-explicit, with no count the server recognised in the message.
+    const wrongCount = coverPlan();
+    wrongCount.execution.slideCountBasis = "user-explicit";
+    await play("plan", wrongCount);
+    const result = await runDirector(await request());
+    expect(result).toMatchObject({ ok: false, code: "slide_count_mismatch" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.errors).toEqual(["execution.slideCountBasis: user-explicit needs a new request that states a count"]);
+    const message = directorFailureMessage(result.code);
+    expect(message).toMatch(/how many slides/);
+    expect(message).toMatch(/\b20\b/);
+    expect(message).not.toMatch(/rephrase/);
+    // True whether or not the message stated a count: it never claims the user asked for one.
+    expect(message).not.toMatch(/asked for/);
+    expect(message).not.toContain("Lisbon");
+  });
+
+  it("keeps a plan with any other violation as an invalid plan, even when its slide count is also wrong", async () => {
+    const mixed = coverPlan();
+    mixed.execution.slideCountBasis = "user-explicit";
+    mixed.execution.slides[0].assetRefs = ["ref-of-another-carousel"];
+    await play("plan", mixed);
+    const result = await runDirector(await request());
+    expect(result).toMatchObject({ ok: false, code: "invalid_plan" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.errors?.some((v) => v.startsWith("execution.slideCount"))).toBe(true);
+    expect(result.errors?.some((v) => !v.startsWith("execution.slideCount"))).toBe(true);
+  });
+
   it("refuses an invalid plan and keeps the violations for the log only", async () => {
     const bad = coverPlan();
     bad.execution.slides[0].assetRefs = ["ref-of-another-carousel"];
@@ -527,6 +558,13 @@ describe("buildDirectorInput", () => {
     expect(input).toContain("Serious tone");
     // A relationship to an image the carousel no longer has is not shown.
     expect(input).not.toContain("ref-gone");
+  });
+
+  it("tells the Director the length a request states in pages (#124)", async () => {
+    const input = buildDirectorInput(await request({ message: TEN_PAGE_BRIEF, assets: [], references: [] }), files);
+    // On main the Director was told only that the message stated no slide count.
+    expect(input).toContain("Slide counts stated in the message: none");
+    expect(input).toMatch(/Page counts stated in the message: 10\b/);
   });
 
   it("describes a revision by its current slides", async () => {

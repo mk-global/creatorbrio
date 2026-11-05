@@ -1,14 +1,18 @@
 import { creativeRunDeps } from "@/lib/creative-run";
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
-import { BASELINE_DEFAULT_SLIDES, explicitSlideCounts, mentionsCover, validatePlan } from "@/lib/director-plan";
+import { BASELINE_DEFAULT_SLIDES, explicitPageCounts, explicitSlideCounts, mentionsCover, validatePlan } from "@/lib/director-plan";
 import { planContextFor, type DirectorRequest, type DirectorResult } from "@/lib/visual-director";
+import { MAX_SLIDES } from "@/types/carousel";
 
 const USAGE = { costUsd: 0, durationMs: 1, turns: 1, deniedReads: 0 };
 
 /** A valid, image-free plan for any request, following the slide-count precedence. */
 export function typographyPlanFor(request: DirectorRequest) {
   const current = request.carousel.slides.length;
-  const explicit = explicitSlideCounts(request.message);
+  // Like the real Director: a stated slide count, else a stated length in pages.
+  const slideCounts = explicitSlideCounts(request.message);
+  const explicit =
+    slideCounts.length > 0 ? slideCounts : explicitPageCounts(request.message).filter((n) => n <= MAX_SLIDES);
   const [slideCount, slideCountBasis] =
     current > 0
       ? [current, "existing"]

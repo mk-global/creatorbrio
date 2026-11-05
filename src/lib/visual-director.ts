@@ -15,6 +15,7 @@ import {
   BASELINE_DEFAULT_SLIDES,
   EDIT_KINDS,
   MAX_IMAGE_TASKS,
+  explicitPageCounts,
   explicitSlideCounts,
   mentionsCover,
   planSummary,
@@ -87,6 +88,7 @@ export type DirectorFailureCode =
   | "agent_failed"
   | "invalid_output"
   | "invalid_plan"
+  | "slide_count_mismatch"
   | "capability_unavailable";
 
 /** What the user is told for each planning failure; diagnostics stay in the server log. */
@@ -99,6 +101,8 @@ export const DIRECTOR_FAILURE_MESSAGES: Record<DirectorFailureCode, string> = {
   agent_failed: "The visual planner stopped unexpectedly. Nothing was changed; send your message again.",
   invalid_output: "The visual planner did not return a plan. Nothing was changed; send your message again.",
   invalid_plan: "The visual plan could not be used. Nothing was changed; send your message again, or rephrase it.",
+  slide_count_mismatch:
+    'The visual plan\'s slide count could not be used. Nothing was changed; say how many slides you want, from 1 to 20 (for example "10 slides"), and send your message again.',
   capability_unavailable: "This request needs something this machine cannot do yet. Nothing was changed.",
 };
 
@@ -345,6 +349,7 @@ export function buildDirectorInput(
   const size = DIMENSIONS[carousel.aspectRatio];
   const isNew = carousel.slides.length === 0;
   const counts = explicitSlideCounts(message);
+  const pages = explicitPageCounts(message);
   const known = new Set([...request.references.map((r) => r.id), ...request.assets.map((a) => a.asset.id)]);
   const brief = briefForCarousel(carousel.creativeBrief, known);
 
@@ -360,6 +365,7 @@ export function buildDirectorInput(
               .sort((a, b) => a.order - b.order)
               .map((s, i) => `- Slide ${i + 1}${s.notes ? `: ${s.notes.slice(0, 200)}` : ""}`)),
         `Slide counts stated in the message: ${counts.length > 0 ? counts.join(", ") : "none"}`,
+        `Page counts stated in the message: ${pages.length > 0 ? `${pages.join(", ")} (a document carousel's pages are its slides; a count that describes a source document is not a request)` : "none"}`,
         `The message mentions a cover: ${mentionsCover(message) ? "yes" : "no"}`,
         `Baseline default for a new request: ${BASELINE_DEFAULT_SLIDES} slides`,
         `Image limit: at most ${MAX_IMAGE_TASKS} generated images per request`,
@@ -604,7 +610,11 @@ export async function runDirector(
             errors: validated.errors,
             unavailable: validated.unavailable,
           };
-        } else outcome = { ok: false, code: "invalid_plan", usage: usage(result), errors: validated.errors };
+        } else {
+        // Refused only for its slide count: the user can fix that by stating the count (#124).
+        const countOnly = validated.errors.every((v) => v.startsWith("execution.slideCount"));
+        outcome = { ok: false, code: countOnly ? "slide_count_mismatch" : "invalid_plan", usage: usage(result), errors: validated.errors };
+      }
       }
     } catch {
       outcome = { ok: false, code: "start_failed", usage: usage(null) };
