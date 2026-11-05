@@ -35,7 +35,7 @@ interface FakeBrowser {
 let png: Buffer;
 let browsers: FakeBrowser[];
 /** What the in-page text check reports for every slide, keyed by slide HTML. */
-let printable: (html: string) => { hasText: boolean; problem: string | null };
+let printable: (html: string) => Check | Promise<Check>;
 /** The PDF a page prints, keyed by slide HTML. */
 let printed: (html: string) => Promise<Uint8Array>;
 /** The options each print was called with. */
@@ -50,7 +50,9 @@ let bodyIsSlide: boolean;
 /** The document as the DevTools protocol describes it, keyed by slide HTML. */
 let documentTree: (html: string) => unknown;
 /** What the check reports in each frame inside the slide, or an error it throws there. */
-let frameChecks: (html: string) => ({ hasText: boolean; problem: string | null } | Error)[];
+let frameChecks: (html: string) => (Check | Error)[];
+/** A protocol failure reading the document, keyed by slide HTML, or null. */
+let documentError: (html: string) => Error | null;
 /** When set, pages opened from now on wait for it before their screenshot. */
 let screenshotGate: Promise<void> | null;
 
@@ -94,6 +96,8 @@ function fakeBrowser(): FakeBrowser {
         createCDPSession: async () => ({
           send: async (method: string) => {
             expect(method).toBe("DOM.getDocument");
+            const error = documentError(html);
+            if (error) throw error;
             return { root: documentTree(html) };
           },
           detach: async () => {},
@@ -167,6 +171,34 @@ async function textPdf(label: string | null): Promise<Uint8Array> {
   return doc.save();
 }
 
+/** What the in-page check reports for one document. */
+interface Check {
+  hasText: boolean;
+  visibleText: string;
+  problem: string | null;
+}
+
+/**
+ * A one-page PDF at the 4:5 print size showing `text` in a CID font with a
+ * Unicode map, one code per character, as Chromium writes text.
+ */
+async function unicodePdf(text: string): Promise<Uint8Array> {
+  const { PDFDocument, PDFName } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const ctx = doc.context;
+  const chars = [...text];
+  const hex = (n: number, digits: number) => n.toString(16).padStart(digits, "0");
+  const utf16 = (c: string) => [...c].map((_, i) => hex(c.charCodeAt(i), 4)).join("");
+  const entries = chars.map((c, i) => `<${hex(i + 1, 4)}> <${utf16(c)}>`).join(" ");
+  const map = `1 begincodespacerange <0000> <FFFF> endcodespacerange ${chars.length} beginbfchar ${entries} endbfchar`;
+  const font = ctx.obj({ Type: "Font", Subtype: "Type0", Encoding: "Identity-H", ToUnicode: ctx.register(ctx.flateStream(map)) });
+  const page = doc.addPage([810, 1013.04]);
+  page.node.set(PDFName.of("Resources"), ctx.obj({ Font: { F1: font } }));
+  const codes = chars.map((_, i) => hex(i + 1, 4)).join("");
+  page.node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream(`BT /F1 40 Tf 10 900 Td <${codes}> Tj ET`)));
+  return doc.save();
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => (resolve = r));
@@ -183,6 +215,7 @@ beforeEach(async () => {
   delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
   fontRequests.length = 0;
   documentTree = () => ({ nodeName: "#document", children: [] });
+  documentError = () => null;
   frameChecks = () => [];
   png ??= await sharp({
     create: { width: 8, height: 10, channels: 3, background: { r: 10, g: 20, b: 30 } },
@@ -191,7 +224,7 @@ beforeEach(async () => {
     .toBuffer();
   browsers = [];
   screenshotGate = null;
-  printable = () => ({ hasText: true, problem: null });
+  printable = () => ({ hasText: true, visibleText: "", problem: null });
   printed = (html) => textPdf(html.includes("Slide 2") ? "Second" : "Any");
   printOptions = [];
   mediaTypes = [];
@@ -436,13 +469,16 @@ describe("export browser", () => {
       ["backdrop-filter", /^Slide 2 uses a frosted-glass effect \(backdrop-filter\)/],
       ["box-reflect", /^Slide 2 reflects text \(-webkit-box-reflect\)/],
       ["gradient-text", /^Slide 2 fills text with a gradient or image \(background-clip: text\)/],
+      ["text-paint", /^Slide 2 draws text inside an SVG pattern or uses text as an SVG clip path/],
       ["mask", /^Slide 2 uses a CSS or SVG mask/],
+      ["blend", /^Slide 2 uses mix-blend-mode plus-lighter or plus-darker/],
       ["overflow", /^Slide 2 has content reaching past its edges/],
       ["unreadable", /^Slide 2 could not be checked before printing/],
     ])("refuses a slide whose check reports %s before printing, naming the slide", async (problem, message) => {
       const { exportAllSlidePdfs } = await freshModule();
       printable = (html) => ({
         hasText: true,
+        visibleText: "",
         problem: html.includes("Slide 2") ? problem : null,
       });
 
@@ -478,8 +514,8 @@ describe("export browser", () => {
       const { exportAllSlidePdfs } = await freshModule();
       frameChecks = (html) =>
         html.includes("Slide 2")
-          ? [{ hasText: false, problem: null }, { hasText: true, problem: "filter" }]
-          : [{ hasText: true, problem: null }];
+          ? [{ hasText: false, visibleText: "", problem: null }, { hasText: true, visibleText: "", problem: "filter" }]
+          : [{ hasText: true, visibleText: "", problem: null }];
 
       const attempt = exportAllSlidePdfs(slides(3), "4:5");
 
@@ -506,9 +542,73 @@ describe("export browser", () => {
       expect(browsers[0].openPages).toBe(0);
     });
 
+    it("accepts a page whose text holds every letter and digit the slide shows, however cased or composed", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      // Shown with an uppercase transform and printed with composed accents;
+      // punctuation, spaces and emoji are not compared.
+      printable = () => ({ hasText: true, visibleText: "Cafe\u0301 Straße, 10 🚀 1\uFE0F\u20E3!", problem: null });
+      printed = () => unicodePdf("CAFÉ STRASSE 10");
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).resolves.toHaveLength(2);
+    });
+
+    it("refuses a page that leaves out characters the slide shows, quoting them, before the picture check", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      // As Chromium prints Chinese that fell back to a font it cannot embed:
+      // the characters are simply absent from the page.
+      printable = (html) => ({ hasText: true, visibleText: html.includes("Slide 2") ? "5 Tips 提高效率" : "5 Tips", problem: null });
+      printed = () => unicodePdf("5 Tips");
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+      await expect(attempt).rejects.toThrow(
+        /^Slide 2 shows text that would not reach the PDF as text \(such as "提", "高", "效", "率"\)\. /
+      );
+      expect(browsers[0].openPages).toBe(0);
+
+      // A page with no text at all is named by what it lost, too.
+      printable = () => ({ hasText: true, visibleText: "提高效率", problem: null });
+      printed = () => textPdf(null);
+      await expect(exportAllSlidePdfs(slides(1), "4:5")).rejects.toThrow(/^Slide 1 shows text that would not reach the PDF as text/);
+    });
+
+    it("refuses a slide whose document the DevTools protocol cannot read, as one nested too deeply", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      documentError = (html) =>
+        html.includes("Slide 2") ? new Error("Protocol error (DOM.getDocument): Object reference chain is too long") : null;
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toThrow(/^Slide 2 could not be checked before printing/);
+      expect(printOptions).toHaveLength(2);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("refuses a slide whose check does not finish in time, and closes its page", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      vi.useFakeTimers();
+      try {
+        printable = (html) =>
+          html.includes("Slide 2") ? new Promise<Check>(() => {}) : { hasText: true, visibleText: "", problem: null };
+
+        const outcome = exportAllSlidePdfs(slides(2), "4:5").then(
+          () => null,
+          (error: Error) => error
+        );
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect((await outcome)?.message).toMatch(/^Slide 2 could not be checked before printing/);
+        expect(printOptions).toHaveLength(1);
+        expect(browsers[0].openPages).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("accepts a slide with no text at all, such as a full-bleed photo", async () => {
       const { exportAllSlidePdfs } = await freshModule();
-      printable = () => ({ hasText: false, problem: null });
+      printable = () => ({ hasText: false, visibleText: "", problem: null });
       printed = () => textPdf(null);
 
       await expect(exportAllSlidePdfs(slides(2), "4:5")).resolves.toHaveLength(2);

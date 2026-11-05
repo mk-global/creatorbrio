@@ -9,10 +9,11 @@ import { inspectPdf } from "./pdf-content";
 import {
   PRINT_CLIP_CSS,
   bodyIsTheSlide,
+  comparableCharacters,
   hasClosedShadowRoot,
   printPageCss,
   readPrintableText,
-  type PrintProblem,
+  type PrintableText,
   type ProtocolNode,
 } from "./print-check";
 import type { Slide, AspectRatio } from "@/types/carousel";
@@ -26,6 +27,7 @@ const PAGE_LOAD_TIMEOUT_MS = 20_000;
 const FONT_READY_TIMEOUT_MS = 10_000;
 const IMAGE_DECODE_TIMEOUT_MS = 10_000;
 const PDF_PRINT_TIMEOUT_MS = 30_000;
+const PRINT_CHECK_TIMEOUT_MS = 15_000;
 
 /**
  * The one headless browser this server process renders exports with.
@@ -330,34 +332,57 @@ export async function exportSlide(
   return processed;
 }
 
+/** Settles with `fallback` if `work` takes longer than `ms`; `work` is left to settle on its own. */
+async function within<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    return await Promise.race([work, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const UNREADABLE: PrintableText = { hasText: true, visibleText: "", problem: "unreadable" };
+
 /**
  * Runs the print checks of `print-check.ts` on a loaded slide: refuses a closed
  * shadow root, which the in-page check cannot see into, then checks the slide
- * and every frame in it. A frame the check cannot run in is refused too.
+ * and every frame in it. A document the DevTools protocol cannot read (one
+ * nested too deeply, say), a frame the check cannot run in, and a check that
+ * does not finish in time are refused as unreadable. The slide's own document
+ * failing to run the check at all is an error, not a refusal.
  */
-async function checkForPrint(page: Page): Promise<{ hasText: boolean; problem: PrintProblem | null }> {
+async function checkForPrint(page: Page): Promise<PrintableText> {
   const session = await page.createCDPSession();
   try {
     const { root } = (await session.send("DOM.getDocument", { depth: -1, pierce: true })) as { root: ProtocolNode };
-    if (hasClosedShadowRoot(root)) return { hasText: true, problem: "unreadable" };
+    if (hasClosedShadowRoot(root)) return UNREADABLE;
+  } catch {
+    return UNREADABLE;
   } finally {
     await session.detach().catch(() => {});
   }
 
   let hasText = false;
+  let visibleText = "";
   for (const frame of page.frames()) {
     const isSlide = frame === page.mainFrame();
-    let result: Awaited<ReturnType<typeof readPrintableText>>;
+    let result: PrintableText;
     try {
-      result = await frame.evaluate(readPrintableText, isSlide);
+      // Abandoning a check that overruns is safe: the page is closed after.
+      result = await within(frame.evaluate(readPrintableText, isSlide), PRINT_CHECK_TIMEOUT_MS, UNREADABLE);
     } catch (error) {
       if (isSlide) throw error;
-      return { hasText: true, problem: "unreadable" };
+      return UNREADABLE;
     }
     if (result.problem) return result;
     hasText ||= result.hasText;
+    if (isSlide) visibleText = result.visibleText;
   }
-  return { hasText, problem: null };
+  return { hasText, visibleText, problem: null };
 }
 
 /**
@@ -407,10 +432,15 @@ export async function exportSlidePdf(
         timeout: PDF_PRINT_TIMEOUT_MS,
       });
 
-      // Defence against effects not covered above: when the slide shows text,
-      // the PDF must hold text, never only an image of the slide.
+      // Defence against what the checks above cannot foresee: every letter and
+      // digit the slide visibly shows must be in the page's text (a font that
+      // cannot be embedded leaves its characters out entirely), and a slide
+      // that shows text must print text, never only an image of itself.
       if (text.hasText) {
         const [content] = await inspectPdf(pdf);
+        const printed = comparableCharacters(content?.text ?? "");
+        const missing = [...comparableCharacters(text.visibleText)].filter((c) => !printed.has(c));
+        if (missing.length > 0) throw new UnprintableSlideError("missing-text", missing);
         if (!content || content.textShows === 0) {
           throw new UnprintableSlideError("flattened");
         }
@@ -441,7 +471,7 @@ export async function exportAllSlidePdfs(
     for (const [batchIdx, outcome] of settled.entries()) {
       if (outcome.status === "fulfilled") continue;
       if (outcome.reason instanceof UnprintableSlideError) {
-        throw unprintableSlideError(i + batchIdx + 1, outcome.reason.reason);
+        throw unprintableSlideError(i + batchIdx + 1, outcome.reason.reason, outcome.reason.characters);
       }
       throw outcome.reason;
     }

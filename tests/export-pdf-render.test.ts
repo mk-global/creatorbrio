@@ -237,6 +237,20 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
     }
   }, 120_000);
 
+  it("reads each page's characters exactly as poppler extracts them, for the post-print comparison", async () => {
+    const { comparableCharacters } = await import("@/lib/print-check");
+    for (const pdf of pdfs.values()) {
+      const pages = await inspectPdf(pdf);
+      await withPdfFile(pdf, (file) => {
+        for (const [i, content] of pages.entries()) {
+          const ours = [...comparableCharacters(content.text)].sort();
+          expect(ours.length).toBeGreaterThan(0);
+          expect(ours).toEqual([...comparableCharacters(pageWords(file, i + 1).join(" "))].sort());
+        }
+      });
+    }
+  });
+
   describe("effects Chromium cannot print as text", () => {
     const box = (inner: string, style = "") =>
       `<div style="width:100%;height:100%;background:#fff;font-family:${SANS};font-size:56px;padding:90px;${style}">${inner}</div>`;
@@ -260,6 +274,9 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "a framed document": [box(`<iframe srcdoc="<p style='font-size:48px;font-family:sans-serif'>Framed words</p>" style="width:600px;height:300px;border:0"></iframe>`), ["Framed", "words"]],
       "a drop-shadow on a broken image without alt text beside it": [box(`<img src="/uploads/missing.png" alt="" style="width:200px;height:200px;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><p>Caption words</p>`), ["Caption", "words"]],
       "a drop-shadow on an icon-only SVG symbol beside it": [box(`<svg width="300" height="300"><defs><symbol id="icon" viewBox="0 0 10 10"><path d="M0 0L10 0L5 10z" fill="#c4622d"/></symbol></defs><use href="#icon" width="300" height="300" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"/></svg><p>Caption words</p>`), ["Caption", "words"]],
+      // Text that is never drawn does not count under a filter.
+      "a drop-shadow around a style sheet and an SVG title and description": [box(`<div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><style>.x{color:red}</style><svg width="200" height="200"><title>Tooltip</title><desc>Description</desc><rect width="200" height="200" fill="#c4622d"/></svg></div><p>Caption words</p>`), ["Caption", "words"]],
+      "a filter on a shape whose generated content is a blank": [box(`<style>.s::before{content:" "}</style><div class="s" style="width:200px;height:200px;background:#c4622d;filter:blur(2px)"></div><p>Caption words</p>`), ["Caption", "words"]],
     };
     const refused: Record<string, [string, RegExp]> = {
       "a filter over the whole slide": [box(`<p>Flattened words</p>`, "filter:contrast(1.1)"), /^Slide 2 applies a CSS filter to text/],
@@ -289,6 +306,17 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "a filter inside a framed document": [box(`<iframe srcdoc="<p style='font-size:48px;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))'>Framed words</p>" style="width:600px;height:300px;border:0"></iframe>`), /^Slide 2 applies a CSS filter to text/],
       "a filter around a broken image's alt text": [box(`<div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><img src="/uploads/missing.png" alt="Alt words" style="width:600px;height:200px"></div>`), /^Slide 2 applies a CSS filter to text/],
       "a filter beside elements named after the document's own properties": [box(`<img name="body"><img name="documentElement"><form name="createTreeWalker"><input name="parentElement"><input name="querySelectorAll"></form><p style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">Clobbered words</p>`), /^Slide 2 applies a CSS filter to text/],
+      // Text reached through the rendered tree, not only the document tree.
+      "a filter around a slot, with the slotted text outside the shadow root": [box(`<div><template shadowrootmode="open"><div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><slot></slot></div></template><span>Slotted words</span></div>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter on an SVG use that reaches text through another use": [`<svg width="1080" height="600" style="font-family:${SANS}"><defs><g id="s"><text x="100" y="300" font-size="80">Chained words</text></g><g id="s2"><use href="#s"/></g></defs><use href="#s2" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"/></svg>`, /^Slide 2 applies a CSS filter to text/],
+      "a filter around a details element's own label": [box(`<div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><details></details></div><p>Plain words</p>`), /^Slide 2 applies a CSS filter to text/],
+      // A pseudo-element's box is its own, whatever its host's size.
+      "a backdrop-filter on the ::before of an empty inline element": [box(`<style>.glass::before{content:"";position:absolute;left:0;top:0;width:500px;height:300px;backdrop-filter:blur(8px)}</style><span class="glass"></span><p>After words</p>`), /^Slide 2 uses a frosted-glass effect \(backdrop-filter\)/],
+      "a mask on the ::after of a zero-size element": [box(`<style>.m::after{content:"";position:absolute;left:0;top:300px;width:500px;height:300px;background:#c4622d;-webkit-mask-image:linear-gradient(#000,transparent)}</style><div class="m" style="position:absolute;width:0;height:0"></div><p>Plain words</p>`), /^Slide 2 uses a CSS or SVG mask/],
+      "text inside an SVG pattern": [box(`<svg width="600" height="200"><defs><pattern id="p" width="200" height="60" patternUnits="userSpaceOnUse"><text y="40" font-size="30">Tile</text></pattern></defs><rect width="600" height="200" fill="url(#p)"/></svg><p>Plain words</p>`), /^Slide 2 draws text inside an SVG pattern or uses text as an SVG clip path/],
+      "text used as an SVG clip path": [box(`<svg width="900" height="200"><defs><clipPath id="c"><text x="0" y="120" font-size="120">CLIP</text></clipPath></defs><rect width="900" height="200" fill="#c4622d" clip-path="url(#c)"/></svg><p>Plain words</p>`), /^Slide 2 draws text inside an SVG pattern or uses text as an SVG clip path/],
+      "mix-blend-mode plus-lighter": [box(`<div style="background:#336;padding:20px"><div style="mix-blend-mode:plus-lighter;background:#933;width:200px;height:100px"></div></div><p>Plain words</p>`), /^Slide 2 uses mix-blend-mode plus-lighter or plus-darker/],
+      "a document nested too deeply for the DevTools protocol to read": [box(`${"<div>".repeat(400)}Deep words${"</div>".repeat(400)}`), /^Slide 2 could not be checked before printing/],
       "CSS that defeats the print clip": [`<style>body{overflow:visible!important;position:static!important}</style>${box("<p>Shrunk words</p>")}<div style="position:absolute;top:200px;right:-300px;width:600px;height:600px;background:#c4622d"></div>`, /^Slide 2 has content reaching past its edges/],
     };
 
@@ -342,12 +370,57 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "text scrolled out of a clipping box": `<div style="width:100%;height:100%;background:#fff"><div style="width:300px;height:300px;margin:90px;overflow:hidden;background:#8a9a5b"><p style="margin-top:600px;font-size:40px">Hidden words</p></div></div>`,
       "SVG text with neither fill nor stroke": `<svg width="1080" height="1350"><rect x="90" y="90" width="400" height="400" fill="#c4622d"/><text x="100" y="700" font-size="60" fill="none">Unpainted words</text></svg>`,
       "a visually hidden label clipped by clip-path": `<div style="width:100%;height:100%;background:#fff"><div style="width:400px;height:400px;margin:90px;background:#2f4f4f"></div><span style="position:absolute;clip-path:inset(50%);white-space:nowrap">Accessible label</span></div>`,
+      // Shown text the visible-text reading must not claim: skipped or
+      // collapsed content, and characters an ellipsis or a line clamp
+      // replaces, which still have boxes inside the clip. Each would otherwise
+      // be refused as text missing from the PDF.
+      "skipped and collapsed content": box(`<div style="content-visibility:hidden">Skipped words</div><div hidden="until-found">Found later</div><details><summary>Summary words</summary>Closed body</details>`),
+      "text shortened by an ellipsis or a line clamp": box(`<p style="width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Overflowing sentence xyzq</p><p style="display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;width:520px">Clamped words then quixotic jazz</p>`),
+      "transparent text with only a shadow, and masked characters": box(`<p style="color:transparent;text-shadow:0 0 4px #000">Shadow only</p><p style="-webkit-text-security:disc">Secret words</p><p>Plain words</p>`),
+      "a document nested a hundred levels deep": box(`${"<div>".repeat(100)}Deep words${"</div>".repeat(100)}`),
     };
     for (const [effect, html] of Object.entries(unpainted)) {
       it(`accepts ${effect}`, async () => {
         await expect(exportPdf([slide(html)], "4:5")).resolves.toBeInstanceOf(Uint8Array);
       }, 60_000);
     }
+
+    // macOS falls back to PingFang for Chinese in a font without it, and
+    // Chromium cannot embed PingFang, so the characters are left out of the
+    // page entirely: only the comparison of shown and printed text finds it.
+    it.skipIf(process.platform !== "darwin")(
+      "refuses Chinese that falls back to a system font that cannot be embedded, quoting it",
+      async () => {
+        const plain = slide(box("<p>First slide</p>"), 0);
+        await expect(exportPdf([plain, slide(box("<p>5 Tips 提高效率</p>"), 1)], "4:5")).rejects.toMatchObject({
+          status: 422,
+          message: expect.stringMatching(/^Slide 2 shows text that would not reach the PDF as text \(such as "提", "高", "效", "率"\)\. /),
+        });
+      },
+      60_000
+    );
+
+    it("prints scripts in Google fonts that cover them, with the characters every reader extracts", async () => {
+      // Ligatures, Arabic joining and Devanagari conjuncts reach the PDF
+      // through ActualText rather than one glyph per character; the page's
+      // text as read for the comparison must be exactly what poppler reads.
+      const html = box(
+        `<p style="font-family:'Cormorant Garamond'">office affine shuffle</p>` +
+          `<p style="font-family:'Noto Sans SC'">5 Tips 提高效率</p>` +
+          `<p dir="rtl" style="font-family:'Noto Naskh Arabic'">مرحبا بالعالم</p>` +
+          `<p style="font-family:'Noto Sans Devanagari'">क्षत्रिय नमस्ते</p>` +
+          `<p style="font-variant:small-caps;text-transform:uppercase">Ελληνικά Кириллица straße</p>`
+      );
+      const pdf = await exportPdf([slide(html)], "4:5");
+      const [content] = await inspectPdf(pdf);
+      const { comparableCharacters } = await import("@/lib/print-check");
+      const extracted = [...comparableCharacters(content.text)].sort();
+      await withPdfFile(pdf, (file) => {
+        expect(extracted).toEqual([...comparableCharacters(pageWords(file, 1).join(" "))].sort());
+      });
+      expect(extracted).toEqual(expect.arrayContaining(["提", "高", "क", "م", "λ", "к"]));
+      // A cold font cache fetches every unicode-range file of Noto Sans SC.
+    }, 180_000);
 
     it("accepts a slide that is only a photograph", async () => {
       const pdf = await exportPdf(
@@ -412,6 +485,28 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
         expect(pdfImages(file).length).toBeGreaterThan(0);
       });
       expect(await changedBlocks(page, png)).toBeLessThanOrEqual(MAX_CHANGED_BLOCKS);
+    }, 60_000);
+
+    it("keeps a full-slide gradient's hard stop on the screen's own row after trimming the page", async () => {
+      // A 4:5 page is trimmed by 0.54 pt. A gradient prints as a shading in
+      // the page's own pattern space, so moving the drawing rather than the
+      // page box would lift the stop by most of a pixel against everything
+      // else. poppler draws Chromium's hard stop as a short ramp, so the test
+      // finds where the colour starts to change rather than comparing blocks.
+      const top = { r: 0x1f, g: 0x3a, b: 0x4d };
+      const html = `<div style="width:100%;height:100%;background:linear-gradient(#1f3a4d 0 50%,#c4622d 50% 100%)"></div>`;
+      const { page, png } = await pageAndPng(html);
+      const firstChangedRow = async (image: Buffer) => {
+        const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        const x = 500;
+        for (let y = 0; y < info.height; y++) {
+          const i = (y * info.width + x) * 3;
+          if (Math.abs(data[i] - top.r) + Math.abs(data[i + 1] - top.g) + Math.abs(data[i + 2] - top.b) > 6) return y;
+        }
+        return -1;
+      };
+      expect(await firstChangedRow(png)).toBe(675);
+      expect(await firstChangedRow(page)).toBe(675);
     }, 60_000);
 
     // [decoration, top edge of the shape when it is not inside the slide's top]

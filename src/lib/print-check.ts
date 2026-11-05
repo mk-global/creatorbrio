@@ -79,10 +79,15 @@ export function bodyIsTheSlide(): boolean {
  *   so any text in it would become a picture.
  * - `backdrop-filter`: Chromium leaves the text inside it out of the PDF and
  *   can drop other content painted after it.
+ * - `text-paint`: text inside an SVG `<pattern>` is printed as part of a
+ *   picture, and text used as a `<clipPath>` prints as a soft mask that
+ *   Apple Preview and poppler draw wrongly.
  * - `gradient-text`: text filled through `background-clip: text` prints as a
  *   soft mask that Apple Preview and poppler draw as a solid block.
  * - `mask`: CSS and SVG masks print as soft masks that Apple Preview and
  *   poppler draw wrongly (the masked image or text loses its fade).
+ * - `blend`: `mix-blend-mode: plus-lighter` and `plus-darker` have no PDF
+ *   equivalent and print as an ordinary overlay.
  * - `overflow`: content reaches past the slide although the print clip could
  *   not be applied, so the page would come out shrunk.
  * - `unreadable`: part of the slide cannot be checked: a closed shadow root,
@@ -93,30 +98,47 @@ export type PrintProblem =
   | "filter"
   | "box-reflect"
   | "backdrop-filter"
+  | "text-paint"
   | "gradient-text"
   | "mask"
+  | "blend"
   | "overflow"
   | "unreadable";
 
+/** What `readPrintableText` reports for one document. */
+export interface PrintableText {
+  /** Whether the document visibly paints any text. */
+  hasText: boolean;
+  /**
+   * The text the slide visibly paints, as its characters, in no particular
+   * order: compared with the printed page's text by `comparableCharacters`.
+   * Only read in the slide's own document, where it is exact; empty in frames.
+   */
+  visibleText: string;
+  problem: PrintProblem | null;
+}
+
 /**
  * Checks a loaded slide, with the print-only rules applied, for what would
- * not print faithfully, and reports whether it shows text at all (the
- * post-print check compares that with the printed page). Runs inside the page.
+ * not print faithfully, and reads the text it visibly paints (the post-print
+ * check compares that with the printed page). Runs inside the page.
  *
  * The effect checks are deliberately conservative: an element with one of the
- * effects above is refused when anything inside it could draw text, painted
- * or not, so hidden text under such an effect is refused too. `hasText` only
- * counts text that is visibly painted, so it can undercount, which only skips
- * the post-print check.
+ * effects above is refused when anything it renders could draw text, painted
+ * or not, so hidden text under such an effect is refused too. The visible
+ * text is deliberately narrow: only text nodes that are painted, inside the
+ * slide and every clip, not transparent, so it can undercount, which only
+ * weakens the post-print check, but never claims text the slide does not show.
  *
  * It runs in the slide's own document, and with `isSlide` false in each frame
  * inside it, where an effect would flatten text just the same.
  */
-export function readPrintableText(isSlide = true): { hasText: boolean; problem: PrintProblem | null } {
+export function readPrintableText(isSlide = true): PrintableText {
   const getter = (proto: object, key: string) => Object.getOwnPropertyDescriptor(proto, key)!.get!;
   const rootOf = getter(Document.prototype, "documentElement");
   const bodyOf = getter(Document.prototype, "body");
   const parentOf = getter(Node.prototype, "parentElement");
+  const parentNodeOf = getter(Node.prototype, "parentNode");
   const childNodesOf = getter(Node.prototype, "childNodes");
   const shadowOf = getter(Element.prototype, "shadowRoot");
   const nameOf = getter(Element.prototype, "localName");
@@ -126,51 +148,59 @@ export function readPrintableText(isSlide = true): { hasText: boolean; problem: 
   const scrollHeightOf = getter(Element.prototype, "scrollHeight");
   const completeOf = getter(HTMLImageElement.prototype, "complete");
   const naturalWidthOf = getter(HTMLImageElement.prototype, "naturalWidth");
+  const assignedNodes = HTMLSlotElement.prototype.assignedNodes;
   const rectOf = (el: Element) => Element.prototype.getBoundingClientRect.call(el);
   const attribute = (el: Element, name: string) => Element.prototype.getAttribute.call(el, name);
+  const hasAttribute = (el: Element, name: string) => Element.prototype.hasAttribute.call(el, name);
 
   /**
-   * Every element and text node under `from`, including those in open shadow
-   * roots, and a shadow host's own children whether slotted or not.
+   * What renders under `node`: its children, an element's open shadow root,
+   * and a slot's assigned nodes. A shadow host's own children are included
+   * whether slotted or not, which errs towards checking more.
    */
+  function rendered(node: Node): Node[] {
+    const list: Node[] = Array.from(childNodesOf.call(node) as NodeList);
+    if (node instanceof Element) {
+      const shadow = shadowOf.call(node);
+      if (shadow) list.push(shadow);
+      if (node instanceof HTMLSlotElement) list.push(...assignedNodes.call(node, { flatten: true }));
+    }
+    return list;
+  }
+
+  /** Every element and text node rendered under `from`, each once. */
   function subtree(from: Node): { elements: Element[]; texts: Text[] } {
     const elements: Element[] = [];
     const texts: Text[] = [];
+    const seen = new Set<Node>([from]);
     const pending: Node[] = [from];
     for (let node = pending.pop(); node; node = pending.pop()) {
-      for (const child of Array.from(childNodesOf.call(node) as NodeList)) {
+      for (const child of rendered(node)) {
+        if (seen.has(child)) continue;
+        seen.add(child);
         if (child instanceof Text) texts.push(child);
-        if (!(child instanceof Element)) continue;
-        elements.push(child);
-        pending.push(child);
-        const shadow = shadowOf.call(child);
-        if (shadow) pending.push(shadow);
+        else if (child instanceof Element) {
+          elements.push(child);
+          pending.push(child);
+        } else if (child instanceof ShadowRoot) pending.push(child);
       }
     }
     return { elements, texts };
   }
-  const descendants = (el: Element) => {
-    const shadow = shadowOf.call(el);
-    return shadow ? [...subtree(el).elements, ...subtree(shadow).elements] : subtree(el).elements;
-  };
-  const textNodes = (el: Element) => {
-    const shadow = shadowOf.call(el);
-    return shadow ? [...subtree(el).texts, ...subtree(shadow).texts] : subtree(el).texts;
-  };
 
   const root = rootOf.call(document);
   const body = bodyOf.call(document);
   // A slide's own document always has both; a frame inside it may be an SVG
   // or other document, which is checked from its root.
   if (isSlide ? !(root instanceof HTMLHtmlElement) || !(body instanceof HTMLBodyElement) : !(root instanceof Element)) {
-    return { hasText: false, problem: "unreadable" };
+    return { hasText: false, visibleText: "", problem: "unreadable" };
   }
   const top: Element = body instanceof HTMLBodyElement ? body : root;
   const slideWidth: number = widthOf.call(root);
   const slideHeight: number = heightOf.call(root);
   // A frame scrolls and clips its own content, so only the slide can overflow.
   if (isSlide && (scrollWidthOf.call(root) > slideWidth || scrollHeightOf.call(root) > slideHeight)) {
-    return { hasText: false, problem: "overflow" };
+    return { hasText: false, visibleText: "", problem: "overflow" };
   }
 
   const PSEUDOS = ["::before", "::after"];
@@ -180,18 +210,32 @@ export function readPrintableText(isSlide = true): { hasText: boolean; problem: 
     return r.width > 0 && r.height > 0;
   };
 
-  /** Whether generated content draws anything other than an image or nothing. */
+  // Elements whose text is never drawn: style sheets, scripts and SVG
+  // metadata such as a tooltip title.
+  const SILENT = ["style", "script", "title", "desc", "metadata"];
+  const drawableText = (node: Text) => {
+    if (!node.nodeValue?.trim()) return false;
+    const parent = parentNodeOf.call(node);
+    return !(parent instanceof Element && SILENT.includes(nameOf.call(parent)));
+  };
+
+  /** Whether generated content draws anything other than images, spaces or nothing. */
   const generatesText = (style: CSSStyleDeclaration) => {
     if (style.display === "none" || !set(style.content)) return false;
     const withoutImages = style.content.replace(/url\([^)]*\)|(?:-webkit-)?(?:linear|radial|conic)-gradient\([^)]*\)/g, "");
-    return withoutImages.replace(/""|''/g, "").trim() !== "";
+    return withoutImages.replace(/"\s*"|'\s*'/g, "").trim() !== "";
   };
+
+  /** `<use>` elements being resolved, so a reference cycle ends. */
+  const resolving = new Set<Element>();
 
   /** Whether `el` itself draws text that is not one of its text nodes. */
   function drawsOwnText(el: Element): boolean {
     const name = nameOf.call(el);
-    if (["textarea", "select", "button", "iframe", "object", "embed", "frame"].includes(name)) return true;
+    // A details element without a summary draws its own "Details" label.
+    if (["textarea", "select", "button", "iframe", "object", "embed", "frame", "details"].includes(name)) return true;
     if (name === "input") return attribute(el, "type")?.toLowerCase() !== "hidden";
+    if ((name === "video" || name === "audio") && hasAttribute(el, "controls")) return true;
     // A broken image draws its alt text instead.
     if (el instanceof HTMLImageElement) {
       return Boolean(attribute(el, "alt")?.trim()) && (!completeOf.call(el) || naturalWidthOf.call(el) === 0);
@@ -203,17 +247,41 @@ export function readPrintableText(isSlide = true): { hasText: boolean; problem: 
       const target = href.startsWith("#") ? byId.call(scope, href.slice(1)) : null;
       // An external or missing reference cannot be checked, so it counts.
       if (!target) return href !== "";
-      return nameOf.call(target) === "text" || descendants(target).some((d) => nameOf.call(d) === "text");
+      // The target is drawn as it is, through any further references.
+      if (resolving.has(el)) return false;
+      resolving.add(el);
+      try {
+        return containsText(target);
+      } finally {
+        resolving.delete(el);
+      }
     }
     const style = getComputedStyle(el);
     if (style.display === "list-item" && style.listStyleType !== "none") return true;
     return PSEUDOS.some((pseudo) => generatesText(getComputedStyle(el, pseudo)));
   }
 
-  /** Whether anything in `el`'s subtree, `el` included, could draw text. */
-  function containsText(el: Element): boolean {
-    if (textNodes(el).some((node) => node.nodeValue?.trim())) return true;
-    return [el, ...descendants(el)].some(drawsOwnText);
+  /**
+   * Whether anything rendered under `start`, `start` included, could draw
+   * text. Answers are kept, so asking about nested elements stays linear in
+   * the size of the slide; the walk is iterative, so depth cannot overflow it.
+   */
+  const textBelow = new Map<Node, boolean>();
+  function containsText(start: Node): boolean {
+    const stack: [Node, boolean][] = [[start, false]];
+    while (stack.length > 0) {
+      const [node, expanded] = stack.pop()!;
+      if (textBelow.has(node)) continue;
+      const children = rendered(node);
+      if (!expanded) {
+        stack.push([node, true]);
+        for (const child of children) if (!textBelow.has(child)) stack.push([child, false]);
+        continue;
+      }
+      const own = node instanceof Text ? drawableText(node) : node instanceof Element && drawsOwnText(node);
+      textBelow.set(node, own || children.some((child) => textBelow.get(child) === true));
+    }
+    return textBelow.get(start) === true;
   }
 
   const reflects = (style: CSSStyleDeclaration) => set(style.getPropertyValue("-webkit-box-reflect"));
@@ -221,35 +289,42 @@ export function readPrintableText(isSlide = true): { hasText: boolean; problem: 
     style.backgroundClip === "text" || style.getPropertyValue("-webkit-background-clip") === "text";
   const masks = (style: CSSStyleDeclaration) =>
     set(style.maskImage) || set(style.getPropertyValue("-webkit-mask-image")) || set(style.getPropertyValue("-webkit-mask-box-image-source"));
+  const blendsWithoutPdfEquivalent = (style: CSSStyleDeclaration) => /^plus-/.test(style.mixBlendMode);
 
   // In order of severity: content lost first, then pictures of text, then
   // effects some readers draw wrongly.
   const found = new Set<PrintProblem>();
-  for (const el of top === root ? [root, ...descendants(root)] : [root, top, ...descendants(top)]) {
-    const styles = [getComputedStyle(el), ...PSEUDOS.map((p) => getComputedStyle(el, p)).filter((s) => set(s.content))];
-    const visible = hasBox(el);
-    for (const style of styles) {
-      if (visible && set(style.backdropFilter)) found.add("backdrop-filter");
-      if (visible && masks(style)) found.add("mask");
+  const scanned = top === root ? subtree(root).elements : [top, ...subtree(top).elements];
+  for (const el of [root, ...scanned.filter((e) => e !== root)]) {
+    const own = getComputedStyle(el);
+    const pseudos = PSEUDOS.map((p) => getComputedStyle(el, p)).filter((s) => s.display !== "none" && set(s.content));
+    // A pseudo-element's own box cannot be measured, so one that is
+    // generated at all is checked; an element is checked when it has a box.
+    for (const style of hasBox(el) ? [own, ...pseudos] : pseudos) {
+      if (set(style.backdropFilter)) found.add("backdrop-filter");
+      if (masks(style)) found.add("mask");
     }
-    const own = styles[0];
+    if (blendsWithoutPdfEquivalent(own)) found.add("blend");
+    const name = nameOf.call(el);
+    if ((name === "pattern" || name === "clipPath") && containsText(el)) found.add("text-paint");
     if (set(own.filter) && containsText(el)) found.add("filter");
     if (reflects(own) && containsText(el)) found.add("box-reflect");
     if (clipsToText(own) && containsText(el)) found.add("gradient-text");
-    for (const style of styles.slice(1)) {
+    for (const style of pseudos) {
       if (!generatesText(style)) continue;
       if (set(style.filter)) found.add("filter");
       if (reflects(style)) found.add("box-reflect");
       if (clipsToText(style)) found.add("gradient-text");
+      if (blendsWithoutPdfEquivalent(style)) found.add("blend");
     }
   }
-  const order: PrintProblem[] = ["backdrop-filter", "filter", "box-reflect", "gradient-text", "mask"];
+  const order: PrintProblem[] = ["backdrop-filter", "filter", "box-reflect", "text-paint", "gradient-text", "mask", "blend"];
   const problem = order.find((p) => found.has(p)) ?? null;
-  if (problem) return { hasText: true, problem };
+  if (problem) return { hasText: true, visibleText: "", problem };
 
-  // Visibly painted text, for the post-print check: inside the slide and every
-  // clipping ancestor, not hidden or fully transparent, and SVG text with a
-  // fill or a stroke. Text under a clip-path is not counted.
+  // Visibly painted text: inside the slide and every clipping ancestor, not
+  // hidden, fully transparent or disguised, and SVG text with a fill or a
+  // stroke. Text under a clip-path is not counted.
   type Box = { left: number; top: number; right: number; bottom: number };
   const MIN_VISIBLE_PX = 2;
   const intersect = (a: Box, b: Box): Box => ({
@@ -259,14 +334,36 @@ export function readPrintableText(isSlide = true): { hasText: boolean; problem: 
     bottom: Math.min(a.bottom, b.bottom),
   });
   const visibleBox = (b: Box) => b.right - b.left >= MIN_VISIBLE_PX && b.bottom - b.top >= MIN_VISIBLE_PX;
-  function shownArea(el: Element): Box | null {
+  const inside = (r: Box, area: Box) =>
+    r.left >= area.left && r.top >= area.top && r.right <= area.right && r.bottom <= area.bottom;
+  // Only an alpha of zero: computed colours are rgb(), rgba() or color(... / alpha).
+  const transparent = (color: string) =>
+    color === "transparent" ||
+    /^rgba\((?:[^,]*,){3}\s*0(?:\.0+)?\s*\)$/.test(color) ||
+    /\/\s*0(?:\.0+)?\s*\)$/.test(color);
+  /**
+   * Where `el`'s text can show, or null when it is not painted at all.
+   * `exact` is false when the text may be shortened where it shows, by a
+   * `text-overflow` ellipsis or a line clamp: its characters still have boxes
+   * inside the clip, so they are not compared, only counted as shown.
+   */
+  function shownArea(el: Element): { box: Box; exact: boolean } | null {
     let box: Box = { left: 0, top: 0, right: slideWidth, bottom: slideHeight };
     let opacity = 1;
-    for (let at: Element | null = el; at; at = parentOf.call(at)) {
+    let exact = true;
+    for (let at: Element | null = el, from: Element | null = null; at; from = at, at = parentOf.call(at)) {
       const style = getComputedStyle(at);
       opacity *= Number(style.opacity);
       if (set(style.clipPath)) return null;
-      if (style.overflowX !== "visible" || style.overflowY !== "visible") box = intersect(box, rectOf(at));
+      // Skipped content is never painted, though Chromium still lays it out
+      // when asked; a closed details element shows only its summary.
+      if (style.contentVisibility === "hidden") return null;
+      if (nameOf.call(at) === "details" && !hasAttribute(at, "open") && !(from && nameOf.call(from) === "summary")) {
+        return null;
+      }
+      const clips = style.overflowX !== "visible" || style.overflowY !== "visible";
+      if (clips) box = intersect(box, rectOf(at));
+      if ((clips && style.textOverflow !== "clip") || set(style.getPropertyValue("-webkit-line-clamp"))) exact = false;
       // `clip` applies to absolutely positioned elements; anything but `auto`
       // is a crop or the visually-hidden pattern, read as its own rect.
       if (style.clip && style.clip !== "auto" && /^(absolute|fixed)$/.test(style.position)) {
@@ -279,21 +376,65 @@ export function readPrintableText(isSlide = true): { hasText: boolean; problem: 
     }
     const style = getComputedStyle(el);
     if (style.visibility !== "visible" || opacity === 0) return null;
-    if (el instanceof SVGElement && style.fill === "none" && style.stroke === "none") return null;
-    return box;
+    // Masked characters (-webkit-text-security) draw as discs, not as the text.
+    if (set(style.getPropertyValue("-webkit-text-security"))) return null;
+    if (el instanceof SVGElement) {
+      if (style.fill === "none" && style.stroke === "none") return null;
+    } else if (
+      transparent(style.getPropertyValue("-webkit-text-fill-color")) &&
+      parseFloat(style.getPropertyValue("-webkit-text-stroke-width")) === 0
+    ) {
+      return null;
+    }
+    return { box, exact };
   }
-  for (const node of textNodes(top)) {
+
+  let hasText = false;
+  const visible: string[] = [];
+  for (const node of subtree(top).texts) {
     const el = parentOf.call(node);
-    if (!el || !node.nodeValue?.trim()) continue;
-    const area = shownArea(el);
-    if (!area) continue;
+    const value = node.nodeValue ?? "";
+    if (!el || !value.trim() || !drawableText(node)) continue;
+    const shown = shownArea(el);
+    if (!shown) continue;
+    const area = shown.box;
     const range = Document.prototype.createRange.call(document);
     range.selectNodeContents(node);
-    if (Array.from(range.getClientRects()).some((r) => visibleBox(intersect(r, area)))) {
-      return { hasText: true, problem: null };
+    const rects = Array.from(range.getClientRects());
+    if (!rects.some((r) => visibleBox(intersect(r, area)))) continue;
+    hasText = true;
+    if (!isSlide || !shown.exact) continue;
+    if (rects.every((r) => inside(r, area))) {
+      visible.push(value);
+      continue;
+    }
+    // Partly clipped: only the characters drawn inside the clip count.
+    for (let i = 0; i < value.length; ) {
+      const length = (value.codePointAt(i) ?? 0) > 0xffff ? 2 : 1;
+      range.setStart(node, i);
+      range.setEnd(node, i + length);
+      if (Array.from(range.getClientRects()).some((r) => visibleBox(intersect(r, area)))) {
+        visible.push(value.slice(i, i + length));
+      }
+      i += length;
     }
   }
-  return { hasText: false, problem: null };
+  return { hasText, visibleText: visible.join(" "), problem: null };
+}
+
+/**
+ * The letters and digits of `text` in a form that survives printing, for
+ * comparing what a slide shows with what its PDF page carries: case folded
+ * (so `text-transform` and small caps compare equal, and ß with SS),
+ * decomposed with compatibility mappings (so ligatures, full-width forms and
+ * accents compare equal however they were encoded), without marks,
+ * punctuation, spaces or symbols. Emoji are symbols, and keycap emoji are
+ * removed with their digit, since they are drawn as pictures.
+ */
+export function comparableCharacters(text: string): Set<string> {
+  const withoutKeycaps = text.replace(/[#*0-9]️?⃣|[#*0-9]️/gu, " ");
+  const folded = withoutKeycaps.toUpperCase().toLowerCase().normalize("NFKD");
+  return new Set([...folded].filter((ch) => /[\p{L}\p{N}]/u.test(ch)));
 }
 
 /** The part of a DevTools protocol DOM node `hasClosedShadowRoot` reads. */

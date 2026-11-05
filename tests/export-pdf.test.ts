@@ -3,6 +3,7 @@ import { PDFDocument, PDFName, PDFString } from "pdf-lib";
 import {
   mergeSlidePdfs,
   unprintableSlideError,
+  UnprintableSlideError,
   pdfPageSize,
   PdfExportError,
   PDF_POINTS_PER_PIXEL,
@@ -112,13 +113,10 @@ describe("mergeSlidePdfs", () => {
       expect(page.pathPaints).toBeGreaterThan(0);
       expect(page.images).toEqual([]);
     }
-    // The page's own operators, unchanged, inside one translation onto the
-    // trimmed page box (see the trim test) and pdf-lib's balancing q/Q.
+    // The page's own operators, unchanged: the trim moves only the page box.
     const sourceOps = (await readPdfPages(slides[1]))[0].operators;
     const mergedOps = (await readPdfPages(await mergeSlidePdfs(slides, "4:5")))[1].operators;
-    const wrapped = mergedOps.match(/^q\n1 0 0 1 \S+ \S+ cm\n\s*q\n\s*([\s\S]*?)\s*Q\s*Q\s*$/);
-    expect(wrapped).not.toBeNull();
-    expect(wrapped![1]).toBe(sourceOps.trim());
+    expect(mergedOps).toBe(sourceOps);
   });
 
   it("keeps a slide's image as an image without re-encoding it", async () => {
@@ -135,19 +133,20 @@ describe("mergeSlidePdfs", () => {
       const expected = pdfPageSize(ratio);
       const { width, height } = DIMENSIONS[ratio];
       const [, printedHeight] = chromiumPrintSize(width, height);
-      const pages = await readPdfPages(await mergeSlidePdfs(await slidesFor(ratio, 3), ratio));
+      const slides = await slidesFor(ratio, 3);
+      const pages = await readPdfPages(await mergeSlidePdfs(slides, ratio));
 
-      for (const page of pages) {
+      for (const [i, page] of pages.entries()) {
         expect({ width: page.width, height: page.height }).toEqual(expected);
-        // The box starts at the origin, and the drawing moves down by the
-        // rounding sliver so the printed page's top edge, where the slide
-        // starts, is the box's top edge; the sliver falls below the box.
-        expect(page.mediaBoxOrigin).toEqual({ x: 0, y: 0 });
-        expect(page.cropBox).toEqual({ x: 0, y: 0, width: expected.width, height: expected.height });
-        const shift = page.operators.match(/^q\n1 0 0 1 (\S+) (\S+) cm\n/);
-        expect(shift).not.toBeNull();
-        expect(Number(shift![1])).toBe(0);
-        expect(Number(shift![2])).toBeCloseTo(-(printedHeight - expected.height), 6);
+        // The printed page's top edge, where the slide starts, stays the
+        // box's top edge; the rounding sliver falls below the box.
+        const bottom = printedHeight - expected.height;
+        expect(page.mediaBoxOrigin.x).toBe(0);
+        expect(page.mediaBoxOrigin.y).toBeCloseTo(bottom, 6);
+        expect(page.cropBox.x).toBe(0);
+        expect(page.cropBox.y).toBeCloseTo(bottom, 6);
+        expect({ width: page.cropBox.width, height: page.cropBox.height }).toEqual(expected);
+        expect(page.operators).toBe((await readPdfPages(slides[i]))[0].operators);
         expect(page.rotation).toBe(0);
       }
     });
@@ -159,16 +158,15 @@ describe("mergeSlidePdfs", () => {
     expect(page).toMatchObject({ width: 810, height: 1012.5, mediaBoxOrigin: { x: 0, y: 0 } });
   });
 
-  it("moves a page whose box does not start at the origin onto one that does", async () => {
+  it("trims a page whose box does not start at the origin from that box's top edge", async () => {
     const source = await PDFDocument.load(await slidePdf("Offset"));
     const [, printedHeight] = chromiumPrintSize(1080, 1350);
     source.getPage(0).setMediaBox(12, 30, 810, printedHeight);
     const [page] = await readPdfPages(await mergeSlidePdfs([await source.save()], "4:5"));
 
-    expect(page).toMatchObject({ width: 810, height: 1012.5, mediaBoxOrigin: { x: 0, y: 0 } });
-    const shift = page.operators.match(/^q\n1 0 0 1 (\S+) (\S+) cm\n/)!;
-    expect(Number(shift[1])).toBe(-12);
-    expect(Number(shift[2])).toBeCloseTo(-(30 + printedHeight - 1012.5), 6);
+    expect(page).toMatchObject({ width: 810, height: 1012.5 });
+    expect(page.mediaBoxOrigin.x).toBe(12);
+    expect(page.mediaBoxOrigin.y).toBeCloseTo(30 + printedHeight - 1012.5, 6);
   });
 
   it("refuses a slide printed at another size rather than cropping or stretching it", async () => {
@@ -303,10 +301,13 @@ describe("refusing a slide that cannot be printed faithfully", () => {
     ["backdrop-filter", /^Slide 4 uses a frosted-glass effect \(backdrop-filter\), which PDF printing drops along with text and shapes drawn over it\./],
     ["box-reflect", /^Slide 4 reflects text \(-webkit-box-reflect\), .*remove the reflection/],
     ["gradient-text", /^Slide 4 fills text with a gradient or image \(background-clip: text\), .*solid text colour/],
+    ["text-paint", /^Slide 4 draws text inside an SVG pattern or uses text as an SVG clip path, .*ordinary SVG or HTML text/],
     ["mask", /^Slide 4 uses a CSS or SVG mask, .*gradient overlay or a plain shape/],
+    ["blend", /^Slide 4 uses mix-blend-mode plus-lighter or plus-darker, .*another blend mode/],
     ["overflow", /^Slide 4 has content reaching past its edges .*keep everything inside the slide/],
     ["unreadable", /^Slide 4 could not be checked before printing, .*plain HTML inside the page body/],
     ["page-size", /^Slide 4 did not print as a single page at the slide's size\. .*print page rules \(@page\)/],
+    ["missing-text", /^Slide 4 shows text that would not reach the PDF as text\. .*system font that cannot be embedded.*Noto Sans SC/],
     ["flattened", /^Slide 4 could only be printed as a picture, .*simplify the slide's visual effects/],
   ] as const)("explains %s with the slide number and what to do", (reason, message) => {
     const error = unprintableSlideError(4, reason);
@@ -314,6 +315,17 @@ describe("refusing a slide that cannot be printed faithfully", () => {
     expect(error.status).toBe(422);
     expect(error.message).toMatch(message);
     expect(error.message).toMatch(/then export the PDF again\. The PNG export is not affected\.$/);
+  });
+
+  it("quotes a few of the characters a page would lose, so the user can find them", () => {
+    const error = unprintableSlideError(2, "missing-text", ["提", "高", "效", "率", "方", "法"]);
+    expect(error.message).toMatch(/^Slide 2 shows text that would not reach the PDF as text \(such as "提", "高", "效", "率", "方"\)\. /);
+  });
+
+  it("keeps slide text out of the internal error, which may be logged", () => {
+    const error = new UnprintableSlideError("missing-text", ["提"]);
+    expect(error.message).toBe("Slide cannot be printed as text: missing-text");
+    expect(error.characters).toEqual(["提"]);
   });
 });
 

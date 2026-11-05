@@ -80,11 +80,14 @@ export function pdfInfo(file: string): PdfInfo {
 
 /** The words `pdftotext` extracts from one page, in reading order. */
 export function pageWords(file: string, page: number): string[] {
-  return run("pdftotext", ["-f", String(page), "-l", String(page), "-enc", "UTF-8", file, "-"])
+  // Decoded as UTF-8 before splitting: read as latin1, a byte such as 0xA0
+  // inside a character's UTF-8 encoding (Cyrillic Р, French à) would count as
+  // a space and cut the character in two.
+  return Buffer.from(run("pdftotext", ["-f", String(page), "-l", String(page), "-enc", "UTF-8", file, "-"]), "latin1")
+    .toString("utf8")
     .replace(/\f/g, " ")
     .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => Buffer.from(w, "latin1").toString("utf8"));
+    .filter(Boolean);
 }
 
 export interface PdfFont {

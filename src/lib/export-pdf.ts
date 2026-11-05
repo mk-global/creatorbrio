@@ -91,11 +91,14 @@ export type UnprintableSlideReason =
   | "filter"
   | "backdrop-filter"
   | "box-reflect"
+  | "text-paint"
   | "gradient-text"
   | "mask"
+  | "blend"
   | "overflow"
   | "unreadable"
   | "page-size"
+  | "missing-text"
   | "flattened";
 
 /**
@@ -103,17 +106,33 @@ export type UnprintableSlideReason =
  * into the message for the user once the slide's number is known.
  */
 export class UnprintableSlideError extends Error {
-  constructor(readonly reason: UnprintableSlideReason) {
+  /**
+   * @param characters For `missing-text`, a few of the characters the page
+   *   would lose. They are slide content, so they go into the user's message
+   *   only, never into this error's own message, which may be logged.
+   */
+  constructor(
+    readonly reason: UnprintableSlideReason,
+    readonly characters: readonly string[] = []
+  ) {
     super(`Slide cannot be printed as text: ${reason}`);
     this.name = "UnprintableSlideError";
   }
 }
 
-/** The user-facing refusal for slide `slideNumber` (1-based). */
+/** How many of the missing characters a refusal quotes. */
+const MAX_QUOTED_CHARACTERS = 5;
+
+/**
+ * The user-facing refusal for slide `slideNumber` (1-based). `characters`
+ * are quoted for `missing-text`, so the user can find the text concerned.
+ */
 export function unprintableSlideError(
   slideNumber: number,
-  reason: UnprintableSlideReason
+  reason: UnprintableSlideReason,
+  characters: readonly string[] = []
 ): PdfExportError {
+  const quoted = characters.slice(0, MAX_QUOTED_CHARACTERS).map((c) => `"${c}"`).join(", ");
   const advice = {
     filter:
       "applies a CSS filter to text, which a PDF can only store as a picture of that text, so it could not be selected or searched. " +
@@ -127,11 +146,17 @@ export function unprintableSlideError(
     "box-reflect":
       "reflects text (-webkit-box-reflect), which a PDF can only store as a picture of that text, so it could not be selected or searched. " +
       "Ask the design agent to remove the reflection",
+    "text-paint":
+      "draws text inside an SVG pattern or uses text as an SVG clip path, which a PDF stores as a picture or as a shape that readers such as Apple Preview draw wrongly. " +
+      "Ask the design agent to use ordinary SVG or HTML text instead",
     mask:
       "uses a CSS or SVG mask, which PDF readers such as Apple Preview draw without its fade. " +
       "Ask the design agent to replace the mask with a gradient overlay or a plain shape",
+    blend:
+      "uses mix-blend-mode plus-lighter or plus-darker, which PDF has no equivalent for, so it would print as an ordinary overlay. " +
+      "Ask the design agent to use another blend mode, such as screen or multiply",
     unreadable:
-      "could not be checked before printing, because part of it is hidden from inspection (a closed shadow root or an unreadable frame). " +
+      "could not be checked before printing, because part of it is hidden from inspection (a closed shadow root, an unreadable frame, or nesting too deep or a check too slow to complete). " +
       "Ask the design agent to rebuild the slide as plain HTML inside the page body",
     overflow:
       "has content reaching past its edges that the PDF could not clip, so the page would come out shrunk. " +
@@ -139,6 +164,10 @@ export function unprintableSlideError(
     "page-size":
       "did not print as a single page at the slide's size. " +
       "Ask the design agent to keep everything inside the slide and to remove any print page rules (@page)",
+    "missing-text":
+      `shows text that would not reach the PDF as text${quoted ? ` (such as ${quoted})` : ""}. ` +
+      "Most often the slide's fonts do not cover those characters and they fall back to a system font that cannot be embedded, which leaves them out. " +
+      "Ask the design agent to give that text a Google font that covers it (for Chinese, Noto Sans SC or Noto Serif SC)",
     flattened:
       "could only be printed as a picture, so its text could not be selected or searched. " +
       "Ask the design agent to simplify the slide's visual effects",
@@ -158,7 +187,8 @@ export function unprintableSlideError(
  * or rasterised. Each page is checked to be exactly one page at the slide's
  * size, then trimmed to that size from its top-left corner, where Chromium
  * draws the slide, removing the sliver its paper-size rounding adds. Only the
- * page box and one translation are added; the content itself is unchanged.
+ * page box changes; the content itself is copied byte for byte, apart from
+ * the masked shadows `rewriteMaskedShadows` re-expresses.
  *
  * Annotations are left behind. Chromium turns every link in the slide into a
  * clickable area, and the slide HTML comes from the design agent: the preview
@@ -217,15 +247,13 @@ export async function mergeSlidePdfs(
     ) {
       throw unprintableSlideError(index + 1, "page-size");
     }
-    // PDF y runs upwards, so the slide sits at the top of Chromium's paper.
-    // The content is moved onto a page box that starts at the origin, rather
-    // than the box moved onto the content: Apple's Core Graphics draws soft
-    // masks (shadows, for one) wrongly on a page whose box does not.
-    page.translateContent(-box.x, -(box.y + box.height - expected.height));
-    page.setMediaBox(0, 0, expected.width, expected.height);
-    page.setCropBox(0, 0, expected.width, expected.height);
-    // Translating normalises the page, which gives it an empty Annots array.
-    page.node.delete(PDFName.of("Annots"));
+    // PDF y runs upwards, so the slide sits at the top of Chromium's paper:
+    // the page box keeps that top edge and leaves the sliver below it. The
+    // box moves rather than the drawing, because a translation of the drawing
+    // would not move a pattern or shading painted in page space.
+    const top = box.y + box.height;
+    page.setMediaBox(box.x, top - expected.height, expected.width, expected.height);
+    page.setCropBox(box.x, top - expected.height, expected.width, expected.height);
     pdf.addPage(page);
     await yieldToEventLoop();
   }

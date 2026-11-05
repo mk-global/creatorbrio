@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { PDFDocument, PDFName, StandardFonts, rgb } from "pdf-lib";
-import { inspectPdf } from "@/lib/pdf-content";
+import { inspectPdf, parseToUnicode } from "@/lib/pdf-content";
 import { syntheticSlidePng } from "./helpers/export-files";
 
 /** A one-page PDF whose content stream is exactly `content`. */
@@ -24,7 +24,8 @@ describe("inspectPdf", () => {
     shapes.drawImage(png, { x: 100, y: 100, width: 120, height: 60 });
 
     const [textPage, shapePage] = await inspectPdf(await doc.save());
-    expect(textPage).toEqual({ textShows: 2, pathPaints: 0, images: [] });
+    // The standard fonts carry no Unicode map, so their text is not read.
+    expect(textPage).toEqual({ textShows: 2, text: "", pathPaints: 0, images: [] });
     expect(shapePage.textShows).toBe(0);
     expect(shapePage.pathPaints).toBe(1);
     expect(shapePage.images).toEqual([{ width: 240, height: 120 }]);
@@ -63,7 +64,7 @@ describe("inspectPdf", () => {
         ].join("\n")
       )
     );
-    expect(content).toEqual({ textShows: 1, pathPaints: 0, images: [] });
+    expect(content).toEqual({ textShows: 1, text: "", pathPaints: 0, images: [] });
   });
 
   it("skips inline image data, whatever bytes it holds", async () => {
@@ -80,5 +81,117 @@ describe("inspectPdf", () => {
       await pdfWithContent("0 0 m 1 1 l f F f* S s B B* b b* n W n 0 0 1 1 re h")
     );
     expect(content.pathPaints).toBe(9);
+  });
+});
+
+/** A Unicode map as Chromium writes one, with the given entries. */
+function cmap(codeSpace: string, entries: string): string {
+  return [
+    "/CIDInit /ProcSet findresource begin 12 dict begin begincmap",
+    "/CMapName /Adobe-Identity-UCS def /CMapType 2 def",
+    `1 begincodespacerange ${codeSpace} endcodespacerange`,
+    entries,
+    "endcmap CMapName currentdict /CMap defineresource pop end end",
+  ].join("\n");
+}
+
+/**
+ * A one-page PDF drawing `content` with Chromium's two kinds of font: F1 a
+ * two-byte CID font (`Type0`), F2 a one-byte Type 3 font. `form` is drawn by
+ * `/X1 Do` and has no fonts of its own.
+ */
+async function pdfWithFonts(content: string, form = ""): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const ctx = doc.context;
+  const cid = ctx.obj({
+    Type: "Font",
+    Subtype: "Type0",
+    BaseFont: "AAAAAA+Inter-Regular",
+    Encoding: "Identity-H",
+    ToUnicode: ctx.register(
+      ctx.flateStream(
+        cmap(
+          "<0000> <FFFF>",
+          "3 beginbfchar <0001> <0054> <0002> <0069> <0003> <00660069> endbfchar\n" +
+            "2 beginbfrange <0010> <0012> <0061> <0020> <0021> [<63D0> <9AD8>] endbfrange"
+        )
+      )
+    ),
+  });
+  const type3 = ctx.obj({
+    Type: "Font",
+    Subtype: "Type3",
+    ToUnicode: ctx.register(ctx.flateStream(cmap("<00> <FF>", "1 beginbfchar <E0> <D83DDE80> endbfchar"))),
+  });
+  const page = doc.addPage([200, 200]);
+  const formStream = ctx.register(ctx.flateStream(form, { Type: "XObject", Subtype: "Form", BBox: [0, 0, 200, 200] }));
+  page.node.set(PDFName.of("Resources"), ctx.obj({ Font: { F1: cid, F2: type3 }, XObject: { X1: formStream } }));
+  page.node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream(content)));
+  return doc.save();
+}
+
+describe("reading a page's text", () => {
+  it("decodes shown strings through each font's Unicode map, with its code length", async () => {
+    const [content] = await inspectPdf(
+      await pdfWithFonts("BT /F1 40 Tf <00010002> Tj [<0003> -20 <001000110012>] TJ /F2 40 Tf <e0> Tj ET")
+    );
+    // bfchar entries, a ligature mapping to two letters, an incrementing
+    // range, and a one-byte code mapping to a surrogate pair.
+    expect(content.text).toBe("Tifiabc\u{1F680}");
+  });
+
+  it("reads a range's array form", async () => {
+    const [content] = await inspectPdf(await pdfWithFonts("BT /F1 40 Tf <00200021> Tj ET"));
+    expect(content.text).toBe("提高");
+  });
+
+  it("reads an ActualText in place of the text shown inside it, in hex UTF-16 or as a literal string", async () => {
+    const [content] = await inspectPdf(
+      await pdfWithFonts(
+        // A synthesized small capital: the glyph is "T", the text is "m".
+        "BT /F1 40 Tf /Span<</ActualText <feff00650301> >> BDC <0001> Tj EMC " +
+          "/Span<</ActualText (m) >> BDC <0001> Tj EMC " +
+          "/Span<</ActualText (\\376\\377\\000x) >> BDC EMC " +
+          // Marked content without ActualText leaves the text as shown.
+          "/P <</MCID 0>> BDC <0002> Tj EMC /Artifact BMC <0002> Tj EMC ET"
+      )
+    );
+    expect(content.text).toBe("e\u0301mxii");
+  });
+
+  it("replaces text in nested spans and drawn forms with the outer ActualText alone", async () => {
+    const [content] = await inspectPdf(
+      await pdfWithFonts("BT /F1 40 Tf /Span<</ActualText (ab) >> BDC <0001> Tj /Span<</ActualText (c) >> BDC EMC /X1 Do EMC <0002> Tj ET", "<0001> Tj")
+    );
+    expect(content.text).toBe("abi");
+  });
+
+  it("follows the font through saved and restored states and into drawn forms", async () => {
+    const [content] = await inspectPdf(
+      await pdfWithFonts("BT /F1 40 Tf q /F2 40 Tf Q <0001> Tj /X1 Do ET", "<0002> Tj")
+    );
+    // After Q the CID font is back; the form inherits it from where it is drawn.
+    expect(content.text).toBe("Ti");
+  });
+
+  it("reads nothing for a font without a Unicode map, or text shown before any font", async () => {
+    const [content] = await inspectPdf(await pdfWithFonts("BT <0001> Tj /F9 12 Tf <0001> Tj ET"));
+    expect(content.textShows).toBe(2);
+    expect(content.text).toBe("");
+  });
+});
+
+describe("parseToUnicode", () => {
+  it("takes the code length from the code space, else from the font kind", () => {
+    expect(parseToUnicode(cmap("<00> <FF>", ""), 2).codeLength).toBe(1);
+    expect(parseToUnicode(cmap("<0000> <FFFF>", ""), 1).codeLength).toBe(2);
+    expect(parseToUnicode("", 2).codeLength).toBe(2);
+  });
+
+  it("maps nothing rather than guessing when a range is impossibly large or reversed", () => {
+    const huge = parseToUnicode(cmap("<000000> <FFFFFF>", "1 beginbfrange <000000> <FFFFFF> <0041> endbfrange"), 2);
+    expect(huge.unicode.size).toBe(0);
+    const reversed = parseToUnicode(cmap("<0000> <FFFF>", "1 beginbfrange <0005> <0001> <0041> endbfrange"), 2);
+    expect(reversed.unicode.size).toBe(0);
   });
 });
