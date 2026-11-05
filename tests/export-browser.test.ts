@@ -25,6 +25,13 @@ interface FakeBrowser {
 
 let png: Buffer;
 let browsers: FakeBrowser[];
+/** What the in-page text check reports for every slide, keyed by slide HTML. */
+let printable: (html: string) => { hasText: boolean; problem: string | null };
+/** The PDF a page prints, keyed by slide HTML. */
+let printed: (html: string) => Promise<Uint8Array>;
+/** The options each print was called with. */
+let printOptions: Record<string, unknown>[];
+let mediaTypes: (string | null)[];
 /** When set, pages opened from now on wait for it before their screenshot. */
 let screenshotGate: Promise<void> | null;
 
@@ -38,11 +45,23 @@ function fakeBrowser(): FakeBrowser {
       browser.openPages++;
       const gate = screenshotGate;
       let open = true;
+      let html = "";
       return {
         setViewport: async () => {},
-        setContent: async () => {},
+        setContent: async (content: string) => {
+          html = content;
+        },
         waitForFunction: async () => {},
-        evaluate: async () => undefined,
+        // The text check is the only evaluation whose result is used.
+        evaluate: async (fn: { name: string }) =>
+          fn.name === "readPrintableText" ? printable(html) : undefined,
+        emulateMediaType: async (type: string | null) => {
+          mediaTypes.push(type);
+        },
+        pdf: async (options: Record<string, unknown>) => {
+          printOptions.push(options);
+          return printed(html);
+        },
         screenshot: async () => {
           await gate;
           return png;
@@ -80,6 +99,18 @@ function slides(count: number): Slide[] {
   }));
 }
 
+/** A one-page PDF at the 4:5 print size: text when `label` is set, else only a shape. */
+async function textPdf(label: string | null): Promise<Uint8Array> {
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([810, 1013.04]);
+  page.drawRectangle({ x: 0, y: 0, width: 810, height: 1013.04 });
+  if (label) {
+    page.drawText(label, { x: 10, y: 900, font: await doc.embedFont(StandardFonts.Helvetica) });
+  }
+  return doc.save();
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => (resolve = r));
@@ -101,6 +132,10 @@ beforeEach(async () => {
     .toBuffer();
   browsers = [];
   screenshotGate = null;
+  printable = () => ({ hasText: true, problem: null });
+  printed = (html) => textPdf(html.includes("Slide 2") ? "Second" : "Any");
+  printOptions = [];
+  mediaTypes = [];
   launch.mockReset();
   launch.mockImplementation(launchFake);
 });
@@ -233,5 +268,104 @@ describe("export browser", () => {
 
     expect(launch).toHaveBeenCalledTimes(1);
     expect(browsers[0].closes).toEqual([]);
+  });
+
+  describe("native PDF printing", () => {
+    it("prints every slide in the one shared browser and closes every page", async () => {
+      const { exportAllSlidePdfs, exportAllSlides } = await freshModule();
+
+      const [pdfs] = await Promise.all([
+        exportAllSlidePdfs(slides(5), "4:5"),
+        exportAllSlides(slides(2), "4:5"),
+      ]);
+
+      expect(pdfs).toHaveLength(5);
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(browsers[0].openPages).toBe(0);
+      expect(browsers[0].closes).toEqual([]);
+    });
+
+    it("prints as the screen shows it, at the slide's exact size, without margins", async () => {
+      const { exportSlidePdf } = await freshModule();
+
+      await exportSlidePdf(slides(1)[0], "4:5");
+
+      expect(mediaTypes).toEqual(["screen"]);
+      expect(printOptions).toEqual([
+        {
+          width: "1080px",
+          height: "1350px",
+          printBackground: true,
+          margin: { top: 0, right: 0, bottom: 0, left: 0 },
+          tagged: false,
+          outline: false,
+          timeout: 30_000,
+        },
+      ]);
+    });
+
+    it("returns each slide's PDF in slide order", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      const { hexText, readPdfPages } = await import("./helpers/export-files");
+      printed = (html) => textPdf(html.match(/Slide \d+/)![0]);
+
+      const pdfs = await exportAllSlidePdfs(slides(7), "4:5");
+
+      expect(pdfs).toHaveLength(7);
+      for (const [i, bytes] of pdfs.entries()) {
+        const [page] = await readPdfPages(bytes);
+        expect(page.operators).toContain(hexText(`Slide ${i + 1}`));
+      }
+    });
+
+    it.each([
+      ["filter", /^Slide 2 applies a CSS filter to text/],
+      ["backdrop-filter", /^Slide 2 has text inside a frosted-glass effect/],
+    ])("refuses text inside a %s before printing, naming the slide", async (problem, message) => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printable = (html) => ({
+        hasText: true,
+        problem: html.includes("Slide 2") ? problem : null,
+      });
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+      await expect(attempt).rejects.toThrow(message);
+      // The refused slide was never printed, and no page was left open.
+      expect(printOptions).toHaveLength(2);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("refuses a slide whose visible text reached the PDF only as a picture", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printed = (html) => textPdf(html.includes("Slide 2") ? null : "Fine");
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toMatchObject({ status: 422 });
+      await expect(attempt).rejects.toThrow(/^Slide 2 could only be printed as a picture/);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("accepts a slide with no text at all, such as a full-bleed photo", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printable = () => ({ hasText: false, problem: null });
+      printed = () => textPdf(null);
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).resolves.toHaveLength(2);
+    });
+
+    it("passes an unexpected print failure through unchanged for the route to report", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      printed = async () => {
+        throw new Error("Protocol error (Page.printToPDF): Printing failed");
+      };
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).rejects.toThrow(
+        /Page\.printToPDF/
+      );
+      expect(browsers[0].openPages).toBe(0);
+    });
   });
 });

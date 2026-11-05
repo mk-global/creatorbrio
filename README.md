@@ -100,9 +100,11 @@ The agent can also read this app's local data through its API, and it may fetch 
   - **Instagram · PNG ZIP**: one PNG per slide, in a ZIP.
     A carousel with a single slide, such as a reel cover, can also be downloaded as that one PNG with **Instagram · PNG**, no ZIP to extract.
   - **LinkedIn · PDF**: one PDF for a LinkedIn document post, with one page per slide in carousel order.
-    Each page is the slide's PNG, embedded losslessly on a page with the carousel's own aspect ratio, so the PDF shows exactly the same pixels as the PNGs.
+    Chromium prints each slide natively, so its text is real PDF text that can be selected, copied and searched, set in embedded subsets of the slide's fonts and sharp at any zoom.
+    CSS and SVG shapes stay vector graphics and photographs stay images, on a page with the carousel's own aspect ratio.
     4:5 portrait is the recommended LinkedIn format; 1:1 exports as square pages, and 9:16 exports as-is with a note that 4:5 generally displays better in LinkedIn's feed.
     A PDF larger than LinkedIn's 100 MB limit is refused with a message saying what to change.
+    A slide whose text cannot be printed as text is refused with a message naming the slide, rather than exported as a picture; see [Native PDF limits](#native-pdf-limits).
 
   While the design agent is still creating or changing slides, the Export button reads **Waiting for slides…** and is unavailable, so a download never captures a half-finished carousel.
   Every open editor tab notices within a couple of seconds, including one left open before the generation started.
@@ -230,18 +232,34 @@ The agent then works through the app's own API:
 
 `WebFetch` lets the agent research a topic while designing, and `Read` lets it open your reference images.
 
-### From slide to PNG
+### From slide to PNG and PDF
 
 Slides are stored as body-level HTML, without `<html>`, `<head>`, or `<!DOCTYPE>`.
 `wrapSlideHtml()` in [`src/lib/slide-html.ts`](./src/lib/slide-html.ts) wraps that body into a full document with font loading and fixed dimensions.
-The same function feeds both the sandboxed preview iframe and the Puppeteer export, which screenshots each slide at its exact pixel size.
+The same function feeds both the sandboxed preview iframe and the Puppeteer export, which renders each slide at its exact pixel size.
 
-`POST /api/carousels/[id]/export` packages those screenshots in one of three ways.
+`POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
-With `?format=pdf`, [`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) embeds the same PNGs into a PDF, one page per slide.
 With `?format=single-png`, a carousel with exactly one slide is answered with that slide's PNG itself, the same bytes the ZIP would contain.
+With `?format=pdf`, each slide is loaded in the same document, with the same inlined fonts and images and the same waits as for its PNG, and printed natively by Chromium to a one-page PDF with screen media, backgrounds and no margins.
+[`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) then copies those pages, unchanged, into one document in slide order.
 While a chat run is still writing the carousel's slides, every format is refused with status 409.
 Pages are sized at 0.75 pt per pixel (72 pt per inch over 96 CSS pixels per inch), so a 1080×1350 slide becomes an 810×1012.5 pt page, keeping its exact aspect ratio.
+Chromium rounds the paper up to a hundredth of an inch (a 4:5 slide prints 1013.04 pt tall), so each page is trimmed to the slide's exact size from its top edge, where the slide is drawn.
+
+#### Native PDF limits
+
+Chromium's PDF printer keeps text as text through transforms, opacity, clipping, masks, gradients, blend modes, outlined and gradient-filled text, and text and box shadows.
+Some effects behave differently on paper than on screen:
+
+- A blurred shadow (`box-shadow`, `text-shadow`) is embedded as a small image; the text it belongs to stays text.
+- A CSS or SVG `filter` on text, or on any element around it, turns that whole element into an image, and a `backdrop-filter` leaves the text inside it out of the PDF.
+  The export refuses such a slide with status 422, naming the slide and the effect, instead of shipping a picture of the text or losing it; a filter on an image alone is fine.
+  If a slide's visible text still reaches the PDF only as a picture, for any other reason, it is refused the same way.
+- Fonts are embedded as Type 3 subsets with Unicode maps, because Google serves the export variable fonts, which Chromium embeds that way.
+  Text stays selectable, searchable and vector-sharp; it is not standard TrueType embedding.
+- A character a web font does not contain is drawn from a system font, as in the preview and the PNG export, and embedded the same way.
+- The document has no tags or outline: pages are printed separately and merged, which cannot carry a document-level structure across.
 
 ## Slash commands and scripts
 

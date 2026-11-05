@@ -130,32 +130,6 @@ export async function readPdfPages(bytes: Uint8Array): Promise<PdfPageContents[]
 }
 
 /**
- * The transformation in effect when the page's image is painted: every `cm`
- * before `Do`, multiplied in order, as [a b c d e f]. An image drawn edge to
- * edge on a W x H page gives [W 0 0 H 0 0]: scaled to the page, not offset,
- * rotated or skewed.
- */
-export function imageTransform(operators: string): number[] {
-  let ctm = [1, 0, 0, 1, 0, 0];
-  const lines = operators.split("\n").map((l) => l.trim()).filter(Boolean);
-  for (const line of lines) {
-    if (line.endsWith(" Do")) return ctm;
-    if (!line.endsWith(" cm")) continue;
-    const [a, b, c, d, e, f] = line.split(/\s+/).slice(0, 6).map(Number);
-    const [A, B, C, D, E, F] = ctm;
-    ctm = [
-      a * A + b * C,
-      a * B + b * D,
-      c * A + d * C,
-      c * B + d * D,
-      e * A + f * C + E,
-      e * B + f * D + F,
-    ];
-  }
-  throw new Error("The page paints no image");
-}
-
-/**
  * Lists a ZIP's entries in archive order by reading its central directory.
  * Enough for the stored and deflated entries archiver writes.
  */
@@ -188,4 +162,52 @@ export function readZipEntries(zip: Buffer): { name: string; data: Buffer }[] {
     offset += 46 + nameLength + extraLength + commentLength;
   }
   return entries;
+}
+
+/**
+ * The page size Chromium prints a slide at: CSS pixels at 72/96 pt, with the
+ * paper rounded up to the next hundredth of an inch, as Chromium does (a 4:5
+ * slide, 1012.5 pt tall, prints 1013.04 pt tall).
+ */
+export function chromiumPrintSize(width: number, height: number): [number, number] {
+  const roundUp = (px: number) => (Math.ceil((px / 96) * 100 - 1e-9) / 100) * 72;
+  return [roundUp(width), roundUp(height)];
+}
+
+/** `label` as the hex string pdf-lib writes for it in a `Tj` with a standard font. */
+export function hexText(label: string): string {
+  return `<${Buffer.from(label, "latin1").toString("hex").toUpperCase()}> Tj`;
+}
+
+/**
+ * A one-page PDF shaped like Chromium's print of one slide: real text (the
+ * label, top left), a vector rectangle and, optionally, an image, on a page of
+ * the given size in points. Without a size it uses Chromium's rounded print
+ * size for a slide of `slideWidth` x `slideHeight` pixels.
+ */
+export async function slidePdf(
+  label: string,
+  options: {
+    slideWidth?: number;
+    slideHeight?: number;
+    size?: [number, number];
+    pages?: number;
+    png?: Buffer;
+  } = {}
+): Promise<Uint8Array> {
+  const { StandardFonts, rgb } = await import("pdf-lib");
+  const [width, height] =
+    options.size ?? chromiumPrintSize(options.slideWidth ?? 1080, options.slideHeight ?? 1350);
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  for (let p = 0; p < (options.pages ?? 1); p++) {
+    const page = doc.addPage([width, height]);
+    page.drawRectangle({ x: 40, y: 40, width: 200, height: 100, color: rgb(0.9, 0.3, 0.2) });
+    page.drawText(label, { x: 40, y: height - 80, size: 36, font });
+    if (options.png) {
+      const image = await doc.embedPng(options.png);
+      page.drawImage(image, { x: 300, y: 40, width: 200, height: 200 });
+    }
+  }
+  return doc.save();
 }

@@ -1,9 +1,11 @@
-import puppeteer, { type Browser } from "puppeteer";
+import puppeteer, { type Browser, type Page } from "puppeteer";
 import { readFile } from "fs/promises";
 import path from "path";
 import sharp from "sharp";
 import { wrapSlideHtml, extractFontFamilies, usesItalic } from "./slide-html";
 import { getInlinedFontCSS } from "./fonts";
+import { UnprintableSlideError, unprintableSlideError } from "./export-pdf";
+import { inspectPdf } from "./pdf-content";
 import type { Slide, AspectRatio } from "@/types/carousel";
 import { DIMENSIONS } from "@/types/carousel";
 
@@ -14,6 +16,7 @@ const MAX_EXPORTS_BEFORE_RESTART = 50;
 const PAGE_LOAD_TIMEOUT_MS = 20_000;
 const FONT_READY_TIMEOUT_MS = 10_000;
 const IMAGE_DECODE_TIMEOUT_MS = 10_000;
+const PDF_PRINT_TIMEOUT_MS = 30_000;
 
 /**
  * The one headless browser this server process renders exports with.
@@ -197,12 +200,20 @@ export function describeExportFailure(error: unknown): string {
 }
 
 /**
- * Export a single slide to PNG buffer.
+ * Loads one slide in a page of the shared export browser, exactly as every
+ * export sees it, and hands the page to `capture`. The page is closed
+ * afterwards whatever happens.
+ *
+ * The document is the shared `wrapSlideHtml()` contract with the slide's fonts
+ * and uploaded images inlined, sized to the carousel's dimensions, and every
+ * wait is bounded: a slide that cannot finish loading is still captured rather
+ * than hanging the export.
  */
-export async function exportSlide(
+async function withLoadedSlide<T>(
   slide: Slide,
-  aspectRatio: AspectRatio
-): Promise<Buffer> {
+  aspectRatio: AspectRatio,
+  capture: (page: Page) => Promise<T>
+): Promise<T> {
   const { width, height } = DIMENSIONS[aspectRatio];
 
   // Get inlined font CSS
@@ -219,7 +230,7 @@ export async function exportSlide(
     inlineFontCss: inlinedFontCss,
   });
 
-  const screenshotBuffer = await withBrowser(async (br) => {
+  return withBrowser(async (br) => {
     const page = await br.newPage();
 
     try {
@@ -272,14 +283,28 @@ export async function exportSlide(
           console.warn("[export] image decode wait failed; capturing anyway");
         });
 
-      return await page.screenshot({
-        type: "png",
-        clip: { x: 0, y: 0, width, height },
-      });
+      return await capture(page);
     } finally {
       await page.close().catch(() => {});
     }
   });
+}
+
+/**
+ * Export a single slide to PNG buffer.
+ */
+export async function exportSlide(
+  slide: Slide,
+  aspectRatio: AspectRatio
+): Promise<Buffer> {
+  const { width, height } = DIMENSIONS[aspectRatio];
+
+  const screenshotBuffer = await withLoadedSlide(slide, aspectRatio, (page) =>
+    page.screenshot({
+      type: "png",
+      clip: { x: 0, y: 0, width, height },
+    })
+  );
 
   // Post-process with Sharp: enforce sRGB
   const processed = await sharp(screenshotBuffer)
@@ -288,6 +313,139 @@ export async function exportSlide(
     .toBuffer();
 
   return processed;
+}
+
+/**
+ * How the slide's visible text would come out of a PDF print, read from the
+ * loaded page. Runs inside the page, so it must not reference anything outside
+ * itself.
+ *
+ * Chromium's PDF backend keeps text as text through transforms, opacity,
+ * clipping, masks, gradients, shadows and blend modes, but not through two
+ * effects: a `filter` (CSS or SVG) on the text or any element around it turns
+ * that whole element into an image, and a `backdrop-filter` around text leaves
+ * the text out of the PDF entirely. Text counts when it is painted: it has a
+ * box inside the slide and is neither hidden nor fully transparent.
+ */
+function readPrintableText(): {
+  hasText: boolean;
+  problem: "filter" | "backdrop-filter" | null;
+} {
+  const slideWidth = document.documentElement.clientWidth;
+  const slideHeight = document.documentElement.clientHeight;
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let hasText = false;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const element = node.parentElement;
+    if (!element || !node.textContent?.trim()) continue;
+    if (getComputedStyle(element).visibility !== "visible") continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const painted = Array.from(range.getClientRects()).some(
+      (r) =>
+        r.width > 0 &&
+        r.height > 0 &&
+        r.right > 0 &&
+        r.bottom > 0 &&
+        r.left < slideWidth &&
+        r.top < slideHeight
+    );
+    if (!painted) continue;
+    let opacity = 1;
+    let problem: "filter" | "backdrop-filter" | null = null;
+    for (let el: Element | null = element; el; el = el.parentElement) {
+      const style = getComputedStyle(el);
+      opacity *= Number(style.opacity);
+      if (style.backdropFilter && style.backdropFilter !== "none") {
+        problem = "backdrop-filter";
+      } else if (!problem && style.filter && style.filter !== "none") {
+        problem = "filter";
+      }
+    }
+    if (opacity === 0) continue;
+    if (problem) return { hasText: true, problem };
+    hasText = true;
+  }
+  return { hasText, problem: null };
+}
+
+/**
+ * Prints one slide to a one-page native PDF with Chromium: text stays text
+ * with its fonts embedded, CSS and SVG graphics stay vector wherever Chromium
+ * can draw them as vectors, and images stay images.
+ *
+ * The page is printed as the screen shows it (screen media, backgrounds, no
+ * margins) at the slide's exact size. A slide whose text could not be printed
+ * as text is refused with `UnprintableSlideError` instead of being flattened.
+ */
+export async function exportSlidePdf(
+  slide: Slide,
+  aspectRatio: AspectRatio
+): Promise<Uint8Array> {
+  const { width, height } = DIMENSIONS[aspectRatio];
+
+  return withLoadedSlide(slide, aspectRatio, async (page) => {
+    // Printing switches to print media by default, which could apply
+    // `@media print` rules the preview never shows.
+    await page.emulateMediaType("screen");
+
+    const text = await page.evaluate(readPrintableText);
+    if (text.problem) throw new UnprintableSlideError(text.problem);
+
+    const pdf = await page.pdf({
+      width: `${width}px`,
+      height: `${height}px`,
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      // A slide is one page; merging cannot carry a document-level structure
+      // tree or outline across documents, so neither is generated.
+      tagged: false,
+      outline: false,
+      timeout: PDF_PRINT_TIMEOUT_MS,
+    });
+
+    // Defence against effects not covered above: visible text must reach the
+    // PDF as text, never only as an image of the slide.
+    if (text.hasText) {
+      const [content] = await inspectPdf(pdf);
+      if (!content || content.textShows === 0) {
+        throw new UnprintableSlideError("flattened");
+      }
+    }
+    return pdf;
+  });
+}
+
+/**
+ * Prints every slide of a carousel to its own one-page PDF, in slide order,
+ * up to 3 at a time like the PNG export. A slide that cannot be printed as text
+ * stops the export with a message naming that slide.
+ */
+export async function exportAllSlidePdfs(
+  slides: Slide[],
+  aspectRatio: AspectRatio
+): Promise<Uint8Array[]> {
+  const results: Uint8Array[] = [];
+  const CONCURRENCY = 3;
+
+  for (let i = 0; i < slides.length; i += CONCURRENCY) {
+    const batch = slides.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map((slide) => exportSlidePdf(slide, aspectRatio))
+    );
+    for (const [batchIdx, outcome] of settled.entries()) {
+      if (outcome.status === "fulfilled") continue;
+      if (outcome.reason instanceof UnprintableSlideError) {
+        throw unprintableSlideError(i + batchIdx + 1, outcome.reason.reason);
+      }
+      throw outcome.reason;
+    }
+    results.push(
+      ...settled.map((o) => (o as PromiseFulfilledResult<Uint8Array>).value)
+    );
+  }
+
+  return results;
 }
 
 /**

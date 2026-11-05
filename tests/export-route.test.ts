@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AspectRatio, Carousel, Slide } from "@/types/carousel";
 import { DIMENSIONS } from "@/types/carousel";
-import { pdfPageSize } from "@/lib/export-pdf";
+import { pdfPageSize, unprintableSlideError } from "@/lib/export-pdf";
+import { inspectPdf } from "@/lib/pdf-content";
 import {
   detailedSlidePng,
+  hexText,
   readPdfPages,
+  slidePdf,
   readZipEntries,
-  rgbPixels,
   syntheticSlidePng,
 } from "./helpers/export-files";
 
@@ -19,10 +21,11 @@ vi.mock("@/lib/carousels", () => ({ getCarousel: vi.fn() }));
 vi.mock("@/lib/export-slides", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/export-slides")>()),
   exportAllSlides: vi.fn(),
+  exportAllSlidePdfs: vi.fn(),
 }));
 
 const { getCarousel } = await import("@/lib/carousels");
-const { exportAllSlides } = await import("@/lib/export-slides");
+const { exportAllSlides, exportAllSlidePdfs } = await import("@/lib/export-slides");
 const { POST } = await import("@/app/api/carousels/[id]/export/route");
 const { beginGeneration, acceptInterruptedSlides } = await import(
   "@/lib/generation-status"
@@ -44,6 +47,7 @@ afterAll(async () => {
 
 const getCarouselMock = vi.mocked(getCarousel);
 const exportAllSlidesMock = vi.mocked(exportAllSlides);
+const exportAllSlidePdfsMock = vi.mocked(exportAllSlidePdfs);
 
 function carousel(aspectRatio: AspectRatio, slideCount: number): Carousel {
   const slides: Slide[] = Array.from({ length: slideCount }, (_, i) => ({
@@ -94,6 +98,7 @@ function exportRequest(query = "") {
 beforeEach(() => {
   getCarouselMock.mockReset();
   exportAllSlidesMock.mockReset();
+  exportAllSlidePdfsMock.mockReset();
 });
 
 describe("PNG ZIP export (unchanged)", () => {
@@ -151,12 +156,21 @@ describe("PNG ZIP export (unchanged)", () => {
   });
 });
 
+/** Stands in for Chromium's native print: one text page per slide, in order. */
+async function printedPdfs(aspectRatio: AspectRatio, count: number) {
+  const { width, height } = DIMENSIONS[aspectRatio];
+  return Promise.all(
+    Array.from({ length: count }, (_, i) =>
+      slidePdf(`Slide ${i + 1}`, { slideWidth: width, slideHeight: height })
+    )
+  );
+}
+
 describe("LinkedIn PDF export", () => {
   for (const ratio of ["4:5", "1:1", "9:16"] as AspectRatio[]) {
-    it(`returns one ${ratio} PDF page per rendered slide, in order`, async () => {
-      const rendered = await renderedPngs(ratio, 4);
+    it(`returns one ${ratio} PDF page per printed slide, in order, with its text`, async () => {
       getCarouselMock.mockResolvedValue(carousel(ratio, 4));
-      exportAllSlidesMock.mockResolvedValue(rendered);
+      exportAllSlidePdfsMock.mockResolvedValue(await printedPdfs(ratio, 4));
 
       const response = await exportRequest("?format=pdf");
 
@@ -166,43 +180,69 @@ describe("LinkedIn PDF export", () => {
         'attachment; filename="carousel-Launch_week__v2_.pdf"'
       );
 
-      const pages = await readPdfPages(new Uint8Array(await response.arrayBuffer()));
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const pages = await readPdfPages(bytes);
       expect(pages).toHaveLength(4);
       for (const [i, page] of pages.entries()) {
-        expect({ width: page.width, height: page.height }).toEqual(
-          pdfPageSize(ratio)
-        );
-        expect(
-          page.images[0].pixels.equals(await rgbPixels(rendered[i].buffer))
-        ).toBe(true);
+        expect({ width: page.width, height: page.height }).toEqual(pdfPageSize(ratio));
+        expect(page.operators).toContain(hexText(`Slide ${i + 1}`));
+        expect(page.images).toEqual([]);
+      }
+      for (const content of await inspectPdf(bytes)) {
+        expect(content.textShows).toBeGreaterThan(0);
       }
     });
   }
 
-  it("renders the slides once, through the same renderer as the ZIP", async () => {
+  it("prints the slides natively once and never renders PNGs for a PDF", async () => {
     const c = carousel("4:5", 2);
     getCarouselMock.mockResolvedValue(c);
-    exportAllSlidesMock.mockResolvedValue(await renderedPngs("4:5", 2));
+    exportAllSlidePdfsMock.mockResolvedValue(await printedPdfs("4:5", 2));
 
-    await exportRequest("?format=pdf");
+    const response = await exportRequest("?format=pdf");
 
-    expect(exportAllSlidesMock).toHaveBeenCalledTimes(1);
-    expect(exportAllSlidesMock).toHaveBeenCalledWith(c.slides, "4:5");
+    expect(response.status).toBe(200);
+    expect(exportAllSlidePdfsMock).toHaveBeenCalledTimes(1);
+    expect(exportAllSlidePdfsMock).toHaveBeenCalledWith(c.slides, "4:5");
+    expect(exportAllSlidesMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a slide that cannot be printed as text, naming the slide", async () => {
+    getCarouselMock.mockResolvedValue(carousel("4:5", 3));
+    exportAllSlidePdfsMock.mockRejectedValue(unprintableSlideError(2, "backdrop-filter"));
+
+    const response = await exportRequest("?format=pdf");
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toMatch(/^Slide 2 has text inside a frosted-glass effect/);
+  });
+
+  it("answers an unexpected print failure with the safe export message", async () => {
+    getCarouselMock.mockResolvedValue(carousel("4:5", 2));
+    exportAllSlidePdfsMock.mockRejectedValue(
+      Object.assign(new Error("Navigation timeout of 30000 ms exceeded"), { name: "TimeoutError" })
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await exportRequest("?format=pdf");
+
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toMatch(/^A slide took too long to render and the export timed out\./);
+    expect(body.error).not.toMatch(/30000|Navigation/);
+    consoleError.mockRestore();
   });
 
   it(
     "refuses a PDF above LinkedIn's 100 MB limit with an actionable error",
     async () => {
-      // 20 story slides of incompressible detail is the largest carousel
-      // CreatorBrio allows, and it does not fit in a LinkedIn document.
-      const noise = await detailedSlidePng(1080, 1920, 11);
+      // 20 story slides each carrying an incompressible photo is the largest
+      // carousel CreatorBrio allows, and it does not fit in a LinkedIn document.
+      const photo = await detailedSlidePng(1080, 1920, 11);
+      const page = await slidePdf("Story", { slideWidth: 1080, slideHeight: 1920, png: photo });
       getCarouselMock.mockResolvedValue(carousel("9:16", 20));
-      exportAllSlidesMock.mockResolvedValue(
-        Array.from({ length: 20 }, (_, i) => ({
-          name: `slide-${i + 1}.png`,
-          buffer: noise,
-        }))
-      );
+      exportAllSlidePdfsMock.mockResolvedValue(Array.from({ length: 20 }, () => page));
 
       const response = await exportRequest("?format=pdf");
 
@@ -285,6 +325,7 @@ describe("single PNG download", () => {
       /only available for a carousel with one slide.*PNG ZIP/
     );
     expect(exportAllSlidesMock).not.toHaveBeenCalled();
+      expect(exportAllSlidePdfsMock).not.toHaveBeenCalled();
   });
 
   it("leaves a one-slide ZIP and PDF as they were", async () => {
@@ -298,13 +339,12 @@ describe("single PNG download", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].data.equals(rendered[0].buffer)).toBe(true);
 
+    exportAllSlidePdfsMock.mockResolvedValue(await printedPdfs("1:1", 1));
     const pdf = await exportRequest("?format=pdf");
     expect(pdf.headers.get("Content-Type")).toBe("application/pdf");
     const pages = await readPdfPages(new Uint8Array(await pdf.arrayBuffer()));
     expect(pages).toHaveLength(1);
-    expect(
-      pages[0].images[0].pixels.equals(await rgbPixels(rendered[0].buffer))
-    ).toBe(true);
+    expect(pages[0].operators).toContain(hexText("Slide 1"));
   });
 });
 
@@ -321,6 +361,7 @@ describe("export during generation", () => {
             "Slides are still being generated. Export will be available as soon as generation finishes.",
         });
         expect(exportAllSlidesMock).not.toHaveBeenCalled();
+      expect(exportAllSlidePdfsMock).not.toHaveBeenCalled();
       } finally {
         await end("completed");
       }
@@ -372,6 +413,7 @@ describe("export after an interrupted generation", () => {
         expect(body.interrupted.reason).toBe(reason);
       }
       expect(exportAllSlidesMock).not.toHaveBeenCalled();
+      expect(exportAllSlidePdfsMock).not.toHaveBeenCalled();
 
       // The user confirms the slides as they are; nothing about them changes.
       expect(await acceptInterruptedSlides("c1")).toBe(true);
@@ -400,6 +442,7 @@ describe("export errors", () => {
       /Unknown export format/
     );
     expect(exportAllSlidesMock).not.toHaveBeenCalled();
+      expect(exportAllSlidePdfsMock).not.toHaveBeenCalled();
   });
 
   for (const query of ["", "?format=pdf", "?format=single-png"]) {
@@ -408,6 +451,7 @@ describe("export errors", () => {
       const response = await exportRequest(query);
       expect(response.status).toBe(404);
       expect(exportAllSlidesMock).not.toHaveBeenCalled();
+      expect(exportAllSlidePdfsMock).not.toHaveBeenCalled();
     });
 
     it(`refuses an empty carousel (${query || "no format"})`, async () => {
@@ -416,13 +460,14 @@ describe("export errors", () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: "No slides to export" });
       expect(exportAllSlidesMock).not.toHaveBeenCalled();
+      expect(exportAllSlidePdfsMock).not.toHaveBeenCalled();
     });
 
     it(`reports a render failure safely (${query || "no format"})`, async () => {
       getCarouselMock.mockResolvedValue(carousel("4:5", 1));
-      exportAllSlidesMock.mockRejectedValue(
-        new Error("Failed to launch the browser process! /home/x/chrome")
-      );
+      const launchFailure = new Error("Failed to launch the browser process! /home/x/chrome");
+      exportAllSlidesMock.mockRejectedValue(launchFailure);
+      exportAllSlidePdfsMock.mockRejectedValue(launchFailure);
       const spy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const response = await exportRequest(query);
@@ -435,14 +480,9 @@ describe("export errors", () => {
     });
   }
 
-  it("reports a slide rendered at the wrong size as a failure, not a distorted page", async () => {
+  it("reports a slide printed at the wrong size as a failure, not a distorted page", async () => {
     getCarouselMock.mockResolvedValue(carousel("4:5", 1));
-    exportAllSlidesMock.mockResolvedValue([
-      {
-        name: "slide-1.png",
-        buffer: await syntheticSlidePng(1080, 1080, { r: 0, g: 0, b: 0 }),
-      },
-    ]);
+    exportAllSlidePdfsMock.mockResolvedValue(await printedPdfs("1:1", 1));
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const response = await exportRequest("?format=pdf");

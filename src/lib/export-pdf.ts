@@ -48,63 +48,125 @@ function formatMegabytes(bytes: number): string {
 }
 
 /**
- * pdf-lib decodes and compresses images synchronously. Handing the event loop
- * back between slides keeps a large export from stalling the rest of the
- * server, such as a chat response that is streaming at the same time.
+ * Chromium sizes the paper in hundredths of an inch, rounding up, so a printed
+ * slide can come out up to 0.72 pt (0.01 in) larger than the slide in each
+ * direction: a 4:5 slide, 14.0625 in tall, prints on a page 14.07 in tall
+ * (1013.04 pt for 1012.5 pt). A page further off than that was not printed at
+ * the slide's size, so it is refused rather than cropped or stretched.
+ */
+const MAX_PRINT_ROUNDING_PT = 0.75;
+
+/**
+ * Copying pages is synchronous work in pdf-lib. Handing the event loop back
+ * between slides keeps a large export from stalling the rest of the server,
+ * such as a chat response that is streaming at the same time.
  */
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
 /**
- * Packages already-rendered slide PNGs into one PDF, one slide per page, in
- * the order given.
- *
- * Each PNG is embedded losslessly and drawn edge to edge on a page with the
- * slide's own aspect ratio, so the page shows exactly the pixels the PNG export
- * contains: nothing is re-rendered, cropped, scaled out of proportion or added.
+ * Why a slide cannot be printed with its text as real PDF text. Each reason
+ * names the CSS that causes it, so the user knows what to change.
  */
-export async function buildSlidesPdf(
-  pngs: Buffer[],
+export type UnprintableSlideReason = "filter" | "backdrop-filter" | "flattened";
+
+/**
+ * Raised by the slide renderer for one slide; `unprintableSlideError` turns it
+ * into the message for the user once the slide's number is known.
+ */
+export class UnprintableSlideError extends Error {
+  constructor(readonly reason: UnprintableSlideReason) {
+    super(`Slide cannot be printed as text: ${reason}`);
+    this.name = "UnprintableSlideError";
+  }
+}
+
+/** The user-facing refusal for slide `slideNumber` (1-based). */
+export function unprintableSlideError(
+  slideNumber: number,
+  reason: UnprintableSlideReason
+): PdfExportError {
+  const advice = {
+    filter:
+      "applies a CSS filter to text, which a PDF can only store as a picture of that text, so it could not be selected or searched. " +
+      "Ask the design agent to remove the filter from the text (a text-shadow is fine)",
+    "backdrop-filter":
+      "has text inside a frosted-glass effect (backdrop-filter), which PDF printing leaves out. " +
+      "Ask the design agent to use a plain semi-transparent background instead",
+    flattened:
+      "could only be printed as a picture, so its text could not be selected or searched. " +
+      "Ask the design agent to simplify the slide's visual effects",
+  }[reason];
+  return new PdfExportError(
+    `Slide ${slideNumber} ${advice}, then export the PDF again. The PNG export is not affected.`,
+    422
+  );
+}
+
+/**
+ * Combines one-page slide PDFs, printed natively by Chromium, into one
+ * document: one page per slide, in the order given.
+ *
+ * Pages are copied with their content streams, fonts and images as they are,
+ * so text stays text and vector graphics stay vectors; nothing is re-rendered
+ * or rasterised. Each page is checked to be exactly one page at the slide's
+ * size, then trimmed to that size from its top-left corner, where Chromium
+ * draws the slide, removing the sliver its paper-size rounding adds.
+ */
+export async function mergeSlidePdfs(
+  slidePdfs: Uint8Array[],
   aspectRatio: AspectRatio,
   options: { title?: string; maxBytes?: number } = {}
 ): Promise<Uint8Array> {
   const maxBytes = options.maxBytes ?? LINKEDIN_MAX_PDF_BYTES;
 
-  if (pngs.length === 0) {
+  if (slidePdfs.length === 0) {
     throw new PdfExportError("There are no slides to put in the PDF.", 400);
   }
-  if (pngs.length > LINKEDIN_MAX_PDF_PAGES) {
+  if (slidePdfs.length > LINKEDIN_MAX_PDF_PAGES) {
     throw new PdfExportError(
-      `LinkedIn accepts at most ${LINKEDIN_MAX_PDF_PAGES} pages in a document, and this carousel has ${pngs.length} slides.`,
+      `LinkedIn accepts at most ${LINKEDIN_MAX_PDF_PAGES} pages in a document, and this carousel has ${slidePdfs.length} slides.`,
       422
     );
   }
 
-  const expected = DIMENSIONS[aspectRatio];
-  const page = pdfPageSize(aspectRatio);
+  const expected = pdfPageSize(aspectRatio);
 
-  const pdf = await PDFDocument.create();
+  // pdf-lib would otherwise stamp itself as the producer when saving.
+  const pdf = await PDFDocument.create({ updateMetadata: false });
   if (options.title) pdf.setTitle(options.title);
   pdf.setCreator("CreatorBrio");
   pdf.setProducer("CreatorBrio");
+  const now = new Date();
+  pdf.setCreationDate(now);
+  pdf.setModificationDate(now);
 
-  for (const [index, png] of pngs.entries()) {
-    const image = await pdf.embedPng(png);
-    // Every slide is rendered at the carousel's dimensions. A PNG of any other
-    // size would have to be stretched or cropped to fill the page, so refuse it
-    // rather than distort the slide.
-    if (image.width !== expected.width || image.height !== expected.height) {
+  for (const [index, bytes] of slidePdfs.entries()) {
+    const source = await PDFDocument.load(bytes);
+    const pageCount = source.getPageCount();
+    if (pageCount !== 1) {
+      throw new Error(`Slide ${index + 1} printed to ${pageCount} pages, expected 1`);
+    }
+    const [page] = await pdf.copyPages(source, [0]);
+    const box = page.getMediaBox();
+    const extraWidth = box.width - expected.width;
+    const extraHeight = box.height - expected.height;
+    if (
+      extraWidth < -0.01 ||
+      extraHeight < -0.01 ||
+      extraWidth > MAX_PRINT_ROUNDING_PT ||
+      extraHeight > MAX_PRINT_ROUNDING_PT
+    ) {
       throw new Error(
-        `Slide ${index + 1} rendered at ${image.width}x${image.height}, expected ${expected.width}x${expected.height}`
+        `Slide ${index + 1} printed at ${box.width}x${box.height} pt, expected ${expected.width}x${expected.height}`
       );
     }
-    pdf
-      .addPage([page.width, page.height])
-      .drawImage(image, { x: 0, y: 0, width: page.width, height: page.height });
-    // Compress this slide now rather than all of them at once inside save(),
-    // which also releases its decoded pixels before the next slide.
-    await image.embed();
+    // PDF y runs upwards, so the slide's top edge is the box's top edge.
+    const top = box.y + box.height;
+    page.setMediaBox(box.x, top - expected.height, expected.width, expected.height);
+    page.setCropBox(box.x, top - expected.height, expected.width, expected.height);
+    pdf.addPage(page);
     await yieldToEventLoop();
   }
 

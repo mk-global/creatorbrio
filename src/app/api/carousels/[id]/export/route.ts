@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import archiver from "archiver";
 import { getCarousel } from "@/lib/carousels";
-import { exportAllSlides, describeExportFailure } from "@/lib/export-slides";
-import { buildSlidesPdf, PdfExportError } from "@/lib/export-pdf";
+import {
+  exportAllSlides,
+  exportAllSlidePdfs,
+  describeExportFailure,
+} from "@/lib/export-slides";
+import { mergeSlidePdfs, PdfExportError } from "@/lib/export-pdf";
 import { parseExportFormat } from "@/lib/export-formats";
 import {
   GENERATION_IN_PROGRESS_ERROR,
@@ -87,6 +91,22 @@ export async function POST(
   const fileBase = `carousel-${carousel.name.replace(/[^a-zA-Z0-9-_]/g, "_")}`;
 
   try {
+    if (format === "pdf") {
+      // Printed natively from the same slide documents as the PNGs, so text
+      // stays selectable text instead of a picture of it.
+      const pdfBytes = await mergeSlidePdfs(
+        await exportAllSlidePdfs(carousel.slides, carousel.aspectRatio),
+        carousel.aspectRatio,
+        { title: carousel.name }
+      );
+      return new Response(new Uint8Array(pdfBytes), {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `attachment; filename="${fileBase}.pdf"`,
+        },
+      });
+    }
+
     // Export all slides to PNG buffers
     const pngBuffers = await exportAllSlides(
       carousel.slides,
@@ -102,22 +122,6 @@ export async function POST(
         headers: {
           "Content-Type": "image/png",
           "Content-Disposition": `attachment; filename="${fileBase}.png"`,
-        },
-      });
-    }
-
-    if (format === "pdf") {
-      // The PDF pages are the PNGs rendered above, so both formats show the
-      // same pixels.
-      const pdfBytes = await buildSlidesPdf(
-        pngBuffers.map(({ buffer }) => buffer),
-        carousel.aspectRatio,
-        { title: carousel.name }
-      );
-      return new Response(new Uint8Array(pdfBytes), {
-        headers: {
-          "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${fileBase}.pdf"`,
         },
       });
     }
