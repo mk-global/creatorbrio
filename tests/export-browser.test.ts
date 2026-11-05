@@ -32,6 +32,12 @@ let printed: (html: string) => Promise<Uint8Array>;
 /** The options each print was called with. */
 let printOptions: Record<string, unknown>[];
 let mediaTypes: (string | null)[];
+/** The calls each page received that set up how the slide loads and prints, in order. */
+let pageSetup: string[][];
+/** Stylesheets added to pages after loading. */
+let addedStyles: string[];
+/** Whether the loaded page's body is exactly the slide's box. */
+let bodyIsSlide: boolean;
 /** When set, pages opened from now on wait for it before their screenshot. */
 let screenshotGate: Promise<void> | null;
 
@@ -46,15 +52,32 @@ function fakeBrowser(): FakeBrowser {
       const gate = screenshotGate;
       let open = true;
       let html = "";
+      const setup: string[] = [];
+      pageSetup.push(setup);
       return {
         setViewport: async () => {},
+        setJavaScriptEnabled: async (enabled: boolean) => {
+          setup.push(`scripts:${enabled}`);
+        },
         setContent: async (content: string) => {
+          setup.push("load");
           html = content;
+        },
+        addStyleTag: async ({ content }: { content: string }) => {
+          setup.push("style");
+          addedStyles.push(content);
         },
         waitForFunction: async () => {},
         // The text check is the only evaluation whose result is used.
-        evaluate: async (fn: { name: string }) =>
-          fn.name === "readPrintableText" ? printable(html) : undefined,
+        evaluate: async (fn: { name: string }) => {
+          if (fn.name === "bodyIsTheSlide") {
+            setup.push("measure");
+            return bodyIsSlide;
+          }
+          if (fn.name !== "readPrintableText") return undefined;
+          setup.push("check");
+          return printable(html);
+        },
         emulateMediaType: async (type: string | null) => {
           mediaTypes.push(type);
         },
@@ -136,6 +159,9 @@ beforeEach(async () => {
   printed = (html) => textPdf(html.includes("Slide 2") ? "Second" : "Any");
   printOptions = [];
   mediaTypes = [];
+  pageSetup = [];
+  addedStyles = [];
+  bodyIsSlide = true;
   launch.mockReset();
   launch.mockImplementation(launchFake);
 });
@@ -304,6 +330,41 @@ describe("export browser", () => {
       ]);
     });
 
+    it("loads the slide without its scripts, as the preview does, and checks it with the print-only rules applied", async () => {
+      const { exportSlidePdf } = await freshModule();
+
+      await exportSlidePdf(slides(1)[0], "4:5");
+
+      expect(pageSetup).toEqual([["scripts:false", "load", "style", "measure", "style", "check"]]);
+      const [pageCss, clipCss] = addedStyles;
+      // The slide's own page rules and breaks cannot change the paper...
+      expect(pageCss).toMatch(/@page \{ size: 1080px 1350px !important; margin: 0 !important;/);
+      expect(pageCss).toMatch(/@top-center \{ content: none !important; \}/);
+      expect(pageCss).toMatch(/break-before: auto !important/);
+      // ...and the body clips print layout where the screen clips it.
+      expect(clipCss).toBe("body { position: relative !important; contain: size layout paint !important; }");
+    });
+
+    it("prints a slide that resizes its body without the clip, which would change its background", async () => {
+      const { exportSlidePdf } = await freshModule();
+      bodyIsSlide = false;
+
+      await exportSlidePdf(slides(1)[0], "4:5");
+
+      expect(pageSetup).toEqual([["scripts:false", "load", "style", "measure", "check"]]);
+      expect(addedStyles).toHaveLength(1);
+      expect(addedStyles[0]).not.toMatch(/contain/);
+    });
+
+    it("leaves the PNG export's loading exactly as it was", async () => {
+      const { exportSlide } = await freshModule();
+
+      await exportSlide(slides(1)[0], "4:5");
+
+      expect(pageSetup).toEqual([["load"]]);
+      expect(addedStyles).toEqual([]);
+    });
+
     it("returns each slide's PDF in slide order", async () => {
       const { exportAllSlidePdfs } = await freshModule();
       const { hexText, readPdfPages } = await import("./helpers/export-files");
@@ -321,7 +382,9 @@ describe("export browser", () => {
     it.each([
       ["filter", /^Slide 2 applies a CSS filter to text/],
       ["backdrop-filter", /^Slide 2 has text inside a frosted-glass effect/],
-    ])("refuses text inside a %s before printing, naming the slide", async (problem, message) => {
+      ["box-reflect", /^Slide 2 reflects text \(-webkit-box-reflect\)/],
+      ["overflow", /^Slide 2 has content reaching past its edges/],
+    ])("refuses a slide whose check reports %s before printing, naming the slide", async (problem, message) => {
       const { exportAllSlidePdfs } = await freshModule();
       printable = (html) => ({
         hasText: true,

@@ -7,6 +7,7 @@ import { TEN_PAGE_CAROUSEL } from "./fixtures/ten-page-carousel";
 import {
   changedBlocks,
   chromiumPath,
+  MAX_CHANGED_BLOCKS,
   pageFonts,
   pageWords,
   pdfImages,
@@ -24,14 +25,6 @@ import {
 // renderer and compared page by page with the PNG export of the same slides.
 // Needs Chromium and poppler, like export-pdf-render.test.ts.
 const chromium = chromiumPath();
-
-/**
- * Share of 8 x 8 blocks allowed to differ between a PDF page, as poppler draws
- * it, and the PNG export. Matching pages measure 0 to 0.013% and the smallest
- * real change tried measures 0.3% (see `changedBlocks`); 0.1% sits well clear
- * of both.
- */
-const MAX_CHANGED_BLOCKS = 0.001;
 
 /** The text of slide HTML, as the words a reader should find on its page. */
 function slideText(html: string): string {
@@ -118,14 +111,16 @@ describe.skipIf(!chromium || !pdfTools)("a ten-page LinkedIn document", () => {
     });
   });
 
-  it("embeds only the brand fonts, as subsets with Unicode maps", async () => {
+  it("embeds only the brand fonts, as TrueType subsets with Unicode maps", async () => {
     await withPdfFile(pdf, (file) => {
       for (let p = 1; p <= 10; p++) {
         const fonts = pageFonts(file, p);
         expect(fonts.length).toBeGreaterThan(0);
         for (const font of fonts) {
-          expect(font).toMatchObject({ embedded: true, subset: true, unicode: true });
-          expect(font.name).toMatch(/^[A-Z]{6}\+(CormorantGaramond|Inter)-/);
+          expect(font).toMatchObject({ type: "CID TrueType", embedded: true, subset: true, unicode: true });
+          // Google names some static cuts by their source master, such as
+          // "CormorantGaramondLight-SemiBold".
+          expect(font.name).toMatch(/^[A-Z]{6}\+(CormorantGaramond\w*|Inter\w*)-/);
         }
       }
     });

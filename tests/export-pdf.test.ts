@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { PDFDocument } from "pdf-lib";
+import { describe, it, expect, vi } from "vitest";
+import { PDFDocument, PDFName, PDFString } from "pdf-lib";
 import {
   mergeSlidePdfs,
   unprintableSlideError,
@@ -157,23 +157,50 @@ describe("mergeSlidePdfs", () => {
   });
 
   it("refuses a slide printed at another size rather than cropping or stretching it", async () => {
+    const fine = await slidePdf("Fine");
     const square = await slidePdf("Square", { slideWidth: 1080, slideHeight: 1080 });
-    await expect(mergeSlidePdfs([square], "4:5")).rejects.toThrow(
-      /Slide 1 printed at 810x810 pt, expected 810x1012.5/
-    );
+    const attempt = mergeSlidePdfs([fine, square], "4:5");
+    await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+    await expect(attempt).rejects.toThrow(/^Slide 2 did not print as a single page at the slide's size\./);
     // More than Chromium's 0.01 in rounding is a different size, not rounding.
     const tooTall = await slidePdf("Too tall", { size: [810, 1012.5 + 0.8] });
-    await expect(mergeSlidePdfs([tooTall], "4:5")).rejects.toThrow(/printed at/);
+    await expect(mergeSlidePdfs([tooTall], "4:5")).rejects.toThrow(/^Slide 1 did not print as a single page/);
     const tooShort = await slidePdf("Too short", { size: [810, 1012] });
-    await expect(mergeSlidePdfs([tooShort], "4:5")).rejects.toThrow(/printed at/);
+    await expect(mergeSlidePdfs([tooShort], "4:5")).rejects.toThrow(/^Slide 1 did not print as a single page/);
   });
 
   it("refuses a slide that printed to more than one page instead of dropping pages", async () => {
     const two = await slidePdf("Overflow", { pages: 2 });
     const one = await slidePdf("Fine");
-    await expect(mergeSlidePdfs([one, two], "4:5")).rejects.toThrow(
-      /Slide 2 printed to 2 pages, expected 1/
+    const attempt = mergeSlidePdfs([one, two], "4:5");
+    await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+    await expect(attempt).rejects.toThrow(/^Slide 2 did not print as a single page at the slide's size\./);
+  });
+
+  it("leaves out the links Chromium turned into clickable areas, which the preview never shows", async () => {
+    const source = await PDFDocument.load(await slidePdf("Linked"));
+    const links = ["https://phish.example/", "javascript:alert(1)", "file:///etc/passwd"].map((uri) =>
+      source.context.register(
+        source.context.obj({
+          Type: "Annot",
+          Subtype: "Link",
+          Rect: [0, 0, 810, 1013.04],
+          A: { S: "URI", URI: PDFString.of(uri) },
+        })
+      )
     );
+    source.getPage(0).node.set(PDFName.of("Annots"), source.context.obj(links));
+    const linked = await source.save({ useObjectStreams: false });
+    expect(Buffer.from(linked).toString("latin1")).toContain("/URI");
+
+    const merged = await mergeSlidePdfs([linked], "4:5");
+
+    const text = Buffer.from(merged).toString("latin1");
+    expect(text).not.toMatch(/\/Annots|\/URI|\/Link|javascript:|phish\.example|file:/);
+    const [page] = (await PDFDocument.load(merged)).getPages();
+    expect(page.node.get(PDFName.of("Annots"))).toBeUndefined();
+    // The page's own content is untouched.
+    expect((await inspectPdf(merged))[0].textShows).toBeGreaterThan(0);
   });
 
   it("refuses data that is not a PDF", async () => {
@@ -218,12 +245,28 @@ describe("mergeSlidePdfs", () => {
   it("enforces the size limit with an actionable message", async () => {
     const photo = await detailedSlidePng(1080, 1350, 3);
     const slide = await slidePdf("Detailed", { png: photo });
-    const attempt = mergeSlidePdfs([slide], "4:5", { maxBytes: 1_000_000 });
+    // Just under the slide's own size: only the merged file shows it is over.
+    const attempt = mergeSlidePdfs([slide], "4:5", { maxBytes: slide.length - 1 });
     await expect(attempt).rejects.toBeInstanceOf(PdfExportError);
     await expect(attempt).rejects.toMatchObject({ status: 422 });
     await expect(attempt).rejects.toThrow(
-      /The PDF is \d+\.\d MB, above LinkedIn's 1\.0 MB limit\. Remove slides or use simpler, smaller images/
+      /^The PDF is \d+\.\d MB, above LinkedIn's \d+\.\d MB limit\. Remove slides or use simpler, smaller images/
     );
+  });
+
+  it("refuses before merging when the printed slides alone are already over the limit", async () => {
+    const photo = await detailedSlidePng(1080, 1350, 3);
+    const slides = await Promise.all([1, 2, 3].map((n) => slidePdf(`Detailed ${n}`, { png: photo })));
+    const printed = slides.reduce((total, s) => total + s.length, 0);
+    const load = vi.spyOn(PDFDocument, "load");
+    try {
+      const attempt = mergeSlidePdfs(slides, "4:5", { maxBytes: Math.floor(printed / 2) });
+      await expect(attempt).rejects.toMatchObject({ name: "PdfExportError", status: 422 });
+      await expect(attempt).rejects.toThrow(/^The PDF would be over \d+\.\d MB, above LinkedIn's \d+\.\d MB limit\./);
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+    }
   });
 
   it("uses LinkedIn's document limits by default", async () => {
@@ -243,6 +286,9 @@ describe("refusing a slide whose text cannot be printed as text", () => {
   it.each([
     ["filter", /^Slide 4 applies a CSS filter to text, .*remove the filter from the text/],
     ["backdrop-filter", /^Slide 4 has text inside a frosted-glass effect \(backdrop-filter\), which PDF printing leaves out\./],
+    ["box-reflect", /^Slide 4 reflects text \(-webkit-box-reflect\), .*remove the reflection/],
+    ["overflow", /^Slide 4 has content reaching past its edges .*keep everything inside the slide/],
+    ["page-size", /^Slide 4 did not print as a single page at the slide's size\. .*print page rules \(@page\)/],
     ["flattened", /^Slide 4 could only be printed as a picture, .*simplify the slide's visual effects/],
   ] as const)("explains %s with the slide number and what to do", (reason, message) => {
     const error = unprintableSlideError(4, reason);

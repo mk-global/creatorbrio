@@ -1,4 +1,4 @@
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, PDFName } from "pdf-lib";
 import type { AspectRatio } from "@/types/carousel";
 import { DIMENSIONS } from "@/types/carousel";
 
@@ -66,10 +66,33 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 /**
+ * The most a slide's own file structure (header, catalog, page tree, document
+ * information, cross-reference table) could account for: merging drops it and
+ * keeps everything else. Measured at about 300 bytes per Chromium-printed
+ * slide; this allowance is over ten times that, so slides whose printed size
+ * exceeds the limit by more than it cannot merge into a file within the limit.
+ */
+const MAX_STRUCTURE_BYTES_PER_SLIDE = 4096;
+
+function tooLargeError(bytes: number, maxBytes: number, estimate: boolean): PdfExportError {
+  return new PdfExportError(
+    `The PDF ${estimate ? "would be over" : "is"} ${formatMegabytes(bytes)}, above LinkedIn's ${formatMegabytes(maxBytes)} limit. ` +
+      "Remove slides or use simpler, smaller images, then export again.",
+    422
+  );
+}
+
+/**
  * Why a slide cannot be printed with its text as real PDF text. Each reason
  * names the CSS that causes it, so the user knows what to change.
  */
-export type UnprintableSlideReason = "filter" | "backdrop-filter" | "flattened";
+export type UnprintableSlideReason =
+  | "filter"
+  | "backdrop-filter"
+  | "box-reflect"
+  | "overflow"
+  | "page-size"
+  | "flattened";
 
 /**
  * Raised by the slide renderer for one slide; `unprintableSlideError` turns it
@@ -94,6 +117,15 @@ export function unprintableSlideError(
     "backdrop-filter":
       "has text inside a frosted-glass effect (backdrop-filter), which PDF printing leaves out. " +
       "Ask the design agent to use a plain semi-transparent background instead",
+    "box-reflect":
+      "reflects text (-webkit-box-reflect), which a PDF can only store as a picture of that text, so it could not be selected or searched. " +
+      "Ask the design agent to remove the reflection",
+    overflow:
+      "has content reaching past its edges that the PDF could not clip, so the page would come out shrunk. " +
+      "Ask the design agent to keep everything inside the slide",
+    "page-size":
+      "did not print as a single page at the slide's size. " +
+      "Ask the design agent to keep everything inside the slide and to remove any print page rules (@page)",
     flattened:
       "could only be printed as a picture, so its text could not be selected or searched. " +
       "Ask the design agent to simplify the slide's visual effects",
@@ -113,6 +145,10 @@ export function unprintableSlideError(
  * or rasterised. Each page is checked to be exactly one page at the slide's
  * size, then trimmed to that size from its top-left corner, where Chromium
  * draws the slide, removing the sliver its paper-size rounding adds.
+ *
+ * Annotations are left behind. Chromium turns every link in the slide into a
+ * clickable area, and the slide HTML comes from the design agent: the preview
+ * and the PNG have nothing to click, so the PDF must not either.
  */
 export async function mergeSlidePdfs(
   slidePdfs: Uint8Array[],
@@ -131,6 +167,11 @@ export async function mergeSlidePdfs(
     );
   }
 
+  const printedBytes = slidePdfs.reduce((total, bytes) => total + bytes.length, 0);
+  if (printedBytes - slidePdfs.length * MAX_STRUCTURE_BYTES_PER_SLIDE > maxBytes) {
+    throw tooLargeError(printedBytes - slidePdfs.length * MAX_STRUCTURE_BYTES_PER_SLIDE, maxBytes, true);
+  }
+
   const expected = pdfPageSize(aspectRatio);
 
   // pdf-lib would otherwise stamp itself as the producer when saving.
@@ -144,10 +185,11 @@ export async function mergeSlidePdfs(
 
   for (const [index, bytes] of slidePdfs.entries()) {
     const source = await PDFDocument.load(bytes);
-    const pageCount = source.getPageCount();
-    if (pageCount !== 1) {
-      throw new Error(`Slide ${index + 1} printed to ${pageCount} pages, expected 1`);
+    if (source.getPageCount() !== 1) {
+      throw unprintableSlideError(index + 1, "page-size");
     }
+    // Removed before copying, so the copy never pulls in the link actions.
+    source.getPage(0).node.delete(PDFName.of("Annots"));
     const [page] = await pdf.copyPages(source, [0]);
     const box = page.getMediaBox();
     const extraWidth = box.width - expected.width;
@@ -158,9 +200,7 @@ export async function mergeSlidePdfs(
       extraWidth > MAX_PRINT_ROUNDING_PT ||
       extraHeight > MAX_PRINT_ROUNDING_PT
     ) {
-      throw new Error(
-        `Slide ${index + 1} printed at ${box.width}x${box.height} pt, expected ${expected.width}x${expected.height}`
-      );
+      throw unprintableSlideError(index + 1, "page-size");
     }
     // PDF y runs upwards, so the slide's top edge is the box's top edge.
     const top = box.y + box.height;
@@ -174,13 +214,7 @@ export async function mergeSlidePdfs(
   // the widest PDF reader compatibility.
   const bytes = await pdf.save({ useObjectStreams: false });
 
-  if (bytes.length > maxBytes) {
-    throw new PdfExportError(
-      `The PDF is ${formatMegabytes(bytes.length)}, above LinkedIn's ${formatMegabytes(maxBytes)} limit. ` +
-        "Remove slides or use simpler, smaller images, then export again.",
-      422
-    );
-  }
+  if (bytes.length > maxBytes) throw tooLargeError(bytes.length, maxBytes, false);
 
   return bytes;
 }

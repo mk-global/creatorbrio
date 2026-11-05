@@ -7,13 +7,16 @@ import type { AspectRatio, Slide } from "@/types/carousel";
 import { DIMENSIONS } from "@/types/carousel";
 import { pdfPageSize } from "@/lib/export-pdf";
 import {
+  changedBlocks,
   chromiumPath,
+  MAX_CHANGED_BLOCKS,
   pageFonts,
   pageWords,
   pdfImages,
   pdfInfo,
   pdfTools,
   photoJpeg,
+  rasterisePage,
   slide,
   uncompressed,
   withPdfFile,
@@ -159,11 +162,16 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       const fonts = pageFonts(file, 1);
       expect(fonts.length).toBeGreaterThan(0);
       for (const font of fonts) {
-        expect(font).toMatchObject({ embedded: true, subset: true, unicode: true });
-        // A subset is named "ABCDEF+Family-Style".
-        expect(font.name).toMatch(/^[A-Z]{6}\+(CormorantGaramond|Inter)-/);
+        // TrueType, not Type 3 glyph procedures, so every reader, Apple's
+        // PDFKit included, selects and searches the text in whole words.
+        expect(font).toMatchObject({ type: "CID TrueType", embedded: true, subset: true, unicode: true });
+        // A subset is named "ABCDEF+Family-Style". Google names some static
+        // cuts by their source master, such as "CormorantGaramondLight-SemiBold".
+        expect(font.name).toMatch(/^[A-Z]{6}\+(CormorantGaramond\w*|Inter\w*)-/);
       }
-      const families = new Set(fonts.map((f) => f.name.split("+")[1].split("-")[0]));
+      const families = new Set(
+        fonts.map((f) => f.name.split("+")[1].split("-")[0].replace(/^(CormorantGaramond|Inter)\w*$/, "$1"))
+      );
       expect([...families].sort()).toEqual(["CormorantGaramond", "Inter"]);
       // Bold and italic use their own cuts, not a synthesised slant or weight.
       expect(fonts.some((f) => /Inter-Italic/.test(f.name))).toBe(true);
@@ -184,6 +192,7 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       expect(fonts.some((f) => f.name.includes("CormorantGaramond"))).toBe(true);
       for (const font of fonts) {
         expect(font).toMatchObject({ embedded: true, subset: true, unicode: true });
+        expect(font.type).not.toBe("Type 3");
       }
     });
   }, 60_000);
@@ -241,23 +250,46 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "a 3D transform": [box(`<p style="transform:rotateY(18deg)">Turned words</p>`, "perspective:800px"), ["Turned", "words"]],
       "a clip-path": [box(`<p style="clip-path:polygon(0 0,100% 0,100% 80%,0 100%);background:#c4622d;padding:30px">Clipped words</p>`), ["Clipped", "words"]],
       "a mask": [box(`<p style="mask-image:linear-gradient(#000,transparent)">Masked words</p>`), ["Masked", "words"]],
-      "outlined text": [box(`<p style="-webkit-text-stroke:2px #c4622d;color:transparent">Outlined words</p>`), ["Outlined", "words"]],
       "gradient-filled text": [box(`<p style="background:linear-gradient(90deg,#c4622d,#2f4f4f);-webkit-background-clip:text;background-clip:text;color:transparent">Gradient words</p>`), ["Gradient", "words"]],
       "a text-shadow": [box(`<p style="text-shadow:0 4px 12px rgba(0,0,0,.5)">Shadowed words</p>`), ["Shadowed", "words"]],
       "a box-shadow": [box(`<p style="box-shadow:0 20px 60px rgba(0,0,0,.3);padding:30px">Card words</p>`), ["Card", "words"]],
       "a blend mode": [box(`<p style="mix-blend-mode:multiply;background:#c4622d">Blended words</p>`), ["Blended", "words"]],
       "a filter on a photograph only": [box(`${photo("filter:grayscale(1)")}<p>Caption words</p>`), ["Caption", "words"]],
+      "generated content": [box(`<style>.g::before{content:"Generated words"}</style><p class="g"></p>`), ["Generated", "words"]],
     };
     const refused: Record<string, [string, RegExp]> = {
       "a filter over the whole slide": [box(`<p>Flattened words</p>`, "filter:contrast(1.1)"), /^Slide 2 applies a CSS filter to text/],
       "a drop-shadow filter on a heading": [box(`<h2 style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">Heading words</h2><p>Plain words</p>`), /^Slide 2 applies a CSS filter to text/],
       "an SVG filter on SVG text": [`<svg width="1080" height="600" style="font-family:${SANS}"><defs><filter id="f"><feGaussianBlur stdDeviation="2"/></filter></defs><text x="100" y="300" font-size="80" filter="url(#f)">Blurred words</text></svg>`, /^Slide 2 applies a CSS filter to text/],
       "a backdrop-filter around text": [box(`<p>Kept words</p><div style="backdrop-filter:blur(4px);padding:30px">Dropped words</div>`), /^Slide 2 has text inside a frosted-glass effect/],
+      "a filter around generated text": [box(`<style>.h::before{content:"Generated heading"}</style><div class="h" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"></div>`), /^Slide 2 applies a CSS filter to text/],
+      "a reflected heading beside plain text": [box(`<h2 style="-webkit-box-reflect:below 0px">Reflected words</h2><p>Plain words</p>`), /^Slide 2 reflects text \(-webkit-box-reflect\)/],
+      "CSS that defeats the print clip": [`<style>body{contain:none!important;position:static!important}</style>${box("<p>Shrunk words</p>")}<div style="position:absolute;top:200px;right:-300px;width:600px;height:600px;background:#c4622d"></div>`, /^Slide 2 has content reaching past its edges/],
     };
 
     // Every character, compared regardless of order: a reader may extract
     // transformed text in another order, but nothing may be missing or added.
     const characters = (words: string[]) => [...words.join("")].sort().join("");
+
+    it("prints outlined text as text, once for its fill and once for its outline", async () => {
+      // Chromium draws -webkit-text-stroke as two layers of text: the fill in
+      // the TrueType font, then the outline in a Type 3 copy of it, which also
+      // maps to Unicode. Readers find the words whole, from the fill, and
+      // extract them a second time from the outline (see the README's
+      // native PDF limits).
+      const words = ["Outlined", "words"];
+      const pdf = await exportPdf(
+        [slide(box(`<p style="-webkit-text-stroke:2px #c4622d;color:transparent">Outlined words</p>`))],
+        "4:5"
+      );
+      await withPdfFile(pdf, (file) => {
+        expect(pageWords(file, 1).slice(0, 2)).toEqual(words);
+        expect(characters(pageWords(file, 1))).toBe(characters([...words, ...words]));
+        const types = pageFonts(file, 1).map((f) => f.type);
+        expect(types).toContain("Type 3");
+        expect(types.filter((t) => t !== "Type 3").every((t) => t === "CID TrueType")).toBe(true);
+      });
+    }, 60_000);
 
     for (const [effect, [html, words]] of Object.entries(printable)) {
       it(`prints text under ${effect} as text`, async () => {
@@ -278,12 +310,119 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       }, 60_000);
     }
 
+    // Text that is not painted is not expected in the PDF: Chromium leaves it
+    // out, and that is not a sign of flattening.
+    const unpainted: Record<string, string> = {
+      "a visually hidden label beside a shape": `<div style="width:100%;height:100%;background:#fff"><div style="width:400px;height:400px;margin:90px;background:#c4622d"></div><span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Accessible label</span></div>`,
+      "text scrolled out of a clipping box": `<div style="width:100%;height:100%;background:#fff"><div style="width:300px;height:300px;margin:90px;overflow:hidden;background:#8a9a5b"><p style="margin-top:600px;font-size:40px">Hidden words</p></div></div>`,
+      "SVG text with neither fill nor stroke": `<svg width="1080" height="1350"><rect x="90" y="90" width="400" height="400" fill="#c4622d"/><text x="100" y="700" font-size="60" fill="none">Unpainted words</text></svg>`,
+      "a visually hidden label clipped by clip-path": `<div style="width:100%;height:100%;background:#fff"><div style="width:400px;height:400px;margin:90px;background:#2f4f4f"></div><span style="position:absolute;clip-path:inset(50%);white-space:nowrap">Accessible label</span></div>`,
+    };
+    for (const [effect, html] of Object.entries(unpainted)) {
+      it(`accepts ${effect}`, async () => {
+        await expect(exportPdf([slide(html)], "4:5")).resolves.toBeInstanceOf(Uint8Array);
+      }, 60_000);
+    }
+
     it("accepts a slide that is only a photograph", async () => {
       const pdf = await exportPdf(
         [slide(`<img src="/uploads/photo.jpg" style="width:100%;height:100%;object-fit:cover">`)],
         "4:5"
       );
       await withPdfFile(pdf, (file) => expect(pdfImages(file)).toHaveLength(1));
+    }, 60_000);
+  });
+  describe("prints the slide the screen shows", () => {
+    // Every slide here sets its own background: a page left unpainted is
+    // white paper in the PDF but Chromium's dark canvas in the PNG export.
+    const panel = (inner: string) =>
+      `<div style="width:100%;height:100%;background:#1f3a4d;color:#f7f3e9;font-family:${SANS};font-size:60px;padding:80px">${inner}</div>`;
+    const shape = (style: string) => `<div style="background:#c4622d;${style}"></div>`;
+
+    async function pageAndPng(html: string, ratio: AspectRatio = "4:5") {
+      const { exportAllSlides } = await import("@/lib/export-slides");
+      const pdf = await exportPdf([slide(html)], ratio);
+      const [png] = await exportAllSlides([slide(html)], ratio);
+      const page = await withPdfFile(pdf, (file) => rasterisePage(file, 1));
+      return { pdf, page, png: png.buffer };
+    }
+
+    const bleeds: Record<string, string> = {
+      "past the right edge": shape("position:absolute;top:200px;right:-300px;width:600px;height:600px;border-radius:50%"),
+      "past the bottom edge": shape("position:absolute;bottom:-20px;left:0;width:1080px;height:100px"),
+      "past the bottom edge by a long way": shape("position:absolute;top:1200px;left:200px;width:300px;height:600px"),
+      "past the left and top edges": shape("position:absolute;top:-100px;left:-100px;width:300px;height:300px"),
+      "as a fixed-position element": shape("position:fixed;top:1200px;left:900px;width:600px;height:600px"),
+    };
+    for (const ratio of ["4:5", "1:1", "9:16"] as AspectRatio[]) {
+      for (const [where, decoration] of Object.entries(bleeds)) {
+        it(`clips a ${ratio} shape reaching ${where} as the screen does, without shrinking the page`, async () => {
+          const { pdf, page, png } = await pageAndPng(panel("Hello world") + decoration, ratio);
+          await withPdfFile(pdf, (file) => {
+            expect(pdfInfo(file).pages).toBe(1);
+            expect(pageWords(file, 1)).toEqual(["Hello", "world"]);
+          });
+          expect(await changedBlocks(page, png)).toBeLessThanOrEqual(MAX_CHANGED_BLOCKS);
+        }, 60_000);
+      }
+    }
+
+    // A slide may style its own body. Its background then fills the page only
+    // without the print clip, so it prints unclipped and must still match.
+    const bodyStyled: Record<string, string> = {
+      "a body background": `<style>body{background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
+      "a body sized to its content": `<style>body{height:auto;background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
+      "a narrower centred body": `<style>body{width:800px;margin:0 auto;background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
+      "a root background": `<style>html{background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
+      "a layer behind the body's content": `<div style="position:absolute;inset:0;z-index:-1;background:#1f3a4d"></div><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
+    };
+    for (const [styling, html] of Object.entries(bodyStyled)) {
+      it(`prints a slide with ${styling} as the screen shows it`, async () => {
+        const { page, png } = await pageAndPng(html);
+        expect(await changedBlocks(page, png)).toBeLessThanOrEqual(MAX_CHANGED_BLOCKS);
+      }, 60_000);
+    }
+
+    it("refuses a slide that resizes its body and reaches past the slide, rather than shrinking it", async () => {
+      const html =
+        `<style>body{height:auto;background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>` +
+        `<div style="position:absolute;top:200px;right:-300px;width:600px;height:600px;background:#c4622d"></div>`;
+      await expect(exportPdf([slide("<p>First</p>"), slide(html, 1)], "4:5")).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringMatching(/^Slide 2 has content reaching past its edges/),
+      });
+    }, 60_000);
+
+    it("ignores the slide's own print page rules, margin boxes and page breaks", async () => {
+      const html =
+        `<style>@page{size:300px 300px;margin:150px;@top-center{content:"Print-only header"}} p{break-after:page}</style>` +
+        panel("<p>First words</p><p>Second words</p>");
+      const { pdf, page, png } = await pageAndPng(html);
+      await withPdfFile(pdf, (file) => {
+        expect(pdfInfo(file).pages).toBe(1);
+        expect(pageWords(file, 1)).toEqual(["First", "words", "Second", "words"]);
+      });
+      expect(await changedBlocks(page, png)).toBeLessThanOrEqual(MAX_CHANGED_BLOCKS);
+    }, 60_000);
+
+    it("does not run the slide's scripts, as the preview does not", async () => {
+      const html =
+        panel(`<p id="t">Static words</p>`) +
+        `<script>document.getElementById("t").textContent += " scripted"; addEventListener("beforeprint", () => document.body.append("print-only"))</script>`;
+      const pdf = await exportPdf([slide(html)], "4:5");
+      await withPdfFile(pdf, (file) => expect(pageWords(file, 1)).toEqual(["Static", "words"]));
+    }, 60_000);
+
+    it("leaves out links, which the preview and the PNG have nothing to click on", async () => {
+      const html = panel(
+        `<a href="https://phish.example/" style="position:absolute;inset:0;display:block"></a>` +
+          `<a href="javascript:alert(1)" style="color:inherit">Linked words</a> <a href="#nowhere" style="color:inherit">anchor</a>`
+      );
+      const pdf = await exportPdf([slide(html)], "4:5");
+      await withPdfFile(pdf, (file) => {
+        expect(pageWords(file, 1)).toEqual(["Linked", "words", "anchor"]);
+        expect(uncompressed(file)).not.toMatch(/\/Annots|\/URI|\/Link\b|javascript:|phish\.example|\/Dests?\b/);
+      });
     }, 60_000);
   });
 });

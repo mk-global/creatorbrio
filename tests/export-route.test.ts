@@ -249,7 +249,7 @@ describe("LinkedIn PDF export", () => {
       expect(response.status).toBe(422);
       const body = (await response.json()) as { error: string };
       expect(body.error).toMatch(
-        /^The PDF is \d+\.\d MB, above LinkedIn's 100\.0 MB limit\. Remove slides/
+        /^The PDF would be over \d+\.\d MB, above LinkedIn's 100\.0 MB limit\. Remove slides/
       );
     },
     120_000
@@ -480,15 +480,18 @@ describe("export errors", () => {
     });
   }
 
-  it("reports a slide printed at the wrong size as a failure, not a distorted page", async () => {
-    getCarouselMock.mockResolvedValue(carousel("4:5", 1));
-    exportAllSlidePdfsMock.mockResolvedValue(await printedPdfs("1:1", 1));
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("refuses a slide printed at the wrong size, naming it, rather than shipping a distorted page", async () => {
+    getCarouselMock.mockResolvedValue(carousel("4:5", 2));
+    exportAllSlidePdfsMock.mockResolvedValue([
+      ...(await printedPdfs("4:5", 1)),
+      ...(await printedPdfs("1:1", 1)),
+    ]);
 
     const response = await exportRequest("?format=pdf");
 
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(422);
     expect(response.headers.get("Content-Type")).toContain("application/json");
-    spy.mockRestore();
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toMatch(/^Slide 2 did not print as a single page at the slide's size\./);
   });
 });

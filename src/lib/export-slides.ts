@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import path from "path";
 import sharp from "sharp";
 import { wrapSlideHtml, extractFontFamilies, usesItalic } from "./slide-html";
-import { getInlinedFontCSS } from "./fonts";
+import { getInlinedFontCSS, type FontInstances } from "./fonts";
 import { UnprintableSlideError, unprintableSlideError } from "./export-pdf";
 import { inspectPdf } from "./pdf-content";
 import type { Slide, AspectRatio } from "@/types/carousel";
@@ -208,11 +208,15 @@ export function describeExportFailure(error: unknown): string {
  * and uploaded images inlined, sized to the carousel's dimensions, and every
  * wait is bounded: a slide that cannot finish loading is still captured rather
  * than hanging the export.
+ *
+ * `scripts: false` loads the slide without running its scripts, as the
+ * preview's sandboxed iframe shows it. The PNG export keeps the default.
  */
 async function withLoadedSlide<T>(
   slide: Slide,
   aspectRatio: AspectRatio,
-  capture: (page: Page) => Promise<T>
+  capture: (page: Page) => Promise<T>,
+  options: { fontInstances?: FontInstances; scripts?: boolean } = {}
 ): Promise<T> {
   const { width, height } = DIMENSIONS[aspectRatio];
 
@@ -220,6 +224,7 @@ async function withLoadedSlide<T>(
   const fontFamilies = extractFontFamilies(slide.html);
   const inlinedFontCss = await getInlinedFontCSS(fontFamilies, {
     italic: usesItalic(slide.html),
+    ...(options.fontInstances ? { instances: options.fontInstances } : {}),
   });
 
   // Inline images
@@ -235,6 +240,7 @@ async function withLoadedSlide<T>(
 
     try {
       await page.setViewport({ width, height, deviceScaleFactor: 1 });
+      if (options.scripts === false) await page.setJavaScriptEnabled(false);
 
       // `load` rather than `domcontentloaded`: it waits for stylesheets and image
       // bytes. Previously the page was screenshotted as soon as the DOM parsed,
@@ -316,56 +322,168 @@ export async function exportSlide(
 }
 
 /**
+ * Rules added to the slide document for printing only: the slide's own
+ * `@page` rules, margin boxes and page breaks exist only in print, so they are
+ * neutralised and the paper is the slide.
+ */
+function printPageCss(width: number, height: number): string {
+  const marginBoxes = [
+    "top-left-corner", "top-left", "top-center", "top-right", "top-right-corner",
+    "bottom-left-corner", "bottom-left", "bottom-center", "bottom-right", "bottom-right-corner",
+    "left-top", "left-middle", "left-bottom", "right-top", "right-middle", "right-bottom",
+  ];
+  return [
+    "* { break-before: auto !important; break-after: auto !important; break-inside: auto !important; }",
+    `@page { size: ${width}px ${height}px !important; margin: 0 !important; ` +
+      marginBoxes.map((box) => `@${box} { content: none !important; }`).join(" ") +
+      " }",
+  ].join("\n");
+}
+
+/**
+ * The screen clips the slide at the viewport, but print layout does not: an
+ * element reaching past the right edge makes Chromium shrink the whole slide
+ * to fit the paper, and one reaching past the bottom starts another page.
+ * Containing the body (layout, paint and size) clips print where the screen
+ * does and keeps it to one page.
+ *
+ * It is only exact while the body is the slide's own box, as `wrapSlideHtml`
+ * sizes it: containment stops a body background from filling the page, which
+ * a slide that resizes its body relies on. Such a slide is printed as it is,
+ * and refused if anything in it reaches past the slide.
+ */
+const PRINT_CLIP_CSS = "body { position: relative !important; contain: size layout paint !important; }";
+
+/** Whether the body is exactly the slide's box. Runs inside the page. */
+function bodyIsTheSlide(): boolean {
+  const body = document.body.getBoundingClientRect();
+  const root = document.documentElement;
+  return body.left === 0 && body.top === 0 && body.width === root.clientWidth && body.height === root.clientHeight;
+}
+
+type PrintProblem = "filter" | "backdrop-filter" | "box-reflect" | "overflow";
+
+/**
  * How the slide's visible text would come out of a PDF print, read from the
- * loaded page. Runs inside the page, so it must not reference anything outside
- * itself.
+ * loaded page with the print-only rules applied. Runs inside the page, so it
+ * must not reference anything outside itself.
  *
  * Chromium's PDF backend keeps text as text through transforms, opacity,
- * clipping, masks, gradients, shadows and blend modes, but not through two
- * effects: a `filter` (CSS or SVG) on the text or any element around it turns
- * that whole element into an image, and a `backdrop-filter` around text leaves
- * the text out of the PDF entirely. Text counts when it is painted: it has a
- * box inside the slide and is neither hidden nor fully transparent.
+ * clipping, masks, gradients, shadows and blend modes, but not through these
+ * effects on the text or any element around it:
+ * - a `filter` (CSS or SVG) or `-webkit-box-reflect` turns the element into
+ *   an image of its text;
+ * - a `backdrop-filter` leaves the text out of the PDF entirely.
+ *
+ * Text counts when it is painted: it has a box inside the slide and inside
+ * every element that clips it, is neither hidden nor fully transparent, and
+ * SVG text has a fill or a stroke. Text generated by `::before` and `::after`
+ * counts as painted wherever its element is.
+ *
+ * Content that still reaches past the slide (possible when the slide resizes
+ * its body, see `PRINT_CLIP_CSS`) is reported too: printing would shrink the
+ * page or spill onto another.
  */
-function readPrintableText(): {
-  hasText: boolean;
-  problem: "filter" | "backdrop-filter" | null;
-} {
-  const slideWidth = document.documentElement.clientWidth;
-  const slideHeight = document.documentElement.clientHeight;
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  let hasText = false;
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    const element = node.parentElement;
-    if (!element || !node.textContent?.trim()) continue;
-    if (getComputedStyle(element).visibility !== "visible") continue;
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    const painted = Array.from(range.getClientRects()).some(
-      (r) =>
-        r.width > 0 &&
-        r.height > 0 &&
-        r.right > 0 &&
-        r.bottom > 0 &&
-        r.left < slideWidth &&
-        r.top < slideHeight
-    );
-    if (!painted) continue;
-    let opacity = 1;
-    let problem: "filter" | "backdrop-filter" | null = null;
+function readPrintableText(): { hasText: boolean; problem: PrintProblem | null } {
+  const root = document.documentElement;
+  const slideWidth = root.clientWidth;
+  const slideHeight = root.clientHeight;
+  if (root.scrollWidth > slideWidth || root.scrollHeight > slideHeight) {
+    return { hasText: false, problem: "overflow" };
+  }
+
+  type Box = { left: number; top: number; right: number; bottom: number };
+  const MIN_VISIBLE_PX = 2;
+  const visible = (b: Box) =>
+    b.right - b.left >= MIN_VISIBLE_PX && b.bottom - b.top >= MIN_VISIBLE_PX;
+  const intersect = (a: Box, b: Box): Box => ({
+    left: Math.max(a.left, b.left),
+    top: Math.max(a.top, b.top),
+    right: Math.min(a.right, b.right),
+    bottom: Math.min(a.bottom, b.bottom),
+  });
+
+  /** The area of `element` its clipping ancestors (and itself) let through. */
+  function clipBox(element: Element): Box {
+    let box: Box = { left: 0, top: 0, right: slideWidth, bottom: slideHeight };
+    for (let el: Element | null = element; el; el = el.parentElement) {
+      const style = getComputedStyle(el);
+      const clipsOverflow = style.overflowX !== "visible" || style.overflowY !== "visible";
+      if (clipsOverflow) box = intersect(box, el.getBoundingClientRect());
+      // `clip` (absolutely positioned elements only); anything but `auto`
+      // is the visually-hidden pattern or a crop, read as its own rect.
+      if (style.clip && style.clip !== "auto" && /^(absolute|fixed)$/.test(style.position)) {
+        const [top, right, bottom, left] = (style.clip.match(/-?[\d.]+/g) ?? []).map(Number);
+        const r = el.getBoundingClientRect();
+        if ([top, right, bottom, left].every(Number.isFinite)) {
+          box = intersect(box, { left: r.left + left, top: r.top + top, right: r.left + right, bottom: r.top + bottom });
+        }
+      }
+    }
+    return box;
+  }
+
+  /** The effect around `element` that keeps its text from printing as text. */
+  function problemAround(element: Element, own?: CSSStyleDeclaration): PrintProblem | null {
+    let problem: PrintProblem | null = null;
+    const styles = own ? [own] : [];
+    for (let el: Element | null = element; el; el = el.parentElement) styles.push(getComputedStyle(el));
+    for (const style of styles) {
+      if (style.backdropFilter && style.backdropFilter !== "none") return "backdrop-filter";
+      if (!problem && style.filter && style.filter !== "none") problem = "filter";
+      const reflect = style.getPropertyValue("-webkit-box-reflect");
+      if (!problem && reflect && reflect !== "none") problem = "box-reflect";
+    }
+    return problem;
+  }
+
+  /** Whether text drawn by `element` (or its pseudo-element) can be seen. */
+  function shown(element: Element, own?: CSSStyleDeclaration): boolean {
+    let opacity = own ? Number(own.opacity) : 1;
     for (let el: Element | null = element; el; el = el.parentElement) {
       const style = getComputedStyle(el);
       opacity *= Number(style.opacity);
-      if (style.backdropFilter && style.backdropFilter !== "none") {
-        problem = "backdrop-filter";
-      } else if (!problem && style.filter && style.filter !== "none") {
-        problem = "filter";
-      }
+      // A clip-path's area is not readable, so its text is not relied on.
+      if (style.clipPath && style.clipPath !== "none") return false;
     }
-    if (opacity === 0) continue;
+    const style = own ?? getComputedStyle(element);
+    if (style.visibility !== "visible" || opacity === 0) return false;
+    if (element instanceof SVGElement && style.fill === "none" && style.stroke === "none") return false;
+    return true;
+  }
+
+  let hasText = false;
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const element = node.parentElement;
+    if (!element || !node.textContent?.trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const clip = clipBox(element);
+    const painted = Array.from(range.getClientRects()).some((r) => visible(intersect(r, clip)));
+    if (!painted || !shown(element)) continue;
+    const problem = problemAround(element);
     if (problem) return { hasText: true, problem };
     hasText = true;
   }
+
+  for (const element of Array.from(document.body.querySelectorAll("*")).concat(document.body)) {
+    for (const pseudo of ["::before", "::after"]) {
+      const style = getComputedStyle(element, pseudo);
+      if (style.display === "none") continue;
+      // Only quoted strings are text; counters, attr() and images are not
+      // relied on.
+      const strings = style.content.match(/"(?:[^"\\]|\\.)*"/g) ?? [];
+      if (!strings.some((quoted) => quoted.slice(1, -1).trim())) continue;
+      if (!visible(intersect(element.getBoundingClientRect(), clipBox(element)))) continue;
+      if (!shown(element, style)) continue;
+      const problem = problemAround(element, style);
+      if (problem) return { hasText: true, problem };
+      hasText = true;
+    }
+  }
+
   return { hasText, problem: null };
 }
 
@@ -374,9 +492,14 @@ function readPrintableText(): {
  * with its fonts embedded, CSS and SVG graphics stay vector wherever Chromium
  * can draw them as vectors, and images stay images.
  *
- * The page is printed as the screen shows it (screen media, backgrounds, no
- * margins) at the slide's exact size. A slide whose text could not be printed
- * as text is refused with `UnprintableSlideError` instead of being flattened.
+ * The slide is loaded as the preview shows it, without running scripts, and
+ * printed as the screen shows it (screen media, backgrounds, no margins, the
+ * print-only rules of `printPageCss` and `PRINT_CLIP_CSS`) at the slide's
+ * exact size, with static
+ * instances of the slide's Google Fonts so they embed as TrueType rather than
+ * Type 3 (see `FontInstances`). A slide whose text could not be printed as
+ * text, or that would not print at its own size, is refused with
+ * `UnprintableSlideError` instead of being flattened or shrunk.
  */
 export async function exportSlidePdf(
   slide: Slide,
@@ -384,36 +507,45 @@ export async function exportSlidePdf(
 ): Promise<Uint8Array> {
   const { width, height } = DIMENSIONS[aspectRatio];
 
-  return withLoadedSlide(slide, aspectRatio, async (page) => {
-    // Printing switches to print media by default, which could apply
-    // `@media print` rules the preview never shows.
-    await page.emulateMediaType("screen");
-
-    const text = await page.evaluate(readPrintableText);
-    if (text.problem) throw new UnprintableSlideError(text.problem);
-
-    const pdf = await page.pdf({
-      width: `${width}px`,
-      height: `${height}px`,
-      printBackground: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 },
-      // A slide is one page; merging cannot carry a document-level structure
-      // tree or outline across documents, so neither is generated.
-      tagged: false,
-      outline: false,
-      timeout: PDF_PRINT_TIMEOUT_MS,
-    });
-
-    // Defence against effects not covered above: visible text must reach the
-    // PDF as text, never only as an image of the slide.
-    if (text.hasText) {
-      const [content] = await inspectPdf(pdf);
-      if (!content || content.textShows === 0) {
-        throw new UnprintableSlideError("flattened");
+  return withLoadedSlide(
+    slide,
+    aspectRatio,
+    async (page) => {
+      await page.addStyleTag({ content: printPageCss(width, height) });
+      if (await page.evaluate(bodyIsTheSlide)) {
+        await page.addStyleTag({ content: PRINT_CLIP_CSS });
       }
-    }
-    return pdf;
-  });
+      // Printing switches to print media by default, which could apply
+      // `@media print` rules the preview never shows.
+      await page.emulateMediaType("screen");
+
+      const text = await page.evaluate(readPrintableText);
+      if (text.problem) throw new UnprintableSlideError(text.problem);
+
+      const pdf = await page.pdf({
+        width: `${width}px`,
+        height: `${height}px`,
+        printBackground: true,
+        margin: { top: 0, right: 0, bottom: 0, left: 0 },
+        // A slide is one page; merging cannot carry a document-level structure
+        // tree or outline across documents, so neither is generated.
+        tagged: false,
+        outline: false,
+        timeout: PDF_PRINT_TIMEOUT_MS,
+      });
+
+      // Defence against effects not covered above: when the slide shows text,
+      // the PDF must hold text, never only an image of the slide.
+      if (text.hasText) {
+        const [content] = await inspectPdf(pdf);
+        if (!content || content.textShows === 0) {
+          throw new UnprintableSlideError("flattened");
+        }
+      }
+      return pdf;
+    },
+    { fontInstances: "static", scripts: false }
+  );
 }
 
 /**

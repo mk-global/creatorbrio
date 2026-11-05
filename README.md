@@ -241,8 +241,15 @@ The same function feeds both the sandboxed preview iframe and the Puppeteer expo
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
 With `?format=single-png`, a carousel with exactly one slide is answered with that slide's PNG itself, the same bytes the ZIP would contain.
-With `?format=pdf`, each slide is loaded in the same document, with the same inlined fonts and images and the same waits as for its PNG, and printed natively by Chromium to a one-page PDF with screen media, backgrounds and no margins.
-[`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) then copies those pages, unchanged, into one document in slide order.
+With `?format=pdf`, each slide is loaded in the same document, with the same inlined images and the same waits as for its PNG, and printed natively by Chromium to a one-page PDF with screen media, backgrounds and no margins.
+The print differs from the screenshot's page in four deliberate ways, each so that the PDF shows what the preview shows:
+
+- The slide's scripts do not run, as in the preview's sandboxed iframe.
+- The slide's own `@page` rules, page margin boxes and page breaks are overridden, so the paper is the slide.
+- The body clips the print where the screen clips the slide, so an element reaching past an edge neither shrinks the page nor starts another.
+- Google Fonts are fetched as static instances, one file per weight, from the same family, so they embed as TrueType; Chromium embeds the variable files the preview uses as Type 3 glyphs, whose text Apple's Preview and Safari break into fragments.
+
+[`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) then copies those pages, unchanged apart from removing links, into one document in slide order.
 While a chat run is still writing the carousel's slides, every format is refused with status 409.
 Pages are sized at 0.75 pt per pixel (72 pt per inch over 96 CSS pixels per inch), so a 1080×1350 slide becomes an 810×1012.5 pt page, keeping its exact aspect ratio.
 Chromium rounds the paper up to a hundredth of an inch (a 4:5 slide prints 1013.04 pt tall), so each page is trimmed to the slide's exact size from its top edge, where the slide is drawn.
@@ -253,13 +260,23 @@ Chromium's PDF printer keeps text as text through transforms, opacity, clipping,
 Some effects behave differently on paper than on screen:
 
 - A blurred shadow (`box-shadow`, `text-shadow`) is embedded as a small image; the text it belongs to stays text.
-- A CSS or SVG `filter` on text, or on any element around it, turns that whole element into an image, and a `backdrop-filter` leaves the text inside it out of the PDF.
-  The export refuses such a slide with status 422, naming the slide and the effect, instead of shipping a picture of the text or losing it; a filter on an image alone is fine.
-  If a slide's visible text still reaches the PDF only as a picture, for any other reason, it is refused the same way.
-- Fonts are embedded as Type 3 subsets with Unicode maps, because Google serves the export variable fonts, which Chromium embeds that way.
-  Text stays selectable, searchable and vector-sharp; it is not standard TrueType embedding.
+- A CSS or SVG `filter` or a `-webkit-box-reflect` on text, or on any element around it, turns that whole element into an image, and a `backdrop-filter` leaves the text inside it out of the PDF.
+  Before printing, the export checks every piece of visible text, including text from `::before` and `::after`, for these effects.
+  A slide that has one is refused with status 422, naming the slide and the effect, instead of shipping a picture of the text or losing it; a filter on an image alone is fine.
+- After printing, a slide that shows text but whose page holds no text at all is refused the same way.
+  That second check catches a whole slide flattened by an effect not listed above; an unlisted effect that flattened only part of a slide would need adding to the first check.
+- Text that is not painted, such as a visually hidden label, text clipped out of view or SVG text with neither fill nor stroke, is not expected in the PDF.
+- Outlined text (`-webkit-text-stroke`) is printed by Chromium in two layers, the fill in the TrueType font and the outline in a Type 3 copy of it.
+  Readers find and select the words whole, but copying or extracting the page's text returns them twice.
+- A slide that resizes its own `body` is printed without the edge clip, which would otherwise change how its background fills the page.
+  If anything in such a slide reaches past its edges, it is refused with status 422 rather than printed shrunk.
+- If Google cannot serve a static instance of a font, the variable font is embedded instead, as Type 3 glyphs with Unicode maps: the typeface is still right and the text still selectable, but Apple's readers fragment it.
 - A character a web font does not contain is drawn from a system font, as in the preview and the PNG export, and embedded the same way.
+- A page with no background is white paper in the PDF, while the PNG export shows headless Chromium's dark default canvas there.
+- Uploaded images are embedded at their own resolution: JPEGs as they are, PNG and WebP losslessly.
+  A carousel of large PNG or WebP photographs can therefore exceed LinkedIn's 100 MB limit where its PNG export would not; the export then refuses it with status 422, before merging when the printed slides alone are already over the limit.
 - The document has no tags or outline: pages are printed separately and merged, which cannot carry a document-level structure across.
+  Links are removed, because the preview and the PNG have nothing to click.
 
 ## Slash commands and scripts
 

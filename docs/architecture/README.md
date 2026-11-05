@@ -42,7 +42,7 @@ flowchart LR
 | Handoff and conformance | The Design Agent's visual plan section, and the check after design | `src/lib/creative-handoff.ts` |
 | Design Agent | Writes the copy and builds every slide in HTML and CSS through the app's API | `src/lib/chat-system-prompt.ts` |
 | Storage | JSON files with a per-file lock and atomic writes, plus uploaded files | `src/lib/data.ts`, `data/`, `public/uploads/` |
-| Rendering and export | One shared slide document for preview and export; Puppeteer screenshots in one headless browser per server process | `src/lib/slide-html.ts`, `src/lib/export-slides.ts` |
+| Rendering and export | One shared slide document for preview and export, rendered in one headless browser per server process: screenshots for PNG, native Chromium printing for the LinkedIn PDF, merged page by page without re-rendering | `src/lib/slide-html.ts`, `src/lib/export-slides.ts`, `src/lib/export-pdf.ts`, `src/lib/pdf-content.ts`, `src/lib/fonts.ts` |
 
 ## How a request flows
 

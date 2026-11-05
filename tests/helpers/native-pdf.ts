@@ -97,16 +97,18 @@ export interface PdfFont {
 
 /** The fonts `pdffonts` reports for one page. */
 export function pageFonts(file: string, page: number): PdfFont[] {
-  const lines = run("pdffonts", ["-f", String(page), "-l", String(page), file]).split("\n").slice(2);
-  return lines
+  const rows = run("pdffonts", ["-f", String(page), "-l", String(page), file]).split("\n").slice(2);
+  return rows
     .filter((l) => l.trim())
     .map((line) => {
+      // name, type (which may hold spaces), encoding, emb, sub, uni, object
+      // number and generation. A long name can overflow its column, so the
+      // row is read by tokens from both ends rather than by position.
       const cols = line.trim().split(/\s+/);
-      // name type... encoding emb sub uni objectID gen
       const [emb, sub, uni] = cols.slice(-5, -2);
       return {
         name: cols[0],
-        type: line.slice(37, 55).trim(),
+        type: cols.slice(1, -6).join(" "),
         embedded: emb === "yes",
         subset: sub === "yes",
         unicode: uni === "yes",
@@ -152,6 +154,14 @@ export async function rasterisePage(file: string, page: number): Promise<Buffer>
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/**
+ * Share of 8 x 8 blocks allowed to differ between a PDF page, as poppler draws
+ * it, and the PNG export of the same slide. Matching pages measure 0 to 0.013%
+ * and the smallest real change tried measures 0.3% (see `changedBlocks`);
+ * 0.1% sits well clear of both.
+ */
+export const MAX_CHANGED_BLOCKS = 0.001;
 
 /**
  * How much two renderings of one slide differ, as the share of 8 x 8 pixel
