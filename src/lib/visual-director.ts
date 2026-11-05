@@ -102,7 +102,7 @@ export const DIRECTOR_FAILURE_MESSAGES: Record<DirectorFailureCode, string> = {
   invalid_output: "The visual planner did not return a plan. Nothing was changed; send your message again.",
   invalid_plan: "The visual plan could not be used. Nothing was changed; send your message again, or rephrase it.",
   slide_count_mismatch:
-    'The visual plan did not use the number of slides your message asked for. Nothing was changed; say how many you want as a number of slides or pages from 1 to 20, for example "10 slides", and send your message again.',
+    'The visual plan\'s slide count could not be used. Nothing was changed; say how many slides you want, from 1 to 20 (for example "10 slides"), and send your message again.',
   capability_unavailable: "This request needs something this machine cannot do yet. Nothing was changed.",
 };
 

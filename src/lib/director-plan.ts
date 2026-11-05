@@ -160,16 +160,23 @@ const NUMBER_WORDS = [
   "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
   "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
 ];
+/** Whitespace within one line: a number on one line never counts a noun on the next. */
+const INLINE_SPACE = "[^\\S\\r\\n\\v\\f\\u2028\\u2029]";
+// Not the tail of a ratio, decimal, list, fraction or compound ("4:5", "2.5",
+// "1,5", "3/10", "twenty-five"), and on the same line as its noun.
 const countPattern = (noun: string) =>
-  new RegExp(`\\b(\\d{1,2}|${NUMBER_WORDS.join("|")})(?:\\s*-\\s*|\\s+)${noun}s?\\b`, "gi");
+  new RegExp(
+    `(?<![:.,/-])\\b(\\d{1,2}|${NUMBER_WORDS.join("|")})(?:${INLINE_SPACE}*-${INLINE_SPACE}*|${INLINE_SPACE}+)${noun}s?\\b`,
+    "gi"
+  );
 const SLIDE_COUNT_PATTERN = countPattern("slide");
 const PAGE_COUNT_PATTERN = countPattern("page");
 
 /**
  * Every count in a message that a number from 1 to 99, as digits or as an
- * English word up to twenty, gives to the noun, optionally hyphenated
- * ("5 slides", "five-slide"). A number after the noun ("slide 3", "Page 01")
- * is a label, not a count.
+ * English word up to twenty, gives to the noun on the same line, optionally
+ * hyphenated ("5 slides", "five-slide"). A number after the noun ("slide 3",
+ * "Page 01") is a label, not a count.
  */
 function countsIn(message: string, pattern: RegExp): number[] {
   const counts = new Set<number>();

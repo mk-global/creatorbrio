@@ -356,10 +356,24 @@ describe("runDirector", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.errors).toEqual(["execution.slideCountBasis: user-explicit needs a new request that states a count"]);
     const message = directorFailureMessage(result.code);
-    expect(message).toMatch(/number of slides/);
+    expect(message).toMatch(/how many slides/);
     expect(message).toMatch(/\b20\b/);
     expect(message).not.toMatch(/rephrase/);
+    // True whether or not the message stated a count: it never claims the user asked for one.
+    expect(message).not.toMatch(/asked for/);
     expect(message).not.toContain("Lisbon");
+  });
+
+  it("keeps a plan with any other violation as an invalid plan, even when its slide count is also wrong", async () => {
+    const mixed = coverPlan();
+    mixed.execution.slideCountBasis = "user-explicit";
+    mixed.execution.slides[0].assetRefs = ["ref-of-another-carousel"];
+    await play("plan", mixed);
+    const result = await runDirector(await request());
+    expect(result).toMatchObject({ ok: false, code: "invalid_plan" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.errors?.some((v) => v.startsWith("execution.slideCount"))).toBe(true);
+    expect(result.errors?.some((v) => !v.startsWith("execution.slideCount"))).toBe(true);
   });
 
   it("refuses an invalid plan and keeps the violations for the log only", async () => {

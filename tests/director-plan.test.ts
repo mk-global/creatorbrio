@@ -151,6 +151,23 @@ describe("slide-count helpers", () => {
     expect(explicitPageCounts(message)).toEqual(counts);
   });
 
+  it.each([
+    ["Format: LinkedIn PDF, 4:5\nPages: 10\nTopic: hiring", [], []],
+    ["Use 4:5\nPage 01: Cover\nPage 02: Next", [], []],
+    ["Topic 3\nSlides: 10", [], []],
+    ["Make 4:5 slides about hiring", [], []],
+    ["4:5 pages, exactly 10 pages", [10], []],
+    ["twenty-five pages", [], []],
+    ["twenty-five slides", [], []],
+    ["2.5 pages", [], []],
+    ["1,5 slides", [], []],
+    ["page 3/10 pages", [], []],
+    ["ten\npages, then 6 slides", [], [6]],
+  ])("does not read a number from another line, a ratio, a decimal or a compound as a count: %j", (message, pages, slides) => {
+    expect(explicitPageCounts(message)).toEqual(pages);
+    expect(explicitSlideCounts(message)).toEqual(slides);
+  });
+
   it("finds the ten-page brief's length in pages and no slide count", () => {
     expect(explicitPageCounts(TEN_PAGE_BRIEF)).toEqual([10]);
     expect(explicitSlideCounts(TEN_PAGE_BRIEF)).toEqual([]);
