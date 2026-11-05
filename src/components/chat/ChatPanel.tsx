@@ -13,7 +13,8 @@ import {
   sessionAfterRun,
 } from "@/lib/chat-stream";
 import { readChatSession, writeChatSession } from "@/lib/chat-session";
-import type { RunNoticeData } from "./RunNotice";
+import { ContinueBar, type RunNoticeData } from "./RunNotice";
+import type { ContinuationOffer } from "@/components/editor/useGenerationStatus";
 
 /** Shown when the stream closes without the run reporting how it ended. */
 const CONNECTION_LOST =
@@ -33,7 +34,12 @@ interface ChatPanelProps {
   onStreamStart?: () => void;
   onStreamEnd?: () => void;
   chatInputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /** The carousel's unfinished design, if it can be continued. */
+  continuation?: ContinuationOffer | null;
 }
+
+/** What a Continue shows as the user's message; the server ignores the text. */
+const CONTINUE_MESSAGE = "Continue the unfinished design";
 
 export function ChatPanel({
   carouselId,
@@ -42,6 +48,7 @@ export function ChatPanel({
   onStreamStart,
   onStreamEnd,
   chatInputRef,
+  continuation = null,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -98,7 +105,7 @@ export function ChatPanel({
   }, [messages]);
 
   const handleSend = useCallback(
-    async (message: string, retryRunId?: string) => {
+    async (message: string, retryRunId?: string, continueRunId?: string) => {
       if (isStreaming) return;
       setError(null);
       setStage(null);
@@ -141,6 +148,7 @@ export function ChatPanel({
             sessionId,
             carouselId,
             ...(retryRunId ? { retryRunId } : {}),
+            ...(continueRunId ? { continueRunId } : {}),
           }),
           signal: abortRef.current.signal,
         });
@@ -298,6 +306,13 @@ export function ChatPanel({
             retryDisabled={isStreaming}
           />
         ))}
+        {continuation && !isStreaming && (
+          <ContinueBar
+            saved={continuation.saved}
+            expected={continuation.expected}
+            onContinue={() => void handleSend(CONTINUE_MESSAGE, undefined, continuation.runId)}
+          />
+        )}
         {error && (
           <div className="mx-4 my-2 flex items-center gap-2 text-destructive text-xs bg-destructive/10 rounded-lg p-3">
             <AlertCircle className="h-4 w-4 shrink-0" />

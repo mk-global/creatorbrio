@@ -3,7 +3,7 @@ import { resolveBrandForCarousel } from "@/lib/brand";
 import { getCarousel } from "@/lib/carousels";
 import { buildSystemPrompt } from "@/lib/chat-system-prompt";
 import { getClaudePath } from "@/lib/claude-path";
-import { designAgentArgs } from "@/lib/design-agent";
+import { designAgentArgs, designAgentSettings } from "@/lib/design-agent";
 import { resolveReferenceImages } from "@/lib/reference-images";
 import { cleanEnv, ROOT } from "./server";
 
@@ -15,7 +15,6 @@ import { cleanEnv, ROOT } from "./server";
  * as the chat route's agent does.
  */
 
-const DESIGN_TIMEOUT_MS = 8 * 60 * 1000; // the chat route's own limit
 
 export interface BaselineResult {
   ok: boolean;
@@ -37,7 +36,15 @@ export async function runDesignAgentOnly(options: { origin: string; carouselId: 
     carousel: { ...carousel, referenceImages: await resolveReferenceImages(carousel) },
     stylePreset: null,
   });
-  const args = designAgentArgs({ taskMessage: options.message, systemPrompt, resumeSessionId: null });
+  const settings = designAgentSettings();
+  if (!settings.ok) throw new Error(`Design Agent setting invalid: ${settings.code}`);
+  const args = designAgentArgs({
+    taskMessage: options.message,
+    systemPrompt,
+    resumeSessionId: null,
+    // The same optional cap the chat route reads; none unless the operator sets one.
+    budgetUsd: settings.budgetUsd,
+  });
 
   const started = Date.now();
   return new Promise((resolve) => {
@@ -49,7 +56,7 @@ export async function runDesignAgentOnly(options: { origin: string; carouselId: 
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, DESIGN_TIMEOUT_MS);
+    }, settings.timeoutMs); // the chat route's own deadline
     child.stdout.on("data", (chunk: Buffer) => {
       buffer += chunk.toString("utf8");
       let nl: number;

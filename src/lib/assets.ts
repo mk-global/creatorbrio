@@ -10,6 +10,7 @@ import {
   type AssetTask,
   type CreativeRunRecord,
   type CreativeStage,
+  type DesignContinuation,
   type RunOutcome,
 } from "./generation-status";
 import { IMAGE_DIMENSIONS, type GeneratedImage, type ImageAspectRatio } from "./image-service";
@@ -37,8 +38,18 @@ import { IMAGE_DIMENSIONS, type GeneratedImage, type ImageAspectRatio } from "./
  * deleting a carousel leaves its uploads today.
  */
 
-/** A blocked run's staged results and stored plan are kept this long for an explicit retry. */
+/**
+ * A blocked run's staged results and stored plan are kept this long for an
+ * explicit retry, and an unfinished design's stored handoff this long for an
+ * explicit Continue.
+ */
 export const RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How a design run can end without finishing, leaving work to continue: the
+ * same interruptions the slide fingerprint tracks (generation-status).
+ */
+const CONTINUABLE: ReadonlySet<RunOutcome> = new Set<RunOutcome>(["stopped", "failed", "timed-out", "server-stopped"]);
 
 const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Plan-local task keys: never a path, so safe as a file name. */
@@ -59,6 +70,8 @@ export type AssetErrorCode =
   | "run_not_found"
   | "retry_expired"
   | "retry_not_allowed"
+  | "continue_not_allowed"
+  | "continue_expired"
   | "plan_invalid";
 
 /** A typed failure of the asset lifecycle. The message is safe to show a user. */
@@ -277,6 +290,18 @@ export async function setCreativeStage(carouselId: string, runId: string, stage:
 }
 
 /**
+ * Enters the design stage, keeping the handoff so an unfinished design can be
+ * continued without planning again. Saved before the Design Agent starts, so
+ * a design cut off by a restart can be continued too.
+ */
+export async function beginDesign(carouselId: string, runId: string, continuation: DesignContinuation): Promise<void> {
+  await updateRun(carouselId, runId, (record) => {
+    record.stage = "designing";
+    record.continuation = continuation;
+  });
+}
+
+/**
  * Sets a task's state. `failureReason`, the image service's refusal code, is
  * kept only on a failed task; any other state removes it, so a task that runs
  * again never shows an earlier refusal.
@@ -316,6 +341,8 @@ export async function endCreativeRun(
     record.ended = { outcome, at: new Date().toISOString(), ...(options.reason ? { reason: options.reason } : {}) };
     if (options.deviations && options.deviations.length > 0) record.deviations = options.deviations;
     record.retry = outcome === "blocked" ? (options.retry === undefined ? record.retry : options.retry) : null;
+    // Only an unfinished design keeps its handoff; a completed one has nothing left to continue.
+    record.continuation = CONTINUABLE.has(outcome) ? (record.continuation ?? null) : null;
     for (const task of record.tasks) if (task.state === "running") task.state = "abandoned";
   });
   processState().live.delete(runId);
@@ -579,7 +606,8 @@ async function recoverRecord(carouselId: string): Promise<void> {
       r.stage === "designing"
         ? { outcome: "server-stopped", at: new Date().toISOString() }
         : { outcome: "blocked", at: new Date().toISOString(), reason: "restart-before-design" };
-    // Only a blocked run can be retried; nothing else keeps the user's message.
+    // Only a blocked run can be retried; a design cut off by a restart keeps
+    // only its handoff, for an explicit Continue.
     if (r.stage === "designing") r.retry = null;
   });
 }
@@ -615,7 +643,8 @@ export async function prepareCarouselRun(carouselId: string): Promise<void> {
 }
 
 function expired(record: CreativeRunRecord, now: number): boolean {
-  return record.ended?.outcome === "blocked" && now - Date.parse(record.ended.at) > RETRY_WINDOW_MS;
+  const kept = record.ended?.outcome === "blocked" || (!!record.ended && CONTINUABLE.has(record.ended.outcome));
+  return !!record.ended && kept && now - Date.parse(record.ended.at) > RETRY_WINDOW_MS;
 }
 
 /**
@@ -630,12 +659,13 @@ export async function sweepStaging(now = Date.now()): Promise<void> {
 
   // Purge an expired run's stored plan and message, even if it has no files.
   for (const [carouselId, record] of Object.entries(records)) {
-    if (!expired(record, now) || !record.retry || isCreativeRunLive(record.runId)) continue;
+    if (!expired(record, now) || (!record.retry && !record.continuation) || isCreativeRunLive(record.runId)) continue;
     await updateRun(carouselId, record.runId, (r) => {
       r.retry = null;
+      r.continuation = null;
       r.purgedAt = new Date(now).toISOString();
     });
-    log("info", "expired a blocked run's retry data", { carouselId, runId: record.runId });
+    log("info", "expired a run's retry or continuation data", { carouselId, runId: record.runId });
   }
 
   let entries: string[];
@@ -747,6 +777,87 @@ export async function prepareRetry(
     r.ended = null;
   });
   return { plan: record.retry.plan, message: record.retry.message, reused, pending };
+}
+
+// ---------------------------------------------------------------------------
+// Continue.
+
+/** What the editor offers for an unfinished design: its run and how far it got. */
+export interface ContinuationOffer {
+  runId: string;
+  /** Slides the carousel has now. */
+  saved: number;
+  /** Slides the stored plan calls for. */
+  expected: number;
+}
+
+function plannedSlideCount(plan: unknown): number | null {
+  const count = (plan as { execution?: { slideCount?: unknown } } | null)?.execution?.slideCount;
+  return typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
+}
+
+/** Whether a record is an unfinished design that can still be continued. */
+function continuable(record: CreativeRunRecord | undefined, now: number): record is CreativeRunRecord & { continuation: DesignContinuation } {
+  if (!record?.continuation || isCreativeRunLive(record.runId) || expired(record, now)) return false;
+  // A design cut off by a restart is not settled until it is next read; it is continuable too.
+  return record.ended ? CONTINUABLE.has(record.ended.outcome) : record.stage === "designing";
+}
+
+/**
+ * The Continue the editor can offer for a carousel, or null. Read-only; the
+ * caller reports null while the carousel is generating.
+ */
+export async function continuationOffer(carouselId: string, now = Date.now()): Promise<ContinuationOffer | null> {
+  const record = (await readCreativeRuns())[carouselId];
+  if (!continuable(record, now)) return null;
+  const expected = plannedSlideCount(record.continuation.plan);
+  if (expected === null) return null;
+  const carousel = await getCarousel(carouselId);
+  if (!carousel) return null;
+  return { runId: record.runId, saved: carousel.slides.length, expected };
+}
+
+/**
+ * Validates an explicit Continue of a carousel's most recent run and reopens
+ * its design. The run must have ended without finishing its design, within
+ * the retry window, and its stored plan must still be accepted by `isPlan`.
+ * The caller holds the carousel's active-run slot, so two continuations
+ * cannot run at once; nothing here plans or makes images again.
+ */
+export async function prepareContinuation(
+  carouselId: string,
+  runId: string,
+  isPlan: (plan: unknown) => boolean,
+  now = Date.now()
+): Promise<DesignContinuation> {
+  requireIds(runId, []);
+  await prepareCarouselRun(carouselId);
+  const record = (await readCreativeRuns())[carouselId];
+  if (!record || record.runId !== runId || !record.ended || !CONTINUABLE.has(record.ended.outcome)) {
+    throw new AssetError("continue_not_allowed", "Only the most recent unfinished design can be continued. Nothing was changed; send your request again.");
+  }
+  if (!continuable(record, now) || !isPlan(record.continuation.plan) || plannedSlideCount(record.continuation.plan) === null) {
+    throw new AssetError("continue_expired", "This unfinished design can no longer be continued. Nothing was changed; send your request again.");
+  }
+  const continuation = record.continuation;
+  processState().live.add(runId);
+  await updateRun(carouselId, runId, (r) => {
+    r.ended = null;
+    r.stage = "designing";
+    r.continued = (r.continued ?? 0) + 1;
+  });
+  return continuation;
+}
+
+/**
+ * Withdraws the Continue offer, for a user who accepts an unfinished
+ * carousel's slides as they are. Leaves a live run alone.
+ */
+export async function discardContinuation(carouselId: string): Promise<void> {
+  await mutateCreativeRuns((records) => {
+    const record = records[carouselId];
+    if (record?.continuation && !isCreativeRunLive(record.runId) && record.ended) record.continuation = null;
+  });
 }
 
 /** Where a run's staging lives; exported for tests that must prove it is not served. */

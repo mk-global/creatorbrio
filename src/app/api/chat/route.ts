@@ -21,7 +21,8 @@ import {
 } from "@/lib/chat-stream";
 import { finishCreativeRun, prepareCreativeRun, type CreativeRunInput } from "@/lib/creative-run";
 import { checkConformance } from "@/lib/creative-handoff";
-import { designAgentArgs } from "@/lib/design-agent";
+import { designAgentArgs, designAgentSettings } from "@/lib/design-agent";
+import { continuationOffer } from "@/lib/assets";
 import {
   beginGeneration,
   classifyRunExit,
@@ -31,12 +32,27 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// The longest creative run: linked pages (30 s), planning (120 s), images
-// (12 min) and design (8 min), about 23 minutes. A self-hosted Next.js server
-// does not enforce this value; the stage limits above are the real bound.
-export const maxDuration = 1500;
+// The longest creative run with default settings: linked pages (30 s),
+// planning (120 s), images (12 min) and design (15 min), about 30 minutes. A
+// self-hosted Next.js server does not enforce this value; the stage limits,
+// including an operator's DESIGN_AGENT_TIMEOUT_SECONDS, are the real bound.
+export const maxDuration = 1800;
 
 type DesignRun = Extract<Awaited<ReturnType<typeof prepareCreativeRun>>, { kind: "design" }>;
+
+/** The CLI's assistant-message errors that mean a usage or rate limit refused the request. */
+const PROVIDER_LIMIT_ERRORS = new Set(["rate_limit", "billing_error"]);
+
+/** The CLI's token counts, without anything else it reports. */
+function usageCounts(usage: unknown): Record<string, number> | null {
+  if (!usage || typeof usage !== "object") return null;
+  const u = usage as Record<string, unknown>;
+  const counts: Record<string, number> = {};
+  for (const key of ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]) {
+    if (typeof u[key] === "number") counts[key] = u[key] as number;
+  }
+  return counts;
+}
 
 /** How long a cancelled Claude CLI gets to exit before it is killed. */
 const FORCE_KILL_AFTER_MS = 5_000;
@@ -58,6 +74,7 @@ export async function POST(request: NextRequest) {
     carouselId?: string;
     stylePresetId?: string;
     retryRunId?: unknown;
+    continueRunId?: unknown;
   };
   try {
     body = await request.json();
@@ -65,7 +82,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { sessionId, carouselId, stylePresetId, retryRunId } = body;
+  const { sessionId, carouselId, stylePresetId, retryRunId, continueRunId } = body;
 
   const messageCheck = checkChatMessage(body.message);
   if (!messageCheck.ok) {
@@ -91,6 +108,11 @@ export async function POST(request: NextRequest) {
   // before any lookup.
   if (retryRunId !== undefined && retryRunId !== null && (!isRunId(retryRunId) || typeof carouselId !== "string" || !carouselId)) {
     return NextResponse.json({ error: "Invalid retry" }, { status: 400 });
+  }
+  // A Continue likewise names one unfinished design of this carousel, and is never also a retry.
+  const continuing = continueRunId !== undefined && continueRunId !== null;
+  if (continuing && (!isRunId(continueRunId) || typeof carouselId !== "string" || !carouselId || (retryRunId ?? null) !== null)) {
+    return NextResponse.json({ error: "Invalid continue" }, { status: 400 });
   }
 
   // The carousel's run begins before any work for this request, and a
@@ -127,6 +149,8 @@ export async function POST(request: NextRequest) {
         message,
         references: promptCarousel.referenceImages,
         retryRunId: isRunId(retryRunId) ? retryRunId : null,
+        continueRunId: isRunId(continueRunId) ? continueRunId : null,
+        resumingSession: resumeSessionId !== null,
       };
     }
     systemPrompt = buildSystemPrompt({
@@ -156,7 +180,10 @@ export async function POST(request: NextRequest) {
   const claudePath = getClaudePath();
   const abortController = new AbortController();
 
-  const designArgs = (taskMessage: string) => designAgentArgs({ taskMessage, systemPrompt, resumeSessionId });
+  // Read per request, before any work, so a bad setting changes nothing.
+  const settings = designAgentSettings();
+  const budgetUsd = settings.ok ? settings.budgetUsd : null;
+  const designArgs = (taskMessage: string) => designAgentArgs({ taskMessage, systemPrompt, resumeSessionId, budgetUsd });
 
   const encoder = new TextEncoder();
   // Set by the client going away (Stop, a reload, a closed tab).
@@ -188,6 +215,14 @@ export async function POST(request: NextRequest) {
       };
 
       void (async () => {
+        if (!settings.ok) {
+          console.warn("[chat] design agent setting invalid", { carouselId: carouselId ?? null, stage: "design", failureCategory: settings.code });
+          fail(settings.code);
+          await endGeneration("not-started");
+          send({ type: "done", sessionId: null });
+          close();
+          return;
+        }
         // The creative run comes first: linked pages, the plan and its images.
         // It either hands the Design Agent its task message or ends the run
         // here, before anything can change the slides.
@@ -241,6 +276,8 @@ export async function POST(request: NextRequest) {
       })();
 
       function design(taskMessage: string, creativeRun: DesignRun | null) {
+      if (!settings.ok) return;
+      const { timeoutMs } = settings;
       let childProcess: ReturnType<typeof spawn>;
       const isWindowsShim =
         process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
@@ -281,8 +318,15 @@ export async function POST(request: NextRequest) {
       // the session it started, which is how it is told apart from a failure
       // inside a running conversation.
       let sessionStarted = false;
-      // The Design Agent's reported cost, for the run log.
+      // What the CLI reported, for the run log: its estimated cost (a list-price
+      // estimate, not an invoiced charge), token usage and turns.
       let designCostUsd: number | null = null;
+      let designUsage: Record<string, number> | null = null;
+      let designTurns: number | null = null;
+      // A usage, rate or spending limit outside CreatorBrio, as the CLI reports it.
+      let providerError: string | null = null;
+      let toolErrors = 0;
+      let permissionDenials = 0;
       const designStarted = Date.now();
       let resolvedSessionId: string | null = null;
       const noteSession = (id: unknown) => {
@@ -294,6 +338,25 @@ export async function POST(request: NextRequest) {
         if (event.type === "system" && event.subtype === "init") {
           sessionStarted = true;
           noteSession(event.session_id);
+          return;
+        }
+
+        // The CLI reports a refused request for a usage or rate limit in two
+        // ways: a rejected rate-limit event, and an error on the assistant
+        // message it synthesizes instead of a reply.
+        if (event.type === "rate_limit_event") {
+          const info = event.rate_limit_info as Record<string, unknown> | undefined;
+          if (info?.status === "rejected") providerError ??= "rate_limit_rejected";
+          return;
+        }
+        if (event.type === "assistant" && typeof event.error === "string" && PROVIDER_LIMIT_ERRORS.has(event.error)) {
+          providerError ??= event.error;
+        }
+        if (event.type === "user" && event.message) {
+          const content = (event.message as Record<string, unknown>).content;
+          if (Array.isArray(content)) {
+            toolErrors += content.filter((b) => (b as Record<string, unknown>)?.type === "tool_result" && (b as Record<string, unknown>).is_error === true).length;
+          }
           return;
         }
 
@@ -313,6 +376,9 @@ export async function POST(request: NextRequest) {
 
         if (event.type === "result") {
           if (typeof event.total_cost_usd === "number") designCostUsd = event.total_cost_usd;
+          if (typeof event.num_turns === "number") designTurns = event.num_turns;
+          designUsage = usageCounts(event.usage);
+          if (Array.isArray(event.permission_denials)) permissionDenials = event.permission_denials.length;
           if (event.is_error === true) {
             // An error result is not a reply; it is reported as a failure.
             resultIsError = true;
@@ -320,8 +386,13 @@ export async function POST(request: NextRequest) {
               resumeFailed()
                 ? "session_not_found"
                 : event.subtype === "error_max_budget_usd"
-                  ? "budget_exceeded"
-                  : "agent_failed"
+                  ? // Only a cap this app was told to pass is CreatorBrio's own.
+                    budgetUsd !== null
+                    ? "budget_exceeded"
+                    : "usage_limited"
+                  : providerError
+                    ? "usage_limited"
+                    : "agent_failed"
             );
             return;
           }
@@ -361,11 +432,14 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      // Timeout: kill subprocess after 8 minutes (autonomous mode creates many slides)
+      // The design run's deadline (DESIGN_AGENT_TIMEOUT_SECONDS). A CLI that
+      // ignores the stop is killed outright, so the run always ends.
+      let deadlineKill: ReturnType<typeof setTimeout> | null = null;
       const timeout = setTimeout(() => {
         timedOut = true;
         childProcess.kill();
-      }, 480_000);
+        deadlineKill = setTimeout(() => childProcess.kill("SIGKILL"), FORCE_KILL_AFTER_MS);
+      }, timeoutMs);
 
       childProcess.on("error", async (err) => {
         clearTimeout(timeout);
@@ -407,6 +481,7 @@ export async function POST(request: NextRequest) {
 
       childProcess.on("exit", async (code) => {
         clearTimeout(timeout);
+        if (deadlineKill) clearTimeout(deadlineKill);
         handleLine(buffer);
         buffer = "";
 
@@ -414,7 +489,7 @@ export async function POST(request: NextRequest) {
           fail("timed_out");
         } else if (code !== 0 && !cancelled) {
           // Non-zero, or killed by a signal nobody here sent.
-          fail(resumeFailed() ? "session_not_found" : "agent_failed");
+          fail(resumeFailed() ? "session_not_found" : providerError ? "usage_limited" : "agent_failed");
         }
         if (code && code !== 0) {
           const log = errorCode === "session_not_found" ? console.warn : console.error;
@@ -434,15 +509,32 @@ export async function POST(request: NextRequest) {
 
         // A session that could not be resumed is not offered again.
         const nextSessionId = errorCode === "session_not_found" ? null : resolvedSessionId;
+        // Counts, codes and settings only: never the message, the plan or slide copy.
+        const after = carouselId ? await getCarousel(carouselId).catch(() => null) : null;
+        const offer = carouselId && outcome !== "completed" ? await continuationOffer(carouselId).catch(() => null) : null;
         console.info("[chat] run finished", {
           carouselId: carouselId ?? null,
+          runId: creativeRun?.runId ?? null,
+          stage: "design",
+          continued: creativeRun?.continued ?? false,
           resumedSessionId: resumeSessionId,
           sessionId: nextSessionId,
           outcome,
           exitCode: code,
           errorCode,
+          failureCategory: errorCode ?? (outcome === "stopped" ? "cancelled" : null),
+          providerError,
+          budgetUsd,
+          timeoutMs,
           designDurationMs: Date.now() - designStarted,
           designCostUsd,
+          designUsage,
+          designTurns,
+          toolErrors,
+          permissionDenials,
+          slidesSaved: after?.slides.length ?? null,
+          slidesExpected: creativeRun?.plan.execution.slideCount ?? null,
+          continuationAvailable: offer !== null,
         });
         send({ type: "done", sessionId: nextSessionId });
         close();

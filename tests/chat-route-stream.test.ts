@@ -237,7 +237,8 @@ describe("chat errors after streaming starts (#3)", () => {
     expect(events[3]).toEqual({
       type: "error",
       code: "agent_failed",
-      message: "The design agent stopped unexpectedly before finishing. Send your message again to retry.",
+      message:
+        "The design agent stopped unexpectedly before finishing. Slides it already saved are kept; select Continue to make only the missing ones, or send your message again.",
     });
     expectNoDiagnostics(raw);
     const run = events.reduce(reduceChatRun, INITIAL_CHAT_RUN);
@@ -252,15 +253,21 @@ describe("chat errors after streaming starts (#3)", () => {
 
   it("reports an error result once, with its own code, and never as a reply", async () => {
     await play("budget");
-    const carousel = await createCarousel("Errors", "4:5");
-    const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
+    // Only an operator's own cap is reported as CreatorBrio's (#127).
+    process.env.DESIGN_AGENT_MAX_BUDGET_USD = "2.5";
+    try {
+      const carousel = await createCarousel("Errors", "4:5");
+      const { raw, events } = await readEvents(await postChat({ carouselId: carousel.id }));
 
-    expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
-    expect(events[3]).toMatchObject({ type: "error", code: "budget_exceeded" });
-    expectNoDiagnostics(raw);
+      expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
+      expect(events[3]).toMatchObject({ type: "error", code: "budget_exceeded" });
+      expectNoDiagnostics(raw);
+    } finally {
+      delete process.env.DESIGN_AGENT_MAX_BUDGET_USD;
+    }
   });
 
-  it("reports a timeout kill, which exits without a code", async () => {
+  it("reports a timeout kill at the default 15-minute deadline, which exits without a code", async () => {
     await play("hang");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const carousel = await createCarousel("Errors", "4:5");
@@ -277,7 +284,10 @@ describe("chat errors after streaming starts (#3)", () => {
       events.push(...parser.push(text));
     }
 
+    // Still running at the old 8-minute limit and just before the deadline (#127).
     await vi.advanceTimersByTimeAsync(480_000);
+    expect(isGenerating(carousel.id)).toBe(true);
+    await vi.advanceTimersByTimeAsync(900_000 - 480_000);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;

@@ -330,6 +330,22 @@ export interface CreativeRunRecord {
   purgedAt?: string;
   /** Differences between the finished design and the visual plan, as shown to the user. */
   deviations?: string[];
+  /**
+   * What an explicit Continue needs (#127), kept from the moment design starts
+   * until the design completes: the validated plan, the exact task the Design
+   * Agent was given, and each plan image's asset ID (null when an optional
+   * image could not be made). Absent in records from before continuation.
+   */
+  continuation?: DesignContinuation | null;
+  /** How many times this run's design was continued. */
+  continued?: number;
+}
+
+/** The stored handoff of a design run, enough to continue it without planning again. */
+export interface DesignContinuation {
+  plan: unknown;
+  designMessage: string;
+  assetIds: Record<string, string | null>;
 }
 
 /**
