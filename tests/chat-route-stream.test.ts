@@ -12,7 +12,8 @@ import {
   sessionAfterRun,
   type ChatStreamEvent,
 } from "@/lib/chat-stream";
-import { stubDirector } from "./helpers/stub-director";
+import { stubDirector, typographyPlanFor } from "./helpers/stub-director";
+import { TEN_PAGE_BRIEF } from "./fixtures/ten-page-brief";
 
 // These tests cover the Design Agent run; the Visual Director is stubbed with an image-free plan.
 let director: ReturnType<typeof stubDirector>;
@@ -395,4 +396,41 @@ describe("chat message limits (Invalid message incident)", () => {
       expect(isGenerating(carousel.id)).toBe(false);
     }
   );
+});
+
+describe("a fully specified ten-page request reaches the Design Agent (#124)", () => {
+  it("plans the ten pages as ten slides, with no images or sources, and hands the whole brief to the Design Agent", async () => {
+    // The plan the founder's Director returned for this request: the user's ten pages, as stated.
+    director.restore();
+    director = stubDirector((request) => {
+      const plan = typographyPlanFor(request);
+      const slides = Array.from({ length: 10 }, (_, i) => ({
+        index: i + 1,
+        visualIntent: "The page's approved copy, set in type with a quiet diagram",
+        treatment: "typography",
+        assetRefs: [] as string[],
+        styleReferenceIds: [] as string[],
+      }));
+      return {
+        ...plan,
+        execution: { ...plan.execution, requestType: "new", slideCount: 10, slideCountBasis: "user-explicit", slides, assets: [] },
+      };
+    });
+    await play("success");
+    const carousel = await createCarousel("Ten pages", "4:5");
+
+    const { events } = await readEvents(await postChat({ carouselId: carousel.id, message: TEN_PAGE_BRIEF }));
+
+    // On main this run was blocked as plan_failed before the Design Agent started.
+    expect(events.filter((e) => e.type === "blocked" || e.type === "error")).toEqual([]);
+    // Planning then designing: no image stage, so no image job ran.
+    expect(events.filter((e) => e.type === "stage")).toEqual(STAGES);
+    expect(events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
+    expect(director.requests).toHaveLength(1);
+    expect(director.requests[0].sources).toEqual([]);
+    const args = await argv();
+    const task = args[args.indexOf("-p") + 1];
+    expect(task.startsWith(`${TEN_PAGE_BRIEF}\n\n`)).toBe(true);
+    expect(task).toContain("Slides to produce: 10 ");
+  });
 });

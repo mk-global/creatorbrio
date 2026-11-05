@@ -140,6 +140,10 @@ The Director never picks a slide count of its own.
 The first applicable rule wins, and the plan records which one it used:
 
 1. A new request that states a count uses it (`user-explicit`).
+   A count in slides always applies.
+   A carousel exported as a document has one page per slide, so a length in pages ("10 pages", "a ten-page PDF") can also be planned as `user-explicit` (#124).
+   A page count is never binding, because it can describe a source instead ("my 40-page ebook"): the Director decides, and the validator only checks that a `user-explicit` count is one the message states.
+   Only a slide count over the maximum is refused before planning.
 2. A revision keeps its current count (`existing`), unless the user asks to add or remove slides (`user-change`).
 3. A new request for a cover is one slide (`single-cover`).
 4. Any other new request uses the Design Agent's own default arc of eight slides (`baseline-default`).
@@ -165,7 +169,7 @@ Director tools: `Read`
 
 These are the CLI's permission rules, a policy boundary rather than operating-system isolation: the CLI runs as the same account as the app.
 
-Every outcome is typed (`runDirector` in `src/lib/visual-director.ts`): planned, start failure, timeout, cancellation, budget exceeded, spending cap setting invalid, agent failure, no output, invalid plan, or a missing capability.
+Every outcome is typed (`runDirector` in `src/lib/visual-director.ts`): planned, start failure, timeout, cancellation, budget exceeded, spending cap setting invalid, agent failure, no output, invalid plan, a plan refused only for its slide count (which tells the user to state the count in slides or pages), or a missing capability.
 There is no automatic re-plan.
 The server log records counts and outcome codes only, never the message, page text or plan text.
 

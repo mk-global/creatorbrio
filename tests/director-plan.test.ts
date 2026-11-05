@@ -5,6 +5,7 @@ import {
   BASELINE_DEFAULT_SLIDES,
   MAX_IMAGE_TASKS,
   explicitCountOverLimit,
+  explicitPageCounts,
   explicitSlideCounts,
   imagePrompt,
   mentionsCover,
@@ -14,6 +15,7 @@ import {
 } from "@/lib/director-plan";
 import { MAX_PROMPT_CHARS } from "@/lib/image-service";
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
+import { TEN_PAGE_BRIEF } from "./fixtures/ten-page-brief";
 
 // ---------------------------------------------------------------------------
 // Builders. Every test starts from a plan the validator accepts and breaks one
@@ -131,6 +133,27 @@ describe("slide-count helpers", () => {
     ["the 2025 slides deck", []],
   ])("finds the explicit counts in %j", (message, counts) => {
     expect(explicitSlideCounts(message)).toEqual(counts);
+  });
+
+  it.each([
+    ["Exactly 10 pages, 4:5 portrait", [10]],
+    ["a ten-page document", [10]],
+    ["a 10-page LinkedIn PDF carousel", [10]],
+    ["Create all ten pages", [10]],
+    ["one page", [1]],
+    ["4 pages or maybe 6 pages", [4, 6]],
+    ["Page 01: Cover", []],
+    ["page marker 03 / 10 bottom right", []],
+    ["see page 7, then pages 8 and 9", []],
+    ["the 2025 pages archive", []],
+    ["Make 10 slides", []],
+  ])("finds the page counts in %j", (message, counts) => {
+    expect(explicitPageCounts(message)).toEqual(counts);
+  });
+
+  it("finds the ten-page brief's length in pages and no slide count", () => {
+    expect(explicitPageCounts(TEN_PAGE_BRIEF)).toEqual([10]);
+    expect(explicitSlideCounts(TEN_PAGE_BRIEF)).toEqual([]);
   });
 
   it("recognises a cover request", () => {
@@ -295,6 +318,60 @@ describe("validatePlan: slide-count precedence", () => {
 
   it("refuses an unknown basis", () => {
     expect(errorsOf(withExecution({ slideCountBasis: "director-choice" })).join()).toMatch(/not a known basis/);
+  });
+});
+
+describe("validatePlan: a length stated in pages (#124)", () => {
+  const counts = (slideCount: number, slideCountBasis: string, requestType = "new") =>
+    withExecution({ requestType, slideCount, slideCountBasis, slides: typographySlides(slideCount), assets: [] });
+
+  it("accepts the ten-page brief planned as ten user-explicit slides, the plan refused in the founder's run", () => {
+    // Refused on main with: execution.slideCountBasis: user-explicit needs a new request that states a count
+    const result = validatePlan(counts(10, "user-explicit"), context({ message: TEN_PAGE_BRIEF }));
+    expect(result.ok ? [] : result.errors).toEqual([]);
+  });
+
+  it.each([
+    "Design a 10-page LinkedIn PDF carousel about hiring",
+    "Make a ten-page document about hiring",
+    "Exactly 10 pages about hiring, 4:5",
+    "A 10-page PDF carousel on hiring",
+    "Ten pages on hiring, please",
+  ])("accepts ten user-explicit slides for %j", (message) => {
+    accepted(counts(10, "user-explicit"), context({ message }));
+  });
+
+  it("keeps a slide count mandatory, and ahead of a page count", () => {
+    accepted(counts(10, "user-explicit"), context({ message: "Make 10 slides about hiring" }));
+    expect(errorsOf(counts(8, "baseline-default"), context({ message: "Make 10 slides about hiring" })).join()).toMatch(
+      /must be user-explicit/
+    );
+    const both = context({ message: "Summarise my 12-page report in 5 slides" });
+    accepted(counts(5, "user-explicit"), both);
+    expect(errorsOf(counts(12, "user-explicit"), both).join()).toMatch(/must equal the count the message states/);
+  });
+
+  it("lets a page count that describes a source document leave the slide count alone", () => {
+    const ebook = context({ message: "Turn my 40-page ebook into a carousel" });
+    accepted(counts(BASELINE_DEFAULT_SLIDES, "baseline-default"), ebook);
+    accepted(counts(1, "single-cover"), context({ message: "Design a cover for my 12-page report" }));
+    expect(explicitCountOverLimit("Turn my 40-page ebook into a carousel", 0)).toBeNull();
+  });
+
+  it("still refuses a user-explicit count the message never states", () => {
+    expect(errorsOf(counts(8, "user-explicit"), context({ message: TEN_PAGE_BRIEF })).join()).toMatch(
+      /execution.slideCount: must equal the count the message states/
+    );
+    expect(errorsOf(counts(3, "user-explicit"), context({ message: "Page 03 is too busy; see page 7" })).join()).toMatch(
+      /user-explicit needs a new request that states a count/
+    );
+  });
+
+  it("treats a page count in a revision like a slide count in one: a change, never a new request's count", () => {
+    const ctx = context({ currentSlideCount: 6, message: "Make it 10 pages" });
+    accepted(counts(10, "user-change", "revision"), ctx);
+    accepted(counts(6, "existing", "revision"), ctx);
+    expect(errorsOf(counts(10, "user-explicit", "revision"), ctx).join()).toMatch(/states a count/);
   });
 });
 
