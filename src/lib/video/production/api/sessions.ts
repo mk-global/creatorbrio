@@ -15,23 +15,42 @@
  * On disk (`data/video-auth/`, owner-only):
  *
  * ```text
- * pairing/<sha256(code)>.json      { v: 1, createdAt, expiresAt }   written by the script
- * sessions/<sha256(token)>.json    { v: 1, createdAt, expiresAt }   written by the server
+ * pairing/<sha256(code)>.json                { v: 1, createdAt, expiresAt }   written by the script
+ * claimed/<sha256(code)>.<nonce>.json        a redeemed code's record, moved here by the server
+ * claimed/<sha256(code)>.won                 empty marker held by the one redeemer that won
+ * sessions/<sha256(token)>.json              { v: 1, createdAt, expiresAt }   written by the server
  * ```
  *
  * Only hashes are stored, so reading the directory reveals no usable code or
- * token. Redeeming a code deletes its file first: `unlink` succeeds for
- * exactly one caller, in any process, so a code works once even under
- * concurrent attempts and across restarts. Sessions are checked against
- * their file on every request, so revoking one takes effect immediately in
- * every process, and a session survives a server restart until it expires.
+ * token. Sessions are checked against their file on every request, so
+ * revoking one takes effect immediately in every process, and a session
+ * survives a server restart until it expires.
+ *
+ * A code works once, even under concurrent attempts in any number of
+ * processes and across restarts. Deleting the record is not a claim: on
+ * macOS 27.2 (APFS), concurrent `unlink` calls on one file were seen to
+ * report success to several callers (#122). Redemption therefore takes three
+ * steps, each of which alone refuses a second redeemer:
+ *
+ * 1. `rename` the record out of `pairing/` to a name unique to this attempt.
+ *    Only one rename of a path succeeds, and afterwards the code no longer
+ *    exists where redemption looks for it, so nothing (a crash, a restart or
+ *    cleanup) can make it redeemable again.
+ * 2. Create `claimed/<hash>.won` exclusively (`wx`). Exactly one caller can
+ *    create it. This does not rely on step 1 being exclusive.
+ * 3. Read the moved record and check it has not expired.
+ *
+ * A crash after any step leaves the code used and creates no session. Files
+ * left in `claimed/` are removed once older than `CLAIM_RETENTION_MS`, a
+ * bounded number after each successful redemption; removing them cannot
+ * revive a code, since redemption only ever looks in `pairing/`.
  *
  * The format is shared with `scripts/studio-pair.mjs`, which has no access
  * to this TypeScript; a test pairs through the real script.
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, open, readdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 export const SESSION_COOKIE = "cb_studio_session";
@@ -46,12 +65,19 @@ export const MAX_SESSIONS = 16;
 export const MAX_FAILURES_PER_MINUTE = 5;
 /** Failed redemptions after which every pending code is cancelled. */
 export const FAILURES_BEFORE_CANCEL = 10;
+/** How long files in `claimed/` are kept; well past any code's lifetime and any concurrent redeemer. */
+export const CLAIM_RETENTION_MS = 2 * PAIRING_TTL_MS;
+/** Cleanup of `claimed/` after a successful redemption removes at most this many files... */
+export const CLAIM_CLEANUP_BATCH = 32;
+/** ...and inspects at most this many, from a random starting point, so its cost stays bounded. */
+export const CLAIM_CLEANUP_SCAN = 128;
 
 /** Crockford base32 without I, L, O and U: 20 characters carry 100 bits. */
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{20}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const HASH_FILE = /^[0-9a-f]{64}\.json$/;
+const CLAIMED_FILE = /^[0-9a-f]{64}\.(?:[0-9a-f]{16}\.json|won)$/;
 
 export const sha256 = (value: string) => createHash("sha256").update(value, "utf-8").digest("hex");
 
@@ -116,6 +142,7 @@ export class StudioSessions {
   }
 
   private pairingDir = () => path.join(/*turbopackIgnore: true*/ this.dir, "pairing");
+  private claimedDir = () => path.join(/*turbopackIgnore: true*/ this.dir, "claimed");
   private sessionDir = () => path.join(/*turbopackIgnore: true*/ this.dir, "sessions");
 
   /**
@@ -132,7 +159,7 @@ export class StudioSessions {
     }
 
     const claimed = await this.claim(input);
-    if (!claimed) {
+    if (claimed === null) {
       this.failures.push(now);
       if (++this.failuresSinceSuccess >= FAILURES_BEFORE_CANCEL) {
         await this.cancelPendingCodes();
@@ -141,26 +168,62 @@ export class StudioSessions {
       return { ok: false, code: "invalid_code", message: "the pairing code is not valid; it may be mistyped, expired or already used" };
     }
     this.failuresSinceSuccess = 0;
+    await this.removeOldClaims(claimed);
     return this.createSession();
   }
 
-  /** Claims a code by deleting its record. Returns true only for the one caller whose delete succeeded on an unexpired code. */
-  private async claim(input: unknown): Promise<boolean> {
+  /**
+   * Claims a code (see the file header). Returns the code's hash only for the
+   * one caller that moved the record, created the winner marker and found the
+   * code unexpired, and null otherwise. Any failure leaves the code
+   * unredeemable.
+   */
+  private async claim(input: unknown): Promise<string | null> {
     const code = normaliseCode(input);
-    if (!code) return false;
-    const file = path.join(/*turbopackIgnore: true*/ this.pairingDir(), `${sha256(code)}.json`);
-    let record: Record_ | null;
+    if (!code) return null;
+    const hash = sha256(code);
+    const claimedDir = this.claimedDir();
+    await mkdir(claimedDir, { recursive: true, mode: 0o700 });
+    const moved = path.join(/*turbopackIgnore: true*/ claimedDir, `${hash}.${randomBytes(8).toString("hex")}.json`);
     try {
-      record = parseRecord(await readFile(file, "utf-8"));
+      await rename(path.join(/*turbopackIgnore: true*/ this.pairingDir(), `${hash}.json`), moved);
     } catch {
-      return false;
+      return null; // no such code, or another redeemer moved it first
     }
     try {
-      await unlink(file);
+      await (await open(path.join(/*turbopackIgnore: true*/ claimedDir, `${hash}.won`), "wx", 0o600)).close();
     } catch {
-      return false; // another redeemer won
+      return null; // another redeemer holds the marker
     }
-    return record !== null && Date.parse(record.expiresAt) > this.now();
+    const record = parseRecord(await readFile(moved, "utf-8").catch(() => ""));
+    await unlink(moved).catch(() => undefined);
+    return record !== null && Date.parse(record.expiresAt) > this.now() ? hash : null;
+  }
+
+  /**
+   * Removes files from `claimed/` that are older than `CLAIM_RETENTION_MS`:
+   * winner markers, and records left by a crash between the rename and their
+   * removal. It runs only after a successful redemption, which needs a code
+   * from the operator's terminal, so no caller can make it run more often,
+   * and each run inspects at most `CLAIM_CLEANUP_SCAN` files and removes at
+   * most `CLAIM_CLEANUP_BATCH`. Starting at a random point means every file
+   * is reached eventually. It never touches `pairing/`, so it cannot make a
+   * code redeemable again, and it keeps the files of the code just claimed
+   * (`keep`), so a clock jump cannot release a marker its winner still needs.
+   */
+  private async removeOldClaims(keep: string): Promise<void> {
+    const dir = this.claimedDir();
+    const names = (await readdir(dir).catch(() => [] as string[])).filter((n) => CLAIMED_FILE.test(n) && !n.startsWith(`${keep}.`));
+    const start = names.length ? randomBytes(4).readUInt32BE() % names.length : 0;
+    let removed = 0;
+    for (let i = 0; i < Math.min(names.length, CLAIM_CLEANUP_SCAN) && removed < CLAIM_CLEANUP_BATCH; i++) {
+      const file = path.join(/*turbopackIgnore: true*/ dir, names[(start + i) % names.length]);
+      const info = await stat(file).catch(() => null);
+      if (info && this.now() - info.mtimeMs > CLAIM_RETENTION_MS) {
+        await unlink(file).catch(() => undefined);
+        removed++;
+      }
+    }
   }
 
   private async createSession(): Promise<RedeemResult> {

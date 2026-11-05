@@ -9,9 +9,9 @@
 //
 // The code is printed to this terminal only, never written to a log or served
 // over HTTP. Only its SHA-256 hash is stored, in an owner-only file under
-// data/video-auth/pairing/, with a five-minute expiry; the server deletes it
-// when it is redeemed, so it works once. The format is read by
-// src/lib/video/production/api/sessions.ts.
+// data/video-auth/pairing/, with a five-minute expiry; the server moves it out
+// of that folder when it is redeemed, so it works once. The format is read by
+// src/lib/video/production/api/sessions.ts, which describes the claim.
 //
 // The script refuses to print a code unless its output is a terminal, so a
 // tool whose output is captured or logged does not record a code by

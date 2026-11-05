@@ -49,7 +49,12 @@ Pairing gives a browser a session without the human key ever reaching it.
    - Only the code's SHA-256 hash is stored, in `data/video-auth/pairing/` (directory 0700, file 0600). No HTTP endpoint, page or agent tool issues or reveals codes.
 2. **The person enters the code in the Studio page.** The page sends `POST /api/video/session` with `{ "code" }`.
    - The request must have a loopback Host and this app's exact `Origin` (present, not merely "not foreign"), carry `X-CreatorBrio-Request: studio`, and must not be marked by the browser as anything other than `Sec-Fetch-Site: same-origin`.
-   - The server deletes the code's record before it creates a session. Deleting succeeds for exactly one caller in any process, so a code cannot be replayed, and simultaneous redeemers cannot both win, even across a restart.
+   - Before it creates a session, the server claims the code in three steps, each of which alone refuses a second redeemer:
+     1. It renames the code's record out of `pairing/` into `data/video-auth/claimed/` under a name unique to that attempt. Only one rename of a file succeeds, and the code then no longer exists where redemption looks for it.
+     2. It creates the marker `claimed/<hash>.won` exclusively, which only one caller can do.
+     3. It reads the moved record and checks it has not expired.
+   - So a code cannot be replayed, and simultaneous redeemers cannot both win, in any number of processes or across a restart. Deleting the record is not used as the claim: on macOS 27.2 (APFS), concurrent deletes of one file were seen to report success to several callers.
+   - A crash at any step leaves the code used and creates no session. Files in `claimed/` are removed once they are ten minutes old. Cleanup runs only after a successful pairing, and inspects at most 128 files and removes at most 32 each time. Removing them cannot make a code redeemable again.
    - On success it answers 201 `{ status: "paired", expiresAt }` and sets the cookie. The body never contains the token.
 3. **The session** is 32 random bytes. The server stores only its SHA-256 hash, in `data/video-auth/sessions/` (0600), and checks that record on every request, so revocation takes effect at once in every process.
    - A session lasts 12 hours. It survives a server restart, and pairing again replaces the browser's previous session.
@@ -81,6 +86,7 @@ DNS rebinding is stopped by the loopback Host check. In addition, a rebound doma
 - **A stolen cookie works until it expires or is revoked.** The cookie value is a bearer token: a non-browser client that copies it can send the Studio header itself. Signing out or `--revoke-all` ends it at once.
 - **Cookies are not isolated by port.** Another web server on this computer at the same host name receives the cookie if the browser sends a request to it under `/api/video`.
 - **The cookie is not `Secure` over plain HTTP** on `localhost` or `127.0.0.1`. It is when the app is served over HTTPS.
+- **Single use relies on the local filesystem's `rename` and exclusive create.** Both were tested to give exactly one winner under contention on macOS 27.2 (APFS) and on Linux, the platforms the app runs on. A `data/` folder on a network share or a synced folder is not covered by that evidence.
 
 ## Endpoints
 
