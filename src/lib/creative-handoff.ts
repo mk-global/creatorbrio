@@ -130,6 +130,87 @@ export function buildHandoff({ plan, assets, references, sources }: HandoffInput
 }
 
 // ---------------------------------------------------------------------------
+// Continuation (#127).
+
+export const CONTINUATION_START = "--- Continuing an unfinished design ---";
+export const CONTINUATION_END = "--- End of continuation ---";
+export const ORIGINAL_TASK_START = "--- The original request, for reference ---";
+export const ORIGINAL_TASK_END = "--- End of the original request ---";
+
+export interface ContinuationInput {
+  plan: ReadyPlan;
+  /** The carousel's slides as they are now. */
+  slides: readonly Pick<Slide, "id" | "order" | "notes">[];
+  /** The exact task the interrupted run was given: the user's message and the visual plan. */
+  originalTask: string;
+  /**
+   * Whether the Design Agent resumes the interrupted run's own conversation,
+   * which already holds the original task. A new conversation is given it in full.
+   */
+  resumingSession: boolean;
+}
+
+/** A slide's note, shortened, on one line: the agent's own description of it. */
+const noteOf = (notes: string | undefined) => {
+  const line = (notes ?? "").replace(/\s+/g, " ").trim();
+  return line ? ` - ${line.length > 80 ? `${line.slice(0, 79)}…` : line}` : "";
+};
+
+/**
+ * The task message for an explicit Continue: what is saved, what is still
+ * missing according to the stored plan, and how to finish without redoing or
+ * duplicating work. Built from the carousel as it is now, never from what the
+ * interrupted run reported. Pure; the Design Agent's system prompt is unchanged.
+ */
+export function buildContinuationMessage({ plan, slides, originalTask, resumingSession }: ContinuationInput): string {
+  const x = plan.execution;
+  const ordered = [...slides].sort((a, b) => a.order - b.order);
+  const saved = ordered.length;
+  const lines: string[] = [
+    CONTINUATION_START,
+    "The design for this carousel was interrupted before it finished. Continue it from where it stopped; do not start over.",
+    "",
+  ];
+  if (saved === 0) {
+    lines.push(`No slides are saved yet. The plan calls for ${x.slideCount}.`);
+  } else {
+    lines.push(`Saved so far: ${saved} slide${saved === 1 ? "" : "s"}, in this order (the plan calls for ${x.slideCount}):`);
+    for (const [i, slide] of ordered.entries()) lines.push(`- Slide ${i + 1} (ID: ${slide.id})${noteOf(slide.notes)}`);
+    lines.push(
+      "",
+      "Keep the saved slides as they are: do not delete, recreate, reorder or rewrite them, and do not create them again. Read their HTML with GET on the carousel first, so the new slides match their design: the same fonts, colours, margins and layout system."
+    );
+  }
+  lines.push("");
+  if (saved < x.slideCount) {
+    const missing = x.slides.filter((sl) => sl.index > saved);
+    lines.push(
+      `Still to make: slide${x.slideCount - saved === 1 ? "" : "s"} ${saved + 1 === x.slideCount ? saved + 1 : `${saved + 1} to ${x.slideCount}`} of the plan.`,
+      ...missing.map((sl) => `- Slide ${sl.index}: ${sl.treatment}. Visual intent: ${sl.visualIntent}`),
+      `Create only these, one at a time and in order, with POST to this carousel's slides endpoint, so they follow the saved slides. Before each POST, check that the carousel still has fewer than ${x.slideCount} slides, so no slide is created twice. Stop when it has ${x.slideCount}.`
+    );
+  } else {
+    lines.push(
+      `The carousel already has all ${x.slideCount} slides the plan calls for. Finish only what the original request still needs, changing as little as possible: do not add, delete, recreate or reorder slides, and leave every finished slide as it is.`
+    );
+  }
+  if (resumingSession) {
+    lines.push("", "The original request and its visual plan are earlier in this conversation; follow them for everything else.", CONTINUATION_END);
+    return lines.join("\n");
+  }
+  lines.push(
+    "",
+    "This is a new conversation, so the original request and its visual plan follow, for reference only. Follow them for the copy, design and images of the slides still to make; the saved slides above are already done.",
+    CONTINUATION_END,
+    "",
+    ORIGINAL_TASK_START,
+    originalTask,
+    ORIGINAL_TASK_END
+  );
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Conformance.
 
 export type DeviationKind = "slide_count" | "missing_placement" | "style_reference_placed" | "optional_unavailable";

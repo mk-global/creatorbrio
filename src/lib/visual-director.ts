@@ -11,6 +11,7 @@ import { getClaudePath } from "./claude-path";
 import { briefForCarousel } from "./creative-brief";
 import type { CapabilityId, CapabilityStatus } from "./creative-capabilities";
 import { DIRECTOR_INSTRUCTIONS } from "./director-instructions";
+import { parseSpendingCap } from "./spending-cap";
 import {
   BASELINE_DEFAULT_SLIDES,
   EDIT_KINDS,
@@ -431,14 +432,10 @@ export function buildDirectorInput(
  * Reads the optional spending cap. Unset or blank means no cap; otherwise it
  * must be a plain positive decimal such as `0.75`. Anything else is refused
  * rather than ignored, so a cap the operator asked for is never silently
- * dropped.
+ * dropped. The Design Agent reads its own, separate cap the same way.
  */
 export function directorBudgetCap(raw: string | undefined): { ok: true; usd: number | null } | { ok: false } {
-  const value = raw?.trim() ?? "";
-  if (value === "") return { ok: true, usd: null };
-  if (!/^\d+(\.\d+)?$/.test(value)) return { ok: false };
-  const usd = Number(value);
-  return Number.isFinite(usd) && usd > 0 ? { ok: true, usd } : { ok: false };
+  return parseSpendingCap(raw);
 }
 
 /** The CLI arguments; exported so tests can pin the isolation flags. */
