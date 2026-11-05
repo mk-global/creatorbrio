@@ -249,22 +249,38 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "a transform and opacity": [box(`<p style="opacity:.5">Faded words</p><p style="transform:rotate(-6deg);margin-top:60px">Tilted words</p>`), ["Faded", "words", "Tilted", "words"]],
       "a 3D transform": [box(`<p style="transform:rotateY(18deg)">Turned words</p>`, "perspective:800px"), ["Turned", "words"]],
       "a clip-path": [box(`<p style="clip-path:polygon(0 0,100% 0,100% 80%,0 100%);background:#c4622d;padding:30px">Clipped words</p>`), ["Clipped", "words"]],
-      "a mask": [box(`<p style="mask-image:linear-gradient(#000,transparent)">Masked words</p>`), ["Masked", "words"]],
-      "gradient-filled text": [box(`<p style="background:linear-gradient(90deg,#c4622d,#2f4f4f);-webkit-background-clip:text;background-clip:text;color:transparent">Gradient words</p>`), ["Gradient", "words"]],
       "a text-shadow": [box(`<p style="text-shadow:0 4px 12px rgba(0,0,0,.5)">Shadowed words</p>`), ["Shadowed", "words"]],
       "a box-shadow": [box(`<p style="box-shadow:0 20px 60px rgba(0,0,0,.3);padding:30px">Card words</p>`), ["Card", "words"]],
       "a blend mode": [box(`<p style="mix-blend-mode:multiply;background:#c4622d">Blended words</p>`), ["Blended", "words"]],
       "a filter on a photograph only": [box(`${photo("filter:grayscale(1)")}<p>Caption words</p>`), ["Caption", "words"]],
       "generated content": [box(`<style>.g::before{content:"Generated words"}</style><p class="g"></p>`), ["Generated", "words"]],
+      // Filters are refused only around something that can draw text.
+      "a drop-shadow on a shape beside it": [box(`<div style="width:200px;height:200px;background:#c4622d;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"></div><p>Caption words</p>`), ["Caption", "words"]],
+      "a drop-shadow on an icon-only SVG symbol beside it": [box(`<svg width="300" height="300"><defs><symbol id="icon" viewBox="0 0 10 10"><path d="M0 0L10 0L5 10z" fill="#c4622d"/></symbol></defs><use href="#icon" width="300" height="300" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"/></svg><p>Caption words</p>`), ["Caption", "words"]],
     };
     const refused: Record<string, [string, RegExp]> = {
       "a filter over the whole slide": [box(`<p>Flattened words</p>`, "filter:contrast(1.1)"), /^Slide 2 applies a CSS filter to text/],
       "a drop-shadow filter on a heading": [box(`<h2 style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">Heading words</h2><p>Plain words</p>`), /^Slide 2 applies a CSS filter to text/],
       "an SVG filter on SVG text": [`<svg width="1080" height="600" style="font-family:${SANS}"><defs><filter id="f"><feGaussianBlur stdDeviation="2"/></filter></defs><text x="100" y="300" font-size="80" filter="url(#f)">Blurred words</text></svg>`, /^Slide 2 applies a CSS filter to text/],
-      "a backdrop-filter around text": [box(`<p>Kept words</p><div style="backdrop-filter:blur(4px);padding:30px">Dropped words</div>`), /^Slide 2 has text inside a frosted-glass effect/],
+      "a backdrop-filter around text": [box(`<p>Kept words</p><div style="backdrop-filter:blur(4px);padding:30px">Dropped words</div>`), /^Slide 2 uses a frosted-glass effect \(backdrop-filter\)/],
       "a filter around generated text": [box(`<style>.h::before{content:"Generated heading"}</style><div class="h" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"></div>`), /^Slide 2 applies a CSS filter to text/],
       "a reflected heading beside plain text": [box(`<h2 style="-webkit-box-reflect:below 0px">Reflected words</h2><p>Plain words</p>`), /^Slide 2 reflects text \(-webkit-box-reflect\)/],
-      "CSS that defeats the print clip": [`<style>body{contain:none!important;position:static!important}</style>${box("<p>Shrunk words</p>")}<div style="position:absolute;top:200px;right:-300px;width:600px;height:600px;background:#c4622d"></div>`, /^Slide 2 has content reaching past its edges/],
+      // Broken in Apple Preview and poppler alike, though printed as text.
+      "gradient-filled text": [box(`<p style="background:linear-gradient(90deg,#c4622d,#2f4f4f);-webkit-background-clip:text;background-clip:text;color:transparent">Gradient words</p>`), /^Slide 2 fills text with a gradient or image \(background-clip: text\)/],
+      "a mask on text": [box(`<p style="mask-image:linear-gradient(#000,transparent)">Masked words</p>`), /^Slide 2 uses a CSS or SVG mask/],
+      "a mask on a photograph beside text": [box(`${photo("-webkit-mask-image:linear-gradient(#000,transparent)")}<p>Caption words</p>`), /^Slide 2 uses a CSS or SVG mask/],
+      // A backdrop-filter also drops what is painted after it, even when it
+      // holds no text itself.
+      "an empty backdrop-filter panel before a caption": [box(`<div style="position:absolute;inset:0;backdrop-filter:blur(4px)"></div><p>Caption words</p>`), /^Slide 2 uses a frosted-glass effect \(backdrop-filter\)/],
+      // Text is refused under a filter whether or not it is painted.
+      "a filter around a banner cut by a clip-path": [box(`<div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><p style="clip-path:inset(0);background:#c4622d;padding:20px">Banner words</p></div>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter on an empty box whose ::before draws text": [box(`<style>.h{width:0;height:0;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))}.h::before{content:"Generated words";position:absolute;white-space:nowrap}</style><div class="h"></div>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter around counter numbers": [box(`<style>ol{counter-reset:n;list-style:none}li{counter-increment:n}li::before{content:counter(n)}</style><ol style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><li></li><li></li></ol>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter on a form field": [box(`<input value="Typed words" style="font-size:48px;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">`), /^Slide 2 applies a CSS filter to text/],
+      "a filter on an SVG symbol that holds text": [`<svg width="1080" height="600" style="font-family:${SANS}"><defs><symbol id="label"><text x="100" y="300" font-size="80">Symbol words</text></symbol></defs><use href="#label" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"/></svg>`, /^Slide 2 applies a CSS filter to text/],
+      "a filter on a framed document": [box(`<iframe srcdoc="<p style='font-size:48px'>Framed words</p>" style="width:600px;height:300px;border:0;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"></iframe>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter beside elements named after the document's own properties": [box(`<img name="body"><img name="documentElement"><form name="createTreeWalker"><input name="parentElement"><input name="querySelectorAll"></form><p style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">Clobbered words</p>`), /^Slide 2 applies a CSS filter to text/],
+      "CSS that defeats the print clip": [`<style>body{overflow:visible!important;position:static!important}</style>${box("<p>Shrunk words</p>")}<div style="position:absolute;top:200px;right:-300px;width:600px;height:600px;background:#c4622d"></div>`, /^Slide 2 has content reaching past its edges/],
     };
 
     // Every character, compared regardless of order: a reader may extract
@@ -347,15 +363,27 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       return { pdf, page, png: png.buffer };
     }
 
-    const bleeds: Record<string, string> = {
-      "past the right edge": shape("position:absolute;top:200px;right:-300px;width:600px;height:600px;border-radius:50%"),
-      "past the bottom edge": shape("position:absolute;bottom:-20px;left:0;width:1080px;height:100px"),
-      "past the bottom edge by a long way": shape("position:absolute;top:1200px;left:200px;width:300px;height:600px"),
-      "past the left and top edges": shape("position:absolute;top:-100px;left:-100px;width:300px;height:300px"),
-      "as a fixed-position element": shape("position:fixed;top:1200px;left:900px;width:600px;height:600px"),
+    // [decoration, top edge of the shape when it is not inside the slide's top]
+    const bleeds: Record<string, [string, number]> = {
+      "past the right edge": [shape("position:absolute;top:200px;right:-300px;width:600px;height:600px;border-radius:50%"), 200],
+      "past the bottom edge": [shape("position:absolute;bottom:-20px;left:0;width:1080px;height:100px"), 0],
+      "past the bottom edge by a long way": [shape("position:absolute;top:1200px;left:200px;width:300px;height:600px"), 1200],
+      "past the left and top edges": [shape("position:absolute;top:-100px;left:-100px;width:300px;height:300px"), 0],
+      "as a fixed-position element": [shape("position:fixed;top:1200px;left:900px;width:600px;height:600px"), 1200],
     };
     for (const ratio of ["4:5", "1:1", "9:16"] as AspectRatio[]) {
-      for (const [where, decoration] of Object.entries(bleeds)) {
+      for (const [where, [decoration, top]] of Object.entries(bleeds)) {
+        if (top >= DIMENSIONS[ratio].height) {
+          // Wholly below the slide, the shape shows nothing on screen, but the
+          // print clip cannot keep it from starting a second page.
+          it(`refuses a ${ratio} shape placed wholly below the slide ${where.replace("past the bottom edge ", "")}, naming the slide`, async () => {
+            await expect(exportPdf([slide(panel("First")), slide(panel("Hello world") + decoration, 1)], ratio)).rejects.toMatchObject({
+              status: 422,
+              message: expect.stringMatching(/^Slide 2 did not print as a single page at the slide's size\./),
+            });
+          }, 60_000);
+          continue;
+        }
         it(`clips a ${ratio} shape reaching ${where} as the screen does, without shrinking the page`, async () => {
           const { pdf, page, png } = await pageAndPng(panel("Hello world") + decoration, ratio);
           await withPdfFile(pdf, (file) => {
@@ -367,14 +395,25 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       }
     }
 
-    // A slide may style its own body. Its background then fills the page only
-    // without the print clip, so it prints unclipped and must still match.
+    // A slide may style its own body, or its root. A body the slide resizes or
+    // moves prints without the clip (positioning it would move its content);
+    // every one must still match the screen.
     const bodyStyled: Record<string, string> = {
       "a body background": `<style>body{background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
       "a body sized to its content": `<style>body{height:auto;background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
       "a narrower centred body": `<style>body{width:800px;margin:0 auto;background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
       "a root background": `<style>html{background:#1f3a4d}</style><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
       "a layer behind the body's content": `<div style="position:absolute;inset:0;z-index:-1;background:#1f3a4d"></div><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
+      // The body paints its own background over a layer behind it; the print
+      // clip must not make the body a stacking context and lift the layer.
+      "a layer hidden under the root and body backgrounds": `<style>html,body{background:#1f3a4d}</style><div style="position:absolute;top:100px;left:100px;width:400px;height:400px;z-index:-1;background:#c4622d"></div><p style="font-size:60px;padding:80px;color:#fff">Hello world</p>`,
+      // A first child's top margin stays inside the body, which is its own
+      // formatting context on screen; it must not collapse through in print.
+      "a first child's top margin": `<style>body{background:#1f3a4d}</style><div style="width:100%;height:100%;background:#1f3a4d"><p style="margin:90px;font-size:60px;color:#fff;font-family:${SANS}">Hello world</p></div>`,
+      // Columns whose cards must not split, which a print break override would undo.
+      "masonry columns of unbroken cards": `<div style="width:100%;height:100%;background:#1f3a4d;padding:60px;columns:2;column-gap:40px;font-family:${SANS};font-size:40px;color:#1f3a4d">${[180, 320, 240, 280, 200, 260]
+        .map((h, i) => `<div style="break-inside:avoid;height:${h}px;margin-bottom:40px;background:#f7f3e9;padding:20px">Card ${i + 1}</div>`)
+        .join("")}</div>`,
     };
     for (const [styling, html] of Object.entries(bodyStyled)) {
       it(`prints a slide with ${styling} as the screen shows it`, async () => {

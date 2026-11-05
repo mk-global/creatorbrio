@@ -104,7 +104,7 @@ The agent can also read this app's local data through its API, and it may fetch 
     CSS and SVG shapes stay vector graphics and photographs stay images, on a page with the carousel's own aspect ratio.
     4:5 portrait is the recommended LinkedIn format; 1:1 exports as square pages, and 9:16 exports as-is with a note that 4:5 generally displays better in LinkedIn's feed.
     A PDF larger than LinkedIn's 100 MB limit is refused with a message saying what to change.
-    A slide whose text cannot be printed as text is refused with a message naming the slide, rather than exported as a picture; see [Native PDF limits](#native-pdf-limits).
+    A slide whose text or effects cannot be printed faithfully is refused with a message naming the slide, rather than exported as a picture or drawn wrongly; see [Native PDF limits](#native-pdf-limits).
 
   While the design agent is still creating or changing slides, the Export button reads **Waiting for slides…** and is unavailable, so a download never captures a half-finished carousel.
   Every open editor tab notices within a couple of seconds, including one left open before the generation started.
@@ -245,32 +245,47 @@ With `?format=pdf`, each slide is loaded in the same document, with the same inl
 The print differs from the screenshot's page in four deliberate ways, each so that the PDF shows what the preview shows:
 
 - The slide's scripts do not run, as in the preview's sandboxed iframe.
-- The slide's own `@page` rules, page margin boxes and page breaks are overridden, so the paper is the slide.
-- The body clips the print where the screen clips the slide, so an element reaching past an edge neither shrinks the page nor starts another.
+- The slide's own `@page` size, margins and page margin boxes are overridden, so the paper is the slide.
+- The body is positioned, so that it, rather than the page, contains absolutely positioned elements and its own `overflow: hidden` clips them in print as the screen clips them; an element reaching past an edge then neither shrinks the page nor starts another.
+  Nothing else about the body changes, so its layout, stacking and background are the screen's.
 - Google Fonts are fetched as static instances, one file per weight, from the same family, so they embed as TrueType; Chromium embeds the variable files the preview uses as Type 3 glyphs, whose text Apple's Preview and Safari break into fragments.
 
+The print-only rules and the checks run on the page before printing live in [`src/lib/print-check.ts`](./src/lib/print-check.ts).
 [`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) then copies those pages, unchanged apart from removing links, into one document in slide order.
 While a chat run is still writing the carousel's slides, every format is refused with status 409.
 Pages are sized at 0.75 pt per pixel (72 pt per inch over 96 CSS pixels per inch), so a 1080×1350 slide becomes an 810×1012.5 pt page, keeping its exact aspect ratio.
 Chromium rounds the paper up to a hundredth of an inch (a 4:5 slide prints 1013.04 pt tall), so each page is trimmed to the slide's exact size from its top edge, where the slide is drawn.
+The trim moves the page's drawing down by that sliver onto a page box that starts at the origin, because Apple's Core Graphics draws soft masks, such as blurred shadows, wrongly on a page box that does not.
 
 #### Native PDF limits
 
-Chromium's PDF printer keeps text as text through transforms, opacity, clipping, masks, gradients, blend modes, outlined and gradient-filled text, and text and box shadows.
-Some effects behave differently on paper than on screen:
+Chromium's PDF printer keeps text as text through transforms, opacity, clipping, gradients, blend modes, outlined text, and text and box shadows.
+Some effects behave differently on paper than on screen, or in some PDF readers, and are handled as follows.
 
-- A blurred shadow (`box-shadow`, `text-shadow`) is embedded as a small image; the text it belongs to stays text.
-- A CSS or SVG `filter` or a `-webkit-box-reflect` on text, or on any element around it, turns that whole element into an image, and a `backdrop-filter` leaves the text inside it out of the PDF.
-  Before printing, the export checks every piece of visible text, including text from `::before` and `::after`, for these effects.
-  A slide that has one is refused with status 422, naming the slide and the effect, instead of shipping a picture of the text or losing it; a filter on an image alone is fine.
-- After printing, a slide that shows text but whose page holds no text at all is refused the same way.
-  That second check catches a whole slide flattened by an effect not listed above; an unlisted effect that flattened only part of a slide would need adding to the first check.
-- Text that is not painted, such as a visually hidden label, text clipped out of view or SVG text with neither fill nor stroke, is not expected in the PDF.
+Refused before printing, with status 422 and a message naming the slide and the effect:
+
+- A CSS or SVG `filter` or a `-webkit-box-reflect` turns the element into an image of everything in it, so it is refused when anything inside the element could draw text: a text node, `::before` or `::after` text (counters included), a form field, an embedded frame, a list marker, or an SVG `<use>` of a symbol holding `<text>`.
+  The check is deliberately conservative and does not ask whether that text is visible, so hidden text under a filter is refused too.
+  A filter on an image, a shape or an icon with no text is fine.
+- A `backdrop-filter` anywhere on the slide, because Chromium leaves the text inside it, and can leave content painted after it, out of the PDF.
+- Text filled through `background-clip: text` (gradient or image text): it prints as text, but Apple's Preview and poppler-based readers draw it as a solid block.
+- A CSS or SVG mask (`mask`, `mask-image`) on anything visible: Apple's Preview and poppler-based readers draw the masked image or text without its fade.
+- Content reaching past the slide when the print clip cannot apply, because the slide resizes or moves its own `body` (the clip is then left off, since positioning that body would move what is positioned inside it) or turns the body's clipping off; the page would otherwise come out shrunk.
+
+Refused after printing:
+
+- A slide that shows visible text but whose page holds no text at all, which catches a whole slide flattened by an effect not listed above; an unlisted effect that flattened only part of a slide would need adding to the checks.
+- A slide that did not print as exactly one page of its own size, such as one with a shape placed entirely outside the slide, which shows nothing on screen but can start a second page in print.
+
+Printed, with a difference worth knowing:
+
+- A blurred shadow (`box-shadow`, `text-shadow`) is embedded as a small image with a soft mask; the text it belongs to stays text.
+  Chrome, poppler and Apple's Core Graphics draw it as on screen, but Apple's Preview (PDFKit) draws a blurred `box-shadow` only in part, even on Chromium's own unmerged print.
+- A radial gradient that fades to transparent is drawn as on screen by Chrome and Apple's readers, but not by poppler-based readers.
 - Outlined text (`-webkit-text-stroke`) is printed by Chromium in two layers, the fill in the TrueType font and the outline in a Type 3 copy of it.
   Readers find and select the words whole, but copying or extracting the page's text returns them twice.
-- A slide that resizes its own `body` is printed without the edge clip, which would otherwise change how its background fills the page.
-  If anything in such a slide reaches past its edges, it is refused with status 422 rather than printed shrunk.
-- If Google cannot serve a static instance of a font, the variable font is embedded instead, as Type 3 glyphs with Unicode maps: the typeface is still right and the text still selectable, but Apple's readers fragment it.
+- Text that is not painted, such as a visually hidden label, text clipped out of view or SVG text with neither fill nor stroke, is not expected in the PDF.
+- If Google cannot serve static instances of a font covering every weight and style of its variable font, the variable font is embedded instead, as Type 3 glyphs with Unicode maps: the typeface is still right and the text still selectable, but Apple's readers fragment it.
 - A character a web font does not contain is drawn from a system font, as in the preview and the PNG export, and embedded the same way.
 - A page with no background is white paper in the PDF, while the PNG export shows headless Chromium's dark default canvas there.
 - Uploaded images are embedded at their own resolution: JPEGs as they are, PNG and WebP losslessly.

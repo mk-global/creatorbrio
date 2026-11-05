@@ -112,8 +112,13 @@ describe("mergeSlidePdfs", () => {
       expect(page.pathPaints).toBeGreaterThan(0);
       expect(page.images).toEqual([]);
     }
+    // The page's own operators, unchanged, inside one translation onto the
+    // trimmed page box (see the trim test) and pdf-lib's balancing q/Q.
     const sourceOps = (await readPdfPages(slides[1]))[0].operators;
-    expect((await readPdfPages(await mergeSlidePdfs(slides, "4:5")))[1].operators).toBe(sourceOps);
+    const mergedOps = (await readPdfPages(await mergeSlidePdfs(slides, "4:5")))[1].operators;
+    const wrapped = mergedOps.match(/^q\n1 0 0 1 \S+ \S+ cm\n\s*q\n\s*([\s\S]*?)\s*Q\s*Q\s*$/);
+    expect(wrapped).not.toBeNull();
+    expect(wrapped![1]).toBe(sourceOps.trim());
   });
 
   it("keeps a slide's image as an image without re-encoding it", async () => {
@@ -134,17 +139,15 @@ describe("mergeSlidePdfs", () => {
 
       for (const page of pages) {
         expect({ width: page.width, height: page.height }).toEqual(expected);
-        // The box keeps the printed page's top edge, where the slide starts,
-        // and drops the rounding sliver from the bottom.
-        expect(page.mediaBoxOrigin.x).toBe(0);
-        expect(page.mediaBoxOrigin.y).toBeCloseTo(printedHeight - expected.height, 6);
-        expect(page.mediaBoxOrigin.y + page.height).toBeCloseTo(printedHeight, 6);
-        expect(page.cropBox).toEqual({
-          x: 0,
-          y: page.mediaBoxOrigin.y,
-          width: expected.width,
-          height: expected.height,
-        });
+        // The box starts at the origin, and the drawing moves down by the
+        // rounding sliver so the printed page's top edge, where the slide
+        // starts, is the box's top edge; the sliver falls below the box.
+        expect(page.mediaBoxOrigin).toEqual({ x: 0, y: 0 });
+        expect(page.cropBox).toEqual({ x: 0, y: 0, width: expected.width, height: expected.height });
+        const shift = page.operators.match(/^q\n1 0 0 1 (\S+) (\S+) cm\n/);
+        expect(shift).not.toBeNull();
+        expect(Number(shift![1])).toBe(0);
+        expect(Number(shift![2])).toBeCloseTo(-(printedHeight - expected.height), 6);
         expect(page.rotation).toBe(0);
       }
     });
@@ -154,6 +157,18 @@ describe("mergeSlidePdfs", () => {
     const exact = await slidePdf("Exact", { size: [810, 1012.5] });
     const [page] = await readPdfPages(await mergeSlidePdfs([exact], "4:5"));
     expect(page).toMatchObject({ width: 810, height: 1012.5, mediaBoxOrigin: { x: 0, y: 0 } });
+  });
+
+  it("moves a page whose box does not start at the origin onto one that does", async () => {
+    const source = await PDFDocument.load(await slidePdf("Offset"));
+    const [, printedHeight] = chromiumPrintSize(1080, 1350);
+    source.getPage(0).setMediaBox(12, 30, 810, printedHeight);
+    const [page] = await readPdfPages(await mergeSlidePdfs([await source.save()], "4:5"));
+
+    expect(page).toMatchObject({ width: 810, height: 1012.5, mediaBoxOrigin: { x: 0, y: 0 } });
+    const shift = page.operators.match(/^q\n1 0 0 1 (\S+) (\S+) cm\n/)!;
+    expect(Number(shift[1])).toBe(-12);
+    expect(Number(shift[2])).toBeCloseTo(-(30 + printedHeight - 1012.5), 6);
   });
 
   it("refuses a slide printed at another size rather than cropping or stretching it", async () => {
@@ -282,12 +297,15 @@ describe("mergeSlidePdfs", () => {
   });
 });
 
-describe("refusing a slide whose text cannot be printed as text", () => {
+describe("refusing a slide that cannot be printed faithfully", () => {
   it.each([
     ["filter", /^Slide 4 applies a CSS filter to text, .*remove the filter from the text/],
-    ["backdrop-filter", /^Slide 4 has text inside a frosted-glass effect \(backdrop-filter\), which PDF printing leaves out\./],
+    ["backdrop-filter", /^Slide 4 uses a frosted-glass effect \(backdrop-filter\), which PDF printing drops along with text and shapes drawn over it\./],
     ["box-reflect", /^Slide 4 reflects text \(-webkit-box-reflect\), .*remove the reflection/],
+    ["gradient-text", /^Slide 4 fills text with a gradient or image \(background-clip: text\), .*solid text colour/],
+    ["mask", /^Slide 4 uses a CSS or SVG mask, .*gradient overlay or a plain shape/],
     ["overflow", /^Slide 4 has content reaching past its edges .*keep everything inside the slide/],
+    ["unreadable", /^Slide 4 could not be checked before printing, .*plain HTML inside the page body/],
     ["page-size", /^Slide 4 did not print as a single page at the slide's size\. .*print page rules \(@page\)/],
     ["flattened", /^Slide 4 could only be printed as a picture, .*simplify the slide's visual effects/],
   ] as const)("explains %s with the slide number and what to do", (reason, message) => {

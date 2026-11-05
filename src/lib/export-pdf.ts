@@ -83,14 +83,17 @@ function tooLargeError(bytes: number, maxBytes: number, estimate: boolean): PdfE
 }
 
 /**
- * Why a slide cannot be printed with its text as real PDF text. Each reason
+ * Why a slide cannot be printed faithfully as a native PDF page. Each reason
  * names the CSS that causes it, so the user knows what to change.
  */
 export type UnprintableSlideReason =
   | "filter"
   | "backdrop-filter"
   | "box-reflect"
+  | "gradient-text"
+  | "mask"
   | "overflow"
+  | "unreadable"
   | "page-size"
   | "flattened";
 
@@ -115,11 +118,20 @@ export function unprintableSlideError(
       "applies a CSS filter to text, which a PDF can only store as a picture of that text, so it could not be selected or searched. " +
       "Ask the design agent to remove the filter from the text (a text-shadow is fine)",
     "backdrop-filter":
-      "has text inside a frosted-glass effect (backdrop-filter), which PDF printing leaves out. " +
+      "uses a frosted-glass effect (backdrop-filter), which PDF printing drops along with text and shapes drawn over it. " +
       "Ask the design agent to use a plain semi-transparent background instead",
+    "gradient-text":
+      "fills text with a gradient or image (background-clip: text), which PDF readers such as Apple Preview draw as a solid block. " +
+      "Ask the design agent to use a solid text colour instead",
     "box-reflect":
       "reflects text (-webkit-box-reflect), which a PDF can only store as a picture of that text, so it could not be selected or searched. " +
       "Ask the design agent to remove the reflection",
+    mask:
+      "uses a CSS or SVG mask, which PDF readers such as Apple Preview draw without its fade. " +
+      "Ask the design agent to replace the mask with a gradient overlay or a plain shape",
+    unreadable:
+      "could not be checked before printing, because its document has no ordinary page body. " +
+      "Ask the design agent to rebuild the slide as plain HTML inside the page body",
     overflow:
       "has content reaching past its edges that the PDF could not clip, so the page would come out shrunk. " +
       "Ask the design agent to keep everything inside the slide",
@@ -144,7 +156,8 @@ export function unprintableSlideError(
  * so text stays text and vector graphics stay vectors; nothing is re-rendered
  * or rasterised. Each page is checked to be exactly one page at the slide's
  * size, then trimmed to that size from its top-left corner, where Chromium
- * draws the slide, removing the sliver its paper-size rounding adds.
+ * draws the slide, removing the sliver its paper-size rounding adds. Only the
+ * page box and one translation are added; the content itself is unchanged.
  *
  * Annotations are left behind. Chromium turns every link in the slide into a
  * clickable area, and the slide HTML comes from the design agent: the preview
@@ -202,10 +215,15 @@ export async function mergeSlidePdfs(
     ) {
       throw unprintableSlideError(index + 1, "page-size");
     }
-    // PDF y runs upwards, so the slide's top edge is the box's top edge.
-    const top = box.y + box.height;
-    page.setMediaBox(box.x, top - expected.height, expected.width, expected.height);
-    page.setCropBox(box.x, top - expected.height, expected.width, expected.height);
+    // PDF y runs upwards, so the slide sits at the top of Chromium's paper.
+    // The content is moved onto a page box that starts at the origin, rather
+    // than the box moved onto the content: Apple's Core Graphics draws soft
+    // masks (shadows, for one) wrongly on a page whose box does not.
+    page.translateContent(-box.x, -(box.y + box.height - expected.height));
+    page.setMediaBox(0, 0, expected.width, expected.height);
+    page.setCropBox(0, 0, expected.width, expected.height);
+    // Translating normalises the page, which gives it an empty Annots array.
+    page.node.delete(PDFName.of("Annots"));
     pdf.addPage(page);
     await yieldToEventLoop();
   }

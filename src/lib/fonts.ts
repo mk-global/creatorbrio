@@ -60,19 +60,59 @@ export async function getInlinedFontCSS(
 
 /**
  * Static instances when asked for, else the variable font. A static request
- * Google cannot answer falls back to the variable font: the right typeface
- * with Type 3 text beats a system font in its place.
+ * Google cannot answer, or answers with fewer weights or styles than the
+ * variable font has, falls back to the variable font: the right typeface with
+ * Type 3 text beats a system font or a synthesised weight in its place.
  */
 async function cssFor(
   family: string,
   italic: boolean,
   instances: FontInstances
 ): Promise<string | null> {
+  const variable = await cssForVariant(family, italic, "variable");
   if (instances === "static") {
     const css = await cssForVariant(family, italic, "static");
-    if (css) return css;
+    // Google can answer with fewer cuts than the variable font has (Roboto
+    // Flex, for one, offers only its regular weight as a static file); the
+    // slide would then print in a synthesised weight, so the variable font
+    // is kept instead.
+    if (css && (variable === null || coversFaces(css, variable))) return css;
   }
-  return cssForVariant(family, italic, "variable");
+  return variable;
+}
+
+interface FaceRange {
+  style: string;
+  min: number;
+  max: number;
+}
+
+/** The style and weight range of each `@font-face` rule in Google's CSS. */
+function faceRanges(css: string): FaceRange[] {
+  return css
+    .split("@font-face")
+    .slice(1)
+    .map((rule) => {
+      const style = rule.match(/font-style:\s*([a-z]+)/)?.[1] ?? "normal";
+      const [min, max = min] = (rule.match(/font-weight:\s*([\d\s]+)[;}]/)?.[1] ?? "400")
+        .trim()
+        .split(/\s+/)
+        .map(Number);
+      return { style, min, max };
+    });
+}
+
+/**
+ * Whether the static answer has a face for every style and every weight, in
+ * steps of 100, that the variable answer covers.
+ */
+function coversFaces(staticCss: string, variableCss: string): boolean {
+  const available = faceRanges(staticCss);
+  return faceRanges(variableCss).every(({ style, min, max }) => {
+    const weights = [min, max];
+    for (let w = Math.ceil(min / 100) * 100; w <= max; w += 100) weights.push(w);
+    return weights.every((w) => available.some((f) => f.style === style && f.min <= w && w <= f.max));
+  });
 }
 
 async function cssForVariant(

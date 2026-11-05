@@ -215,7 +215,7 @@ describe("LinkedIn PDF export", () => {
 
     expect(response.status).toBe(422);
     const body = (await response.json()) as { error: string };
-    expect(body.error).toMatch(/^Slide 2 has text inside a frosted-glass effect/);
+    expect(body.error).toMatch(/^Slide 2 uses a frosted-glass effect \(backdrop-filter\)/);
   });
 
   it("answers an unexpected print failure with the safe export message", async () => {

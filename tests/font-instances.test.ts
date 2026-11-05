@@ -15,7 +15,7 @@ interface Call {
 }
 
 /** A fake Google Fonts: CSS naming one woff2 per answer, distinct per user agent. */
-function fakeGoogle(options: { staticAnswer?: number } = {}) {
+function fakeGoogle(options: { staticAnswer?: number; staticWeights?: string; variableWeights?: string } = {}) {
   const calls: Call[] = [];
   const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
     const url = String(input);
@@ -30,8 +30,15 @@ function fakeGoogle(options: { staticAnswer?: number } = {}) {
       return new Response("unavailable", { status: options.staticAnswer });
     }
     const file = isStatic ? "static-600" : "variable";
+    const weights = (isStatic ? options.staticWeights : options.variableWeights) ?? "400";
     return new Response(
-      `@font-face { font-family: 'Test'; font-display: swap; src: url(https://fonts.gstatic.com/s/test/${file}.woff2) format('woff2'); }`
+      weights
+        .split(",")
+        .map(
+          (weight) =>
+            `@font-face { font-family: 'Test'; font-style: normal; font-weight: ${weight}; font-display: swap; src: url(https://fonts.gstatic.com/s/test/${file}.woff2) format('woff2'); }`
+        )
+        .join("\n")
     );
   });
   return { calls, fetchMock };
@@ -80,12 +87,13 @@ describe("font instances", () => {
 
     const css = await getInlinedFontCSS(["Test"], { instances: "static", italic: true });
 
+    // Roman and italic, each asked for as static instances and, to compare
+    // what they cover, as the variable font.
     const cssCalls = google.calls.filter((c) => c.url.startsWith("https://fonts.googleapis.com/"));
-    expect(cssCalls).toHaveLength(2);
-    for (const call of cssCalls) expect(call.userAgent).toMatch(STATIC_UA);
-    expect(google.calls.some((c) => c.url.endsWith("/static-600.woff2"))).toBe(true);
-    expect(google.calls.some((c) => c.url.endsWith("/variable.woff2"))).toBe(false);
+    expect(cssCalls.filter((c) => STATIC_UA.test(c.userAgent ?? ""))).toHaveLength(2);
+    expect(cssCalls.filter((c) => VARIABLE_UA.test(c.userAgent ?? ""))).toHaveLength(2);
     expect(css).toContain("data:font/woff2;base64,AQID");
+    expect(css).not.toContain("data:font/woff2;base64,BAUG");
   });
 
   it("keeps static and variable files in separate caches", async () => {
@@ -135,10 +143,34 @@ describe("font instances", () => {
     const css = await getInlinedFontCSS(["Test"], { instances: "static" });
 
     const cssCalls = google.calls.filter((c) => c.url.startsWith("https://fonts.googleapis.com/"));
-    expect(cssCalls.map((c) => STATIC_UA.test(c.userAgent ?? ""))).toEqual([true, false]);
+    expect(cssCalls.filter((c) => STATIC_UA.test(c.userAgent ?? ""))).toHaveLength(1);
     expect(css).toContain("data:font/woff2;base64,BAUG");
+    expect(css).not.toContain("data:font/woff2;base64,AQID");
     // The failed static answer is not cached, so a later export asks again.
     await expect(readdir(path.join(workdir, "data", ".font-cache", "static"))).rejects.toThrow();
+  });
+
+  it("keeps the variable font when the static answer lacks some of its weights", async () => {
+    // Roboto Flex's shape: a variable weight axis, a single static weight.
+    const google = fakeGoogle({ variableWeights: "100 1000", staticWeights: "400" });
+    vi.stubGlobal("fetch", google.fetchMock);
+    const { getInlinedFontCSS } = await fonts();
+
+    const css = await getInlinedFontCSS(["Test"], { instances: "static" });
+
+    expect(css).toContain("data:font/woff2;base64,BAUG");
+    expect(css).not.toContain("data:font/woff2;base64,AQID");
+  });
+
+  it("takes static instances that cover every weight of the variable font", async () => {
+    const google = fakeGoogle({ variableWeights: "300 700", staticWeights: "300,400,500,600,700" });
+    vi.stubGlobal("fetch", google.fetchMock);
+    const { getInlinedFontCSS } = await fonts();
+
+    const css = await getInlinedFontCSS(["Test"], { instances: "static" });
+
+    expect(css).toContain("data:font/woff2;base64,AQID");
+    expect(css).not.toContain("data:font/woff2;base64,BAUG");
   });
 
   it("falls back to the variable font when the static request fails outright", async () => {

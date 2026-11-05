@@ -8,6 +8,15 @@ import type { Slide } from "@/types/carousel";
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
 vi.mock("puppeteer", () => ({ default: { launch } }));
 
+// The fonts each export asks for, recorded instead of fetched.
+const { fontRequests } = vi.hoisted(() => ({ fontRequests: [] as { families: string[]; options: unknown }[] }));
+vi.mock("@/lib/fonts", () => ({
+  getInlinedFontCSS: async (families: string[], options: unknown) => {
+    fontRequests.push({ families, options });
+    return "";
+  },
+}));
+
 type ExportSlides = typeof import("@/lib/export-slides");
 
 const STATE_KEY = Symbol.for("creatorbrio.export-browser");
@@ -148,6 +157,7 @@ async function freshModule(): Promise<ExportSlides> {
 beforeEach(async () => {
   // Each test starts as a newly started server: no browser and a cold module.
   delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
+  fontRequests.length = 0;
   png ??= await sharp({
     create: { width: 8, height: 10, channels: 3, background: { r: 10, g: 20, b: 30 } },
   })
@@ -340,12 +350,15 @@ describe("export browser", () => {
       // The slide's own page rules and breaks cannot change the paper...
       expect(pageCss).toMatch(/@page \{ size: 1080px 1350px !important; margin: 0 !important;/);
       expect(pageCss).toMatch(/@top-center \{ content: none !important; \}/);
-      expect(pageCss).toMatch(/break-before: auto !important/);
-      // ...and the body clips print layout where the screen clips it.
-      expect(clipCss).toBe("body { position: relative !important; contain: size layout paint !important; }");
+      // Page breaks are left alone: overriding them would break column
+      // layouts, and a forced break does not start a page in a one-page print.
+      expect(pageCss).not.toMatch(/break-/);
+      // ...and the body, which already clips, becomes the containing block of
+      // positioned content, so print clips where the screen clips.
+      expect(clipCss).toBe("body { position: relative !important; }");
     });
 
-    it("prints a slide that resizes its body without the clip, which would change its background", async () => {
+    it("prints a slide that resizes its body without the clip, which would move what is positioned in it", async () => {
       const { exportSlidePdf } = await freshModule();
       bodyIsSlide = false;
 
@@ -353,7 +366,7 @@ describe("export browser", () => {
 
       expect(pageSetup).toEqual([["scripts:false", "load", "style", "measure", "check"]]);
       expect(addedStyles).toHaveLength(1);
-      expect(addedStyles[0]).not.toMatch(/contain/);
+      expect(addedStyles[0]).not.toMatch(/position/);
     });
 
     it("leaves the PNG export's loading exactly as it was", async () => {
@@ -363,6 +376,19 @@ describe("export browser", () => {
 
       expect(pageSetup).toEqual([["load"]]);
       expect(addedStyles).toEqual([]);
+    });
+
+    it("asks for static font instances for the PDF and leaves the PNG export's fonts as they were", async () => {
+      const { exportSlide, exportSlidePdf } = await freshModule();
+      const fonted: Slide = { ...slides(1)[0], html: `<div style="font-family: 'Inter'; font-style: italic">Hi</div>` };
+
+      await exportSlide(fonted, "4:5");
+      await exportSlidePdf(fonted, "4:5");
+
+      expect(fontRequests).toEqual([
+        { families: ["Inter"], options: { italic: true } },
+        { families: ["Inter"], options: { italic: true, instances: "static" } },
+      ]);
     });
 
     it("returns each slide's PDF in slide order", async () => {
@@ -381,9 +407,12 @@ describe("export browser", () => {
 
     it.each([
       ["filter", /^Slide 2 applies a CSS filter to text/],
-      ["backdrop-filter", /^Slide 2 has text inside a frosted-glass effect/],
+      ["backdrop-filter", /^Slide 2 uses a frosted-glass effect \(backdrop-filter\)/],
       ["box-reflect", /^Slide 2 reflects text \(-webkit-box-reflect\)/],
+      ["gradient-text", /^Slide 2 fills text with a gradient or image \(background-clip: text\)/],
+      ["mask", /^Slide 2 uses a CSS or SVG mask/],
       ["overflow", /^Slide 2 has content reaching past its edges/],
+      ["unreadable", /^Slide 2 could not be checked before printing/],
     ])("refuses a slide whose check reports %s before printing, naming the slide", async (problem, message) => {
       const { exportAllSlidePdfs } = await freshModule();
       printable = (html) => ({
