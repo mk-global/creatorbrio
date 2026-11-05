@@ -12,7 +12,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { sha256, StudioSessions } from "@/lib/video/production/api/sessions";
+import { clearedSessionCookie, sessionCookie, sha256, StudioSessions } from "@/lib/video/production/api/sessions";
 import { footageProduction } from "./helpers/production-fixtures";
 
 const run = promisify(execFile);
@@ -157,6 +157,13 @@ describe("pairing sets an HttpOnly session and never returns a secret", () => {
     expect(await readdir(path.join(dataDir, "video-auth", "sessions"))).toEqual([`${sha256(token)}.json`]);
   });
 
+  it("never sets a cookie without a lifetime, even for a malformed expiry", () => {
+    const req = new Request(`${ORIGIN}/api/video/session`);
+    expect(sessionCookie(req, "t".repeat(43), "not a time")).toMatch(/; Max-Age=0$/);
+    expect(sessionCookie(req, "t".repeat(43), new Date(Date.now() - 1000).toISOString())).toMatch(/; Max-Age=0$/);
+    expect(clearedSessionCookie(req)).toBe("cb_studio_session=; Path=/api/video; HttpOnly; SameSite=Strict; Max-Age=0");
+  });
+
   it("marks the cookie Secure when the app is served over HTTPS", async () => {
     const code = await mintCode();
     const req = new Request("https://localhost:3000/api/video/session", {
@@ -229,11 +236,13 @@ describe("codes work once, briefly, and resist guessing", () => {
     let clock = Date.now();
     const store = new StudioSessions(path.join(dataDir, "video-auth"), { now: () => clock });
     const code = await mintCode();
+    // Cancellation removes pairing records only, never other files in the folder.
+    await writeFile(path.join(dataDir, "video-auth", "pairing", ".keep-me"), "");
     for (let i = 0; i < 10; i++) {
       expect((await store.redeem("BBBBB-BBBBB-BBBBB-BBBBB")).ok).toBe(false);
       clock += 61_000; // outside the one-minute window, so only the cancellation rule applies
     }
-    expect(await readdir(path.join(dataDir, "video-auth", "pairing"))).toEqual([]);
+    expect(await readdir(path.join(dataDir, "video-auth", "pairing"))).toEqual([".keep-me"]);
     clock = Date.now();
     expect((await store.redeem(code)).ok).toBe(false);
   });

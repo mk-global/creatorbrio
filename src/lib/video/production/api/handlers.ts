@@ -84,7 +84,7 @@ async function authorize(request: Request, productionId: string | null, allowed:
   }
   const authority = resolved.authority;
   if (authority.kind === "anonymous") {
-    throw new HttpFailure(errorResponse(401, { code: "authority_required", message: "send the human key or an agent run token" }));
+    throw new HttpFailure(errorResponse(401, { code: "authority_required", message: "send the human key, an agent run token, or use a paired Studio browser session" }));
   }
   if (authority.kind === "human" && !allowed.human) throw forbidden("people use the other endpoints for this");
   if (authority.kind === "agent") {

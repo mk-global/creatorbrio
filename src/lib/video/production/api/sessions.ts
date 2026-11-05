@@ -209,7 +209,7 @@ export class StudioSessions {
 
   private async cancelPendingCodes(): Promise<void> {
     const dir = this.pairingDir();
-    for (const name of await readdir(dir).catch(() => [] as string[])) {
+    for (const name of (await readdir(dir).catch(() => [] as string[])).filter((n) => HASH_FILE.test(n))) {
       await unlink(path.join(/*turbopackIgnore: true*/ dir, name)).catch(() => undefined);
     }
   }
@@ -228,10 +228,20 @@ export function sessionTokenFrom(request: Request): string | null | "duplicate" 
   return values.length === 1 ? values[0] : "duplicate";
 }
 
-/** The Set-Cookie value for a new session, or for clearing it. `Secure` is set when the app is served over HTTPS. */
-export function sessionCookie(request: Request, token: string | null, expiresAt?: string): string {
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-  if (token === null) return `${SESSION_COOKIE}=; Path=${SESSION_COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
-  const maxAge = Math.max(0, Math.floor((Date.parse(expiresAt!) - Date.now()) / 1000));
-  return `${SESSION_COOKIE}=${token}; Path=${SESSION_COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+const secureSuffix = (request: Request) => (new URL(request.url).protocol === "https:" ? "; Secure" : "");
+
+/**
+ * The Set-Cookie value for a new session. `Secure` is set when the app is
+ * served over HTTPS. An expiry that is not a valid time gives `Max-Age=0`, so
+ * a malformed call clears the cookie rather than setting one without a limit.
+ */
+export function sessionCookie(request: Request, token: string, expiresAt: string): string {
+  const remaining = Date.parse(expiresAt) - Date.now();
+  const maxAge = Number.isFinite(remaining) ? Math.max(0, Math.floor(remaining / 1000)) : 0;
+  return `${SESSION_COOKIE}=${token}; Path=${SESSION_COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureSuffix(request)}`;
+}
+
+/** The Set-Cookie value that clears the session cookie. */
+export function clearedSessionCookie(request: Request): string {
+  return `${SESSION_COOKIE}=; Path=${SESSION_COOKIE_PATH}; HttpOnly; SameSite=Strict; Max-Age=0${secureSuffix(request)}`;
 }

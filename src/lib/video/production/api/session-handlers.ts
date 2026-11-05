@@ -16,7 +16,7 @@ import { resolveAppOrigin } from "@/lib/request-origin";
 import { apiContext } from "./handlers";
 import { HUMAN_KEY_HEADER } from "./authority";
 import { errorResponse, HttpFailure, okResponse, readJsonObject, selectFields } from "./http";
-import { sessionCookie, sessionTokenFrom, STUDIO_REQUEST_HEADER } from "./sessions";
+import { clearedSessionCookie, sessionCookie, sessionTokenFrom, STUDIO_REQUEST_HEADER } from "./sessions";
 
 const refused = (message: string) => new HttpFailure(errorResponse(403, { code: "request_refused", message }));
 
@@ -80,7 +80,7 @@ export function endSession(request: Request): Promise<Response> {
     const token = sessionTokenFrom(request);
     if (typeof token === "string" && token !== "duplicate") await apiContext().authority.sessions.revoke(token);
     const response = okResponse({ status: "signed_out" });
-    response.headers.append("set-cookie", sessionCookie(request, null));
+    response.headers.append("set-cookie", clearedSessionCookie(request));
     return response;
   });
 }
