@@ -19,8 +19,8 @@ One MIT-licensed CreatorBrio application, one repository, one shared Video Core,
 1. **Canonical production document, CreatorBrio-owned.** Brief, research, script, storyboard, media, rights, audio/voice, timeline, revisions and approval state are coherent and versioned. Timeline remains the single authority for rendered pixels/samples.
 2. **Typed operations.** Server validates and atomically applies changes. AI edits are reversible, source footage immutable, one run can be kept/discarded, and per-scene edits preserve unrelated clips.
 3. **Storyboard is a first-class editor.** Actual composition frames/animatic, per-scene approval, asset slots and scene-to-timeline provenance, for both workflows.
-4. **One chosen renderer behind an adapter.** HyperFrames is provisional until [G1 #97](https://github.com/mk-global/creatorbrio/issues/97) passes on the M5 Max. FFmpeg handles probe, media conforming, audio and export. If G1 fails, qualify OpenFilm under the same fixture before changing the ADR.
-5. **Reuse a timeline UI component; own editor semantics.** [G7 #103](https://github.com/mk-global/creatorbrio/issues/103) decides which embeddable widget is technically and legally suitable; no from-scratch NLE UI without failing the reuse test.
+4. **One chosen renderer behind an adapter.** [G1 #97](https://github.com/mk-global/creatorbrio/issues/97) failed HyperFrames (GSAP licence) and qualified OpenFilm as a fallback; the renderer is CreatorBrio's own script-free overlay renderer with FFmpeg for footage, audio and export ([G1 record](gates/g1-renderer.md)).
+5. **Reuse a timeline UI component; own editor semantics.** [G7 #103](https://github.com/mk-global/creatorbrio/issues/103) conditionally passed `@xzdarcy/react-timeline-editor` as the interaction layer ([G7 record](gates/g7-timeline.md)); no from-scratch NLE UI without failing the reuse test.
 6. **Capability adapter architecture.** Native editable HTML/SVG/vector templates and isolated specialist external-tool outputs both enter the shared timeline; OpenMontage/Ghost Editor techniques remain research references where their licenses prevent code reuse.
 7. **Provider-independent AI.** Existing authorized Claude Code CLI for local use, alternate API/local-model runtimes and manual mode. No subscription credential intermediation or automatic paid provider use.
 8. **Provider-independent image generation.** Reuse existing loopback image service (see [image interface](image-generation.md)); support local backends now, commercial-safe distributable reference backend, style/reference and scene consistency later.
@@ -100,13 +100,13 @@ Every workstream has an executable issue, and the canonical [spec/11](../../rese
 | Gate | GitHub ticket | What it determines | Unblocks |
 |---|---|---|---|
 | G0 | Product contract [#66](https://github.com/mk-global/creatorbrio/issues/66) and program [#68](https://github.com/mk-global/creatorbrio/issues/68) | Founder acceptance of architecture, sequencing and licensing defaults | All |
-| G1 | [#97 macOS renderer](https://github.com/mk-global/creatorbrio/issues/97) | HyperFrames frame accuracy, speed, A/V sync, sandbox, feature contract | WS4 |
-| G2 | [#98 iPhone HDR/VFR](https://github.com/mk-global/creatorbrio/issues/98) | HEVC/HDR tone map and proxies | WS2 |
+| G1 | [#97 macOS renderer](https://github.com/mk-global/creatorbrio/issues/97) | Renderer frame accuracy, speed, A/V sync, sandbox, feature contract ([record](gates/g1-renderer.md)) | WS4 |
+| G2 | [#98 iPhone HDR/VFR](https://github.com/mk-global/creatorbrio/issues/98) | HEVC/HDR tone map and proxies ([partial record](gates/g2-hdr-proxies.md)) | WS2 |
 | G3 | [#99 Speech/fillers](https://github.com/mk-global/creatorbrio/issues/99) | ASR quality, retakes and filler approach | WS6 |
 | G4 | [#100 Local TTS](https://github.com/mk-global/creatorbrio/issues/100) | Natural narration, alignment and voice licensing | WS7 / Create |
 | G5 | [#101 Person masking](https://github.com/mk-global/creatorbrio/issues/101) | Tracking/matte suitability | WS6/WS12 |
 | G6 | [#102 Vector animation and characters](https://github.com/mk-global/creatorbrio/issues/102) | Declarative scene animation quality | WS12 Create |
-| G7 | [#103 Timeline SDK](https://github.com/mk-global/creatorbrio/issues/103) | Reused React timeline UI and controls | WS14 |
+| G7 | [#103 Timeline SDK](https://github.com/mk-global/creatorbrio/issues/103) | Reused React timeline UI and controls ([record](gates/g7-timeline.md)) | WS14 |
 | G8 | [#104 Provider gateway](https://github.com/mk-global/creatorbrio/issues/104) | Safe Claude/local/API/manual operation | WS8 |
 | G9 | [#105 License/terms/model review](https://github.com/mk-global/creatorbrio/issues/105) | Redistribution, voice, image, media rights | Release and relevant components |
 

@@ -1,7 +1,7 @@
 # ADR: CreatorBrio Video Studio architecture and delivery model
 
 **Status:** Accepted at product architecture level, conditional component qualifications.  
-**Date:** 2026-11-04  
+**Date:** 2026-11-04, amended 2026-11-06 (renderer and timeline, issue [#138](https://github.com/mk-global/creatorbrio/issues/138))  
 **Issue:** [#68](https://github.com/mk-global/creatorbrio/issues/68)  
 **Evidence:** [research PR #64](https://github.com/mk-global/creatorbrio/pull/64), [product spec PR #67](https://github.com/mk-global/creatorbrio/pull/67), [implementation roadmap](../roadmap/video-studio/README.md).
 
@@ -15,8 +15,14 @@ A third workflow combines A-roll and generated animation in one production. The 
 
 1. **Own the production contract and editing operations.** CreatorBrio stores a versioned Production v2 document with project brief, sources, script, storyboard/scene materialisation, one canonical timeline, voices, asset records, approvals and review. Integer-frame timeline timing and microsecond source ranges, immutable originals, atomic typed changes and revision history.
 2. **Storyboard is first-class, not a static planning document.** Scene cards, real rendered frames, asset slots, storyboard-to-timeline provenance and target-scoped approval/regeneration. Both production workflows use the same storyboard and master timeline.
-3. **One renderer, behind a replaceable compiler adapter.** HyperFrames producer/player and FFmpeg are provisional preferred choices. G1 on founder's M5 Max is required before deep renderer integration. If it fails, test OpenFilm's renderer against the same contract. Never silently run two competing renderers for the authoritative timeline.
-4. **Reuse editor UI foundations.** Evaluate embeddable timeline components in G7. Own the product interface, word/take controls, scene review and manual editing semantics, but do not rebuild a full low-level video UI without compelling validation.
+3. **One renderer, behind a replaceable compiler adapter.** Amended 2026-11-06 by [G1](../roadmap/video-studio/gates/g1-renderer.md): HyperFrames failed G1 because its composition contract requires GSAP, whose licence spec/08 excludes; OpenFilm rendered the fixture correctly but requires page JavaScript and Node 22, so it remains the documented fallback. The renderer is CreatorBrio's own, behind the compiler adapter:
+   - The compiler turns the production into one FFmpeg graph for footage and audio, cut and mixed from the originals, and one script-free overlay document for captions and graphics.
+   - Overlay frames come from Chromium with page JavaScript disabled, every request refused, one browser per worker (default 4), and the pinned software-raster flags in `scripts/gates/g1/chrome-args.mjs`, seeked through `document.getAnimations()`; frames are identical across runs and worker counts.
+   - Footage never passes through the browser for export. Preview plays proxies and shows the same overlay document in an `<iframe sandbox="">` whose time is set by a CSS variable.
+   - Preview and export are two compositors for footage, so footage stays full-frame and untransformed until a transform is expressed in the FFmpeg graph, reproduced in preview, and covered by a parity test. No footage transform ships without that test.
+   - Export text is rendered with forced sRGB, grayscale anti-aliasing and no hinting, so it is not pixel-identical to the creator's browser; this is a recorded limitation.
+   Never silently run two competing renderers for the authoritative timeline.
+4. **Reuse editor UI foundations.** Evaluate embeddable timeline components in G7. Own the product interface, word/take controls, scene review and manual editing semantics, but do not rebuild a full low-level video UI without compelling validation. [G7](../roadmap/video-studio/gates/g7-timeline.md) conditionally passed `@xzdarcy/react-timeline-editor` as the interaction layer only; CreatorBrio supplies keyboard access, frame snapping and overlap constraints, and an owned component is the fallback.
 5. **Creative capability registry.** Native editable vector/HTML/SVG effects and isolated specialist tool outputs (Manim, Earshot, OpenFilm pieces, other licensed tools) each yield well-defined assets and timeline operations. Do not copy copyleft/noncommercial source into the MIT core.
 6. **Local AI and image providers are replaceable.** Existing Claude Code CLI and image-service contract are first implementations; runtime roles use provider-neutral interfaces. Public deployment includes a manual-capable mode and commercial-safe reference models. No intermediary reuse of customers' personal subscription credentials.
 7. **Audio spine unifies workflows.** A-roll recorded audio or AI narration supplies word timing for cuts, captions, sound cues and ducking. Separate model processing from editorial judgment; preserve original voice and control gain changes explicitly.
