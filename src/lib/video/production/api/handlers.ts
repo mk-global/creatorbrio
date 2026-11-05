@@ -52,7 +52,7 @@ export function apiContext(dataDir = path.resolve(/*turbopackIgnore: true*/ proc
   if (!context) {
     context = {
       store: new ProductionStore({ root: path.join(/*turbopackIgnore: true*/ dataDir, "video") }),
-      authority: new AuthorityRegistry(path.join(/*turbopackIgnore: true*/ dataDir, "video-studio.key")),
+      authority: new AuthorityRegistry(path.join(/*turbopackIgnore: true*/ dataDir, "video-studio.key"), path.join(/*turbopackIgnore: true*/ dataDir, "video-auth")),
       now: () => new Date().toISOString(),
       newId: (prefix) => `${prefix}-${randomBytes(8).toString("hex")}`,
     };
@@ -78,7 +78,10 @@ async function authorize(request: Request, productionId: string | null, allowed:
   }
   const ctx = apiContext();
   const resolved = await ctx.authority.resolve(request);
-  if (!resolved.ok) throw new HttpFailure(errorResponse(401, { code: resolved.code, message: resolved.message }));
+  if (!resolved.ok) {
+    const status = resolved.code === "session_request_refused" ? 403 : 401;
+    throw new HttpFailure(errorResponse(status, { code: resolved.code, message: resolved.message }));
+  }
   const authority = resolved.authority;
   if (authority.kind === "anonymous") {
     throw new HttpFailure(errorResponse(401, { code: "authority_required", message: "send the human key or an agent run token" }));

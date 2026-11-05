@@ -12,7 +12,15 @@
  *   production and run, and is held only as a hash in this process's memory.
  *   It ends with the run and with the server process, so a restarted server
  *   never honours a token from before the restart.
- * - **Anonymous**: no credential. Reads only.
+ * - **Human, through a paired browser**: the request carries the session
+ *   cookie set by `POST /api/video/session` after a person redeemed a pairing
+ *   code from `npm run studio:pair` (see `sessions.ts`). Because a cookie is
+ *   sent automatically, a cookie request must also carry the
+ *   `X-CreatorBrio-Request: studio` header (which a cross-origin page cannot
+ *   send without a preflight this server never approves), must not be marked
+ *   by the browser as anything but same-origin, and, when it changes state,
+ *   must carry this app's exact `Origin`.
+ * - **Anonymous**: no credential. Refused everywhere.
  *
  * Any `by`, `actor`, `role`, `userId`, `runId` or approval field in a body is
  * refused, not interpreted: the actor and the run come from the credential.
@@ -28,6 +36,9 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { resolveAppOrigin } from "@/lib/request-origin";
+import { sessionTokenFrom, STUDIO_REQUEST_HEADER, StudioSessions } from "./sessions";
+
 export const HUMAN_KEY_HEADER = "x-creatorbrio-human-key";
 const KEY_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -36,7 +47,13 @@ export type Authority =
   | { kind: "human" }
   | { kind: "agent"; productionId: string; runId: string };
 
-export type AuthorityResult = { ok: true; authority: Authority } | { ok: false; code: "invalid_credential" | "ambiguous_credential"; message: string };
+export type AuthorityResult =
+  | { ok: true; authority: Authority }
+  | { ok: false; code: "invalid_credential" | "ambiguous_credential"; message: string }
+  /** A session cookie on a request that could have been made by another site: 403, not 401. */
+  | { ok: false; code: "session_request_refused"; message: string };
+
+const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 interface Grant {
   productionId: string;
@@ -57,8 +74,11 @@ export class AuthorityRegistry {
   /** Run tokens by the hex of their SHA-256; the tokens themselves are not kept. */
   private readonly grants = new Map<string, Grant>();
 
-  constructor(keyFile: string) {
+  readonly sessions: StudioSessions;
+
+  constructor(keyFile: string, sessionDir: string = path.join(/*turbopackIgnore: true*/ path.dirname(keyFile), "video-auth")) {
     this.keyFile = keyFile;
+    this.sessions = new StudioSessions(sessionDir);
   }
 
   /** Reads the human key, creating it with owner-only permissions if it does not exist. */
@@ -99,9 +119,11 @@ export class AuthorityRegistry {
   async resolve(request: Request): Promise<AuthorityResult> {
     const humanHeader = request.headers.get(HUMAN_KEY_HEADER);
     const authorization = request.headers.get("authorization");
-    if (humanHeader !== null && authorization !== null) {
-      return { ok: false, code: "ambiguous_credential", message: "send either the human key or a run token, not both" };
+    const cookie = sessionTokenFrom(request);
+    if ([humanHeader, authorization, cookie].filter((c) => c !== null).length > 1) {
+      return { ok: false, code: "ambiguous_credential", message: "send one credential: the human key, a run token or a session" };
     }
+    if (cookie !== null) return this.resolveSession(request, cookie);
     if (humanHeader !== null) {
       const key = await this.humanKey();
       return sameSecret(humanHeader.trim(), key) ? { ok: true, authority: { kind: "human" } } : invalid();
@@ -112,6 +134,20 @@ export class AuthorityRegistry {
       return grant ? { ok: true, authority: { kind: "agent", productionId: grant.productionId, runId: grant.runId } } : invalid();
     }
     return { ok: true, authority: { kind: "anonymous" } };
+  }
+
+  /** A paired browser's session, accepted only from this app's own pages. */
+  private async resolveSession(request: Request, cookie: string): Promise<AuthorityResult> {
+    const refused = (message: string): AuthorityResult => ({ ok: false, code: "session_request_refused", message });
+    if (request.headers.get(STUDIO_REQUEST_HEADER) !== "studio") return refused("session requests must carry X-CreatorBrio-Request: studio");
+    const fetchSite = request.headers.get("sec-fetch-site");
+    if (fetchSite !== null && fetchSite !== "same-origin") return refused("session requests must come from this app's own pages");
+    if (STATE_CHANGING.has(request.method.toUpperCase()) && request.headers.get("origin") !== resolveAppOrigin(request)) {
+      return refused("session requests that change state must carry this app's Origin");
+    }
+    if (cookie === "duplicate") return invalid();
+    const verified = await this.sessions.verify(cookie);
+    return verified.ok ? { ok: true, authority: { kind: "human" } } : invalid();
   }
 }
 

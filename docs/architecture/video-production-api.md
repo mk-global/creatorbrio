@@ -18,11 +18,13 @@ The server decides the caller's authority from a credential. It never takes it f
 
 | Authority | Credential | How it is obtained |
 |---|---|---|
-| Human | Header `X-CreatorBrio-Human-Key: <key>` | The key is 32 random bytes in `data/video-studio.key`, created with owner-only permissions (0600) on first use. It is never served over HTTP. |
+| Human (API client) | Header `X-CreatorBrio-Human-Key: <key>` | The key is 32 random bytes in `data/video-studio.key`, created with owner-only permissions (0600) on first use. It is for scripts and developer tools on this computer, is never served over HTTP and is never given to a browser. |
+| Human (paired browser) | Cookie `cb_studio_session`, plus header `X-CreatorBrio-Request: studio` | Set by [pairing](#pairing-a-browser): `HttpOnly`, `SameSite=Strict`, `Path=/api/video`, valid for 12 hours, revocable. Page JavaScript cannot read it. |
 | Agent | Header `Authorization: Bearer cbrun_…` | Returned once when a person begins an agent run. It is bound to that production and run, and kept only as a SHA-256 hash in the server's memory. It ends when the run ends, is replaced on resume, and does not survive a server restart. |
 | None | — | Every endpoint answers 401 `authority_required`. |
 
-A request with both credentials is refused (`ambiguous_credential`).
+A request with more than one credential is refused (`ambiguous_credential`).
+A paired browser and the human key have the same authority: both are a person.
 The fields `by`, `actor`, `role`, `userId`, `user`, `runId`, `agentRunId`, `id`, `at`, `approved`, `approval`, `approvals`, `human`, `isHuman`, `authority`, `override`, `force`, `revision` and `generation` are refused by name with `server_owned_field`.
 A forged actor therefore fails loudly instead of being ignored.
 The server sets the change set's id, time, actor and run itself.
@@ -30,9 +32,55 @@ Agents also cannot approve: the engine refuses person-only statuses and operatio
 
 ### What this does and does not protect against
 
-- **Protected:** web pages and other sites (by the loopback Host and Origin checks, and because they cannot read the key); agents, which the specification limits to MCP tools with no shell and no access to `data/` (spec 06 §9); any process that can reach the port but cannot read the user's files; and an agent changing a request field to act as a person.
-- **Not protected:** a process running as the same operating-system user with a shell can read the key file, as it can read and edit `data/` directly. That includes today's carousel Design Agent, which has Bash. Separating such a process from the person needs operating-system isolation, which is outside this local, single-user design.
-- **How the Studio UI obtains the key:** this is left to the UI ticket. Embedding the key in a page would let any local process that can fetch the page read it, so the UI needs its own pairing step, for example a one-time code shown in the terminal that is exchanged for an HttpOnly, SameSite=Strict cookie.
+- **Protected:**
+  - web pages and other sites, by the loopback Host and Origin checks, because they cannot read the key, and because they cannot use a paired browser's session (see [cookie requests](#cookie-requests));
+  - agents, which the specification limits to MCP tools with no shell and no access to `data/` (spec 06 §9);
+  - any process that can reach the port but cannot read the user's files;
+  - an agent changing a request field to act as a person.
+- **Not protected:** a process running with arbitrary execution as the same operating-system user can read every local secret: the key file, the session and pairing records' directory, and the browser's cookie store. It can also run `npm run studio:pair` itself, or edit `data/` directly. That includes today's carousel Design Agent, which has Bash. Separating such a process from the person needs operating-system account separation, which is outside this local, single-user design. Pairing does not change this, and nothing here claims to be a browser or operating-system sandbox.
+
+## Pairing a browser
+
+Pairing gives a browser a session without the human key ever reaching it.
+
+1. **The operator runs `npm run studio:pair` in a terminal**, as the account that owns the checkout.
+   - It prints a 20-character code (100 bits, Crockford base32, shown as four groups of five). The code works once, for five minutes.
+   - The code appears only in that terminal. The script refuses to print it when its output is not a terminal, so a tool whose output is captured or logged does not record it by accident. That is a guard against mistakes, not a boundary.
+   - Only the code's SHA-256 hash is stored, in `data/video-auth/pairing/` (directory 0700, file 0600). No HTTP endpoint, page or agent tool issues or reveals codes.
+2. **The person enters the code in the Studio page.** The page sends `POST /api/video/session` with `{ "code" }`.
+   - The request must have a loopback Host and this app's exact `Origin` (present, not merely "not foreign"), carry `X-CreatorBrio-Request: studio`, and must not be marked by the browser as anything other than `Sec-Fetch-Site: same-origin`.
+   - The server deletes the code's record before it creates a session. Deleting succeeds for exactly one caller in any process, so a code cannot be replayed, and simultaneous redeemers cannot both win, even across a restart.
+   - On success it answers 201 `{ status: "paired", expiresAt }` and sets the cookie. The body never contains the token.
+3. **The session** is 32 random bytes. The server stores only its SHA-256 hash, in `data/video-auth/sessions/` (0600), and checks that record on every request, so revocation takes effect at once in every process.
+   - A session lasts 12 hours. It survives a server restart, and pairing again replaces the browser's previous session.
+   - At most 16 sessions are kept; the oldest are dropped.
+
+| Request | Purpose |
+|---|---|
+| `POST /api/video/session` `{ code }` | Pair: 201 and the cookie. 401 `invalid_pairing_code` for a wrong, expired or used code. 429 `rate_limited` (with `Retry-After`) after 5 failures in a minute. |
+| `GET /api/video/session` | 200 `{ authenticated, expiresAt }`, or 401 `not_paired` |
+| `DELETE /api/video/session` | Sign out: the session record is deleted and the cookie cleared, so a copied cookie stops working too |
+| `npm run studio:pair -- --revoke-all` | Sign out every paired browser and cancel unused codes |
+
+**Guessing.** After 10 failed attempts, every pending code is cancelled, so guessing gains nothing even if a restart resets the per-minute limit.
+
+### Cookie requests
+
+A cookie is sent automatically, so a request that relies on the session cookie must also:
+
+- carry `X-CreatorBrio-Request: studio`. A cross-origin page cannot send a custom header without a CORS preflight, which this server never approves;
+- not be marked by the browser as `Sec-Fetch-Site` other than `same-origin`. Pages on another port of the same host are same-site but not same-origin, so `SameSite=Strict` alone would not stop them;
+- when it changes state, carry this app's exact `Origin`.
+
+Otherwise it is refused with 403, before the session is even looked up.
+
+DNS rebinding is stopped by the loopback Host check. In addition, a rebound domain's requests never carry this host's cookie.
+
+### Limits
+
+- **A stolen cookie works until it expires or is revoked.** The cookie value is a bearer token: a non-browser client that copies it can send the Studio header itself. Signing out or `--revoke-all` ends it at once.
+- **Cookies are not isolated by port.** Another web server on this computer at the same host name receives the cookie if the browser sends a request to it under `/api/video`.
+- **The cookie is not `Secure` over plain HTTP** on `localhost` or `127.0.0.1`. It is when the app is served over HTTPS.
 
 ## Endpoints
 
@@ -69,8 +117,9 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 | Status | Code | When |
 |---|---|---|
 | 400 | `invalid_json`, `invalid_body`, `invalid_id`, `invalid_field`, `missing_field`, `unknown_field`, `server_owned_field`, `invalid_request` | The request is malformed, or names a field the server owns |
-| 401 | `authority_required`, `invalid_credential`, `ambiguous_credential` | No valid credential |
-| 403 | `request_refused` | Non-loopback Host, or a cross-site Origin on a write |
+| 401 | `authority_required`, `invalid_credential`, `ambiguous_credential`, `invalid_pairing_code`, `not_paired` | No valid credential |
+| 403 | `request_refused` | Non-loopback Host, or a cross-site Origin on a write; for pairing, any check in [Pairing a browser](#pairing-a-browser) |
+| 403 | `session_request_refused` | A session cookie on a request without the Studio header, with cross-site fetch metadata, or without this app's Origin on a write |
 | 403 | `forbidden` | The authority may not do this, or the token is for another production |
 | 404 | `not_found`, `run_not_found` | No such production, or no such open run |
 | 409 | `stale_revision` (with `expectedRevision`, `actualRevision`), `run_in_progress`, `no_open_run`, `already_exists`, `generation_mismatch` (with both generations), `run_not_interrupted`, `unsupported_version` | Conflicts with the current state |
@@ -79,11 +128,12 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 | 422 | `rejected` (with `stage` and `issues`) | The engine refused the change; nothing was written |
 | 423 | `recovery_required` (with `runId`, `ownerAlive`) | An agent run is open and is not this server's; a person must decide |
 | 428 | `confirmation_required` | A destructive command lacks `expectedGeneration` |
+| 429 | `rate_limited` (with `Retry-After`) | Too many failed pairing attempts |
 | 500 | `production_corrupt` (with `generation`), `storage_error`, `internal_error` | Damaged data or a storage failure; no paths or file contents are returned |
 | 503 | `contended` (with `Retry-After`) | Other writers kept committing first |
 
 ## Not built yet
 
-- **Studio UI pairing** for the human key, with the UI ticket.
+- **The Studio page itself**, which will call `/api/video/session` and send the Studio header.
 - **Stage-exit approvals** and **media-ledger checks** when edits are applied.
 - **Bundle export and import.**
