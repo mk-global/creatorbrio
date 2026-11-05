@@ -1,0 +1,62 @@
+"use client";
+// G7 spike only (never committed): six lanes, waveform, caption words, 60 s, controlled through an undo history.
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Timeline, type TimelineState } from "@xzdarcy/react-timeline-editor";
+import type { TimelineRow, TimelineAction } from "@xzdarcy/timeline-engine";
+import "@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css";
+
+const WORDS = "Footage cuts land on the frame while every caption word lights up on time and the diagram draws itself".split(" ");
+function initial(): TimelineRow[] {
+  const caps: TimelineAction[] = [];
+  for (let i = 0; i < 150; i++) caps.push({ id: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.36, effectId: "word" });
+  return [
+    { id: "v1", actions: [0, 20, 40].map((s, i) => ({ id: `clip${i}`, start: s, end: s + 20, effectId: "video" })) },
+    { id: "v2", actions: [{ id: "broll", start: 12, end: 18, effectId: "video" }] },
+    { id: "gfx", actions: [{ id: "lower", start: 50, end: 60, effectId: "graphic" }, { id: "diagram", start: 20, end: 40, effectId: "graphic" }] },
+    { id: "cap", actions: caps },
+    { id: "dlg", actions: [{ id: "dialogue", start: 0, end: 60, effectId: "audio" }] },
+    { id: "mus", actions: [{ id: "music", start: 0, end: 60, effectId: "audio" }] },
+  ];
+}
+const clone = (r: TimelineRow[]) => r.map((x) => ({ ...x, actions: x.actions.map((a) => ({ ...a })) }));
+const PEAKS = Array.from({ length: 600 }, (_, i) => Math.abs(Math.sin(i * 0.37) * Math.sin(i * 0.051)));
+
+export default function SpikeG7() {
+  const [rows, setRows] = useState<TimelineRow[]>(initial);
+  const past = useRef<TimelineRow[][]>([]), future = useRef<TimelineRow[][]>([]);
+  const [log, setLog] = useState<string[]>([]);
+  const tl = useRef<TimelineState>(null);
+  const commit = useCallback((label: string, mutate: (r: TimelineRow[]) => void) => {
+    setRows((cur) => { past.current.push(clone(cur)); future.current = []; const next = clone(cur); mutate(next); return next; });
+    setLog((l) => [...l.slice(-20), label]);
+    (window as unknown as { __g7: string[] }).__g7 = [...((window as unknown as { __g7?: string[] }).__g7 ?? []), label];
+  }, []);
+  const set = (id: string, start: number, end: number) => (r: TimelineRow[]) => r.forEach((row) => row.actions.forEach((a) => { if (a.id === id) { a.start = start; a.end = end; } }));
+  const effects = useMemo(() => ({ video: { id: "video", name: "video" }, graphic: { id: "graphic", name: "graphic" }, word: { id: "word", name: "word" }, audio: { id: "audio", name: "audio" } }), []);
+  const undo = () => { const p = past.current.pop(); if (!p) return; setRows((cur) => { future.current.push(clone(cur)); return p; }); setLog((l) => [...l, "undo"]); };
+  const redo = () => { const f = future.current.pop(); if (!f) return; setRows((cur) => { past.current.push(clone(cur)); return f; }); setLog((l) => [...l, "redo"]); };
+  return (
+    <main style={{ padding: 16, fontFamily: "sans-serif", background: "#111", color: "#eee", minHeight: "100vh" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <button id="undo" onClick={undo}>Undo</button><button id="redo" onClick={redo}>Redo</button>
+        <button id="seek" onClick={() => tl.current?.setTime(33.3)}>Seek 33.3</button>
+        <span id="time" />
+      </div>
+      <Timeline
+        ref={tl}
+        style={{ width: 1200, height: 360 }}
+        editorData={rows}
+        effects={effects}
+        scale={5} scaleWidth={100} startLeft={20} rowHeight={48} gridSnap={typeof window !== "undefined" && location.search.includes("snap")} dragLine={false}
+        onChange={() => { /* controlled: changes land only through commit() */ }}
+        onActionMoveEnd={({ action, start, end }) => commit(`move ${action.id} ${start.toFixed(3)}-${end.toFixed(3)}`, set(action.id, start, end))}
+        onActionResizeEnd={({ action, start, end, dir }) => commit(`trim-${dir} ${action.id} ${start.toFixed(3)}-${end.toFixed(3)}`, set(action.id, start, end))}
+        onCursorDrag={(t) => { const el = document.getElementById("time"); if (el) el.textContent = t.toFixed(3); }}
+        getActionRender={(a, row) => row.id === "dlg"
+          ? <svg width="100%" height="44" preserveAspectRatio="none" viewBox="0 0 600 44">{PEAKS.map((p, i) => <rect key={i} x={i} y={22 - p * 20} width={1} height={p * 40} fill="#6cf" />)}</svg>
+          : <div data-action={a.id} style={{ fontSize: 11, padding: 2, background: row.id === "cap" ? "#a63" : row.id.startsWith("v") ? "#36a" : "#585", height: "100%" }}>{row.id === "cap" ? WORDS[Number(a.id.slice(1)) % WORDS.length] : a.id}</div>}
+      />
+      <pre id="log" style={{ fontSize: 11 }}>{log.join("\n")}</pre>
+    </main>
+  );
+}

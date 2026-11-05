@@ -1,0 +1,7 @@
+{ "fps": 30, "width": 1080, "height": 1920, "durationFrames": 1800,
+  "video": [
+    { "src": "media/clipA.mp4", "inUs": 1000000, "outUs": 21000000, "atFrame": 0 },
+    { "src": "media/clipB.mov", "inUs": 1000000, "outUs": 21000000, "atFrame": 600 },
+    { "src": "media/clipC.mp4", "inUs": 1000000, "outUs": 21000000, "atFrame": 1200 } ],
+  "music": { "src": "media/music.m4a", "gain": 0.5, "fadeInFrames": 60, "fadeOutFrames": 60 },
+  "overlay": "overlay.html" }
