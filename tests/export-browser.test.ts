@@ -47,6 +47,10 @@ let pageSetup: string[][];
 let addedStyles: string[];
 /** Whether the loaded page's body is exactly the slide's box. */
 let bodyIsSlide: boolean;
+/** The document as the DevTools protocol describes it, keyed by slide HTML. */
+let documentTree: (html: string) => unknown;
+/** What the check reports in each frame inside the slide, or an error it throws there. */
+let frameChecks: (html: string) => ({ hasText: boolean; problem: string | null } | Error)[];
 /** When set, pages opened from now on wait for it before their screenshot. */
 let screenshotGate: Promise<void> | null;
 
@@ -63,7 +67,7 @@ function fakeBrowser(): FakeBrowser {
       let html = "";
       const setup: string[] = [];
       pageSetup.push(setup);
-      return {
+      const page = {
         setViewport: async () => {},
         setJavaScriptEnabled: async (enabled: boolean) => {
           setup.push(`scripts:${enabled}`);
@@ -87,6 +91,25 @@ function fakeBrowser(): FakeBrowser {
           setup.push("check");
           return printable(html);
         },
+        createCDPSession: async () => ({
+          send: async (method: string) => {
+            expect(method).toBe("DOM.getDocument");
+            return { root: documentTree(html) };
+          },
+          detach: async () => {},
+        }),
+        mainFrame: () => page,
+        frames: () => [
+          page,
+          ...frameChecks(html).map((check) => ({
+            evaluate: async (fn: { name: string }, isSlide: boolean) => {
+              expect([fn.name, isSlide]).toEqual(["readPrintableText", false]);
+              setup.push("check frame");
+              if (check instanceof Error) throw check;
+              return check;
+            },
+          })),
+        ],
         emulateMediaType: async (type: string | null) => {
           mediaTypes.push(type);
         },
@@ -103,6 +126,7 @@ function fakeBrowser(): FakeBrowser {
           open = false;
         },
       };
+      return page;
     },
     async close() {
       browser.closes.push(browser.openPages);
@@ -158,6 +182,8 @@ beforeEach(async () => {
   // Each test starts as a newly started server: no browser and a cold module.
   delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
   fontRequests.length = 0;
+  documentTree = () => ({ nodeName: "#document", children: [] });
+  frameChecks = () => [];
   png ??= await sharp({
     create: { width: 8, height: 10, channels: 3, background: { r: 10, g: 20, b: 30 } },
   })
@@ -427,6 +453,46 @@ describe("export browser", () => {
       // The refused slide was never printed, and no page was left open.
       expect(printOptions).toHaveLength(2);
       expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("refuses a slide holding a closed shadow root, which the in-page check cannot see into", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      documentTree = (html) => ({
+        children: [
+          {
+            children: html.includes("Slide 2")
+              ? [{ shadowRoots: [{ shadowRootType: "user-agent" }] }, { shadowRoots: [{ shadowRootType: "closed" }] }]
+              : [{ shadowRoots: [{ shadowRootType: "open" }, { shadowRootType: "user-agent" }] }],
+          },
+        ],
+      });
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toThrow(/^Slide 2 could not be checked before printing/);
+      expect(printOptions).toHaveLength(2);
+      expect(browsers[0].openPages).toBe(0);
+    });
+
+    it("checks every frame inside the slide, and refuses an effect found in one", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      frameChecks = (html) =>
+        html.includes("Slide 2")
+          ? [{ hasText: false, problem: null }, { hasText: true, problem: "filter" }]
+          : [{ hasText: true, problem: null }];
+
+      const attempt = exportAllSlidePdfs(slides(3), "4:5");
+
+      await expect(attempt).rejects.toThrow(/^Slide 2 applies a CSS filter to text/);
+      expect(pageSetup[1]).toEqual(["scripts:false", "load", "style", "measure", "style", "check", "check frame", "check frame"]);
+      expect(printOptions).toHaveLength(2);
+    });
+
+    it("refuses a slide with a frame the check cannot run in", async () => {
+      const { exportAllSlidePdfs } = await freshModule();
+      frameChecks = (html) => (html.includes("Slide 1") ? [new Error("Execution context was destroyed")] : []);
+
+      await expect(exportAllSlidePdfs(slides(2), "4:5")).rejects.toThrow(/^Slide 1 could not be checked before printing/);
     });
 
     it("refuses a slide whose visible text reached the PDF only as a picture", async () => {

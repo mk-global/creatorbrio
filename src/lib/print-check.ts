@@ -8,7 +8,10 @@
  *
  * Slide HTML is untrusted. Elements with a `name` or `id` can shadow
  * properties of `document` and of forms (DOM clobbering), so the checks read
- * the document only through the built-in prototype accessors.
+ * the document only through the built-in prototype accessors. Declarative
+ * shadow DOM renders without scripts, so the checks walk open shadow roots;
+ * closed ones cannot be read from the page and are found through the
+ * DevTools protocol instead (see `hasClosedShadowRoot`).
  */
 
 /**
@@ -82,9 +85,9 @@ export function bodyIsTheSlide(): boolean {
  *   poppler draw wrongly (the masked image or text loses its fade).
  * - `overflow`: content reaches past the slide although the print clip could
  *   not be applied, so the page would come out shrunk.
- * - `unreadable`: the document has no ordinary root and body, so it cannot
- *   be checked; a slide's own elements cannot cause this (see above), so it
- *   only fails the check closed.
+ * - `unreadable`: part of the slide cannot be checked: a closed shadow root,
+ *   a frame the check cannot run in, or a document without an ordinary root
+ *   and body (which a slide's own elements cannot fake, see above).
  */
 export type PrintProblem =
   | "filter"
@@ -105,35 +108,68 @@ export type PrintProblem =
  * or not, so hidden text under such an effect is refused too. `hasText` only
  * counts text that is visibly painted, so it can undercount, which only skips
  * the post-print check.
+ *
+ * It runs in the slide's own document, and with `isSlide` false in each frame
+ * inside it, where an effect would flatten text just the same.
  */
-export function readPrintableText(): { hasText: boolean; problem: PrintProblem | null } {
+export function readPrintableText(isSlide = true): { hasText: boolean; problem: PrintProblem | null } {
   const getter = (proto: object, key: string) => Object.getOwnPropertyDescriptor(proto, key)!.get!;
   const rootOf = getter(Document.prototype, "documentElement");
   const bodyOf = getter(Document.prototype, "body");
   const parentOf = getter(Node.prototype, "parentElement");
+  const childNodesOf = getter(Node.prototype, "childNodes");
+  const shadowOf = getter(Element.prototype, "shadowRoot");
   const nameOf = getter(Element.prototype, "localName");
   const widthOf = getter(Element.prototype, "clientWidth");
   const heightOf = getter(Element.prototype, "clientHeight");
   const scrollWidthOf = getter(Element.prototype, "scrollWidth");
   const scrollHeightOf = getter(Element.prototype, "scrollHeight");
+  const completeOf = getter(HTMLImageElement.prototype, "complete");
+  const naturalWidthOf = getter(HTMLImageElement.prototype, "naturalWidth");
   const rectOf = (el: Element) => Element.prototype.getBoundingClientRect.call(el);
-  const descendants = (el: Element) => Array.from(Element.prototype.querySelectorAll.call(el, "*"));
   const attribute = (el: Element, name: string) => Element.prototype.getAttribute.call(el, name);
+
+  /**
+   * Every element and text node under `from`, including those in open shadow
+   * roots, and a shadow host's own children whether slotted or not.
+   */
+  function subtree(from: Node): { elements: Element[]; texts: Text[] } {
+    const elements: Element[] = [];
+    const texts: Text[] = [];
+    const pending: Node[] = [from];
+    for (let node = pending.pop(); node; node = pending.pop()) {
+      for (const child of Array.from(childNodesOf.call(node) as NodeList)) {
+        if (child instanceof Text) texts.push(child);
+        if (!(child instanceof Element)) continue;
+        elements.push(child);
+        pending.push(child);
+        const shadow = shadowOf.call(child);
+        if (shadow) pending.push(shadow);
+      }
+    }
+    return { elements, texts };
+  }
+  const descendants = (el: Element) => {
+    const shadow = shadowOf.call(el);
+    return shadow ? [...subtree(el).elements, ...subtree(shadow).elements] : subtree(el).elements;
+  };
   const textNodes = (el: Element) => {
-    const walker = Document.prototype.createTreeWalker.call(document, el, NodeFilter.SHOW_TEXT);
-    const nodes: Node[] = [];
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
-    return nodes;
+    const shadow = shadowOf.call(el);
+    return shadow ? [...subtree(el).texts, ...subtree(shadow).texts] : subtree(el).texts;
   };
 
   const root = rootOf.call(document);
   const body = bodyOf.call(document);
-  if (!(root instanceof HTMLHtmlElement) || !(body instanceof HTMLBodyElement)) {
+  // A slide's own document always has both; a frame inside it may be an SVG
+  // or other document, which is checked from its root.
+  if (isSlide ? !(root instanceof HTMLHtmlElement) || !(body instanceof HTMLBodyElement) : !(root instanceof Element)) {
     return { hasText: false, problem: "unreadable" };
   }
+  const top: Element = body instanceof HTMLBodyElement ? body : root;
   const slideWidth: number = widthOf.call(root);
   const slideHeight: number = heightOf.call(root);
-  if (scrollWidthOf.call(root) > slideWidth || scrollHeightOf.call(root) > slideHeight) {
+  // A frame scrolls and clips its own content, so only the slide can overflow.
+  if (isSlide && (scrollWidthOf.call(root) > slideWidth || scrollHeightOf.call(root) > slideHeight)) {
     return { hasText: false, problem: "overflow" };
   }
 
@@ -156,9 +192,15 @@ export function readPrintableText(): { hasText: boolean; problem: PrintProblem |
     const name = nameOf.call(el);
     if (["textarea", "select", "button", "iframe", "object", "embed", "frame"].includes(name)) return true;
     if (name === "input") return attribute(el, "type")?.toLowerCase() !== "hidden";
+    // A broken image draws its alt text instead.
+    if (el instanceof HTMLImageElement) {
+      return Boolean(attribute(el, "alt")?.trim()) && (!completeOf.call(el) || naturalWidthOf.call(el) === 0);
+    }
     if (name === "use") {
       const href = attribute(el, "href") ?? attribute(el, "xlink:href") ?? "";
-      const target = href.startsWith("#") ? Document.prototype.getElementById.call(document, href.slice(1)) : null;
+      const scope = Node.prototype.getRootNode.call(el);
+      const byId = scope instanceof ShadowRoot ? DocumentFragment.prototype.getElementById : Document.prototype.getElementById;
+      const target = href.startsWith("#") ? byId.call(scope, href.slice(1)) : null;
       // An external or missing reference cannot be checked, so it counts.
       if (!target) return href !== "";
       return nameOf.call(target) === "text" || descendants(target).some((d) => nameOf.call(d) === "text");
@@ -183,7 +225,7 @@ export function readPrintableText(): { hasText: boolean; problem: PrintProblem |
   // In order of severity: content lost first, then pictures of text, then
   // effects some readers draw wrongly.
   const found = new Set<PrintProblem>();
-  for (const el of [root, body, ...descendants(body)]) {
+  for (const el of top === root ? [root, ...descendants(root)] : [root, top, ...descendants(top)]) {
     const styles = [getComputedStyle(el), ...PSEUDOS.map((p) => getComputedStyle(el, p)).filter((s) => set(s.content))];
     const visible = hasBox(el);
     for (const style of styles) {
@@ -240,7 +282,7 @@ export function readPrintableText(): { hasText: boolean; problem: PrintProblem |
     if (el instanceof SVGElement && style.fill === "none" && style.stroke === "none") return null;
     return box;
   }
-  for (const node of textNodes(body)) {
+  for (const node of textNodes(top)) {
     const el = parentOf.call(node);
     if (!el || !node.nodeValue?.trim()) continue;
     const area = shownArea(el);
@@ -252,4 +294,30 @@ export function readPrintableText(): { hasText: boolean; problem: PrintProblem |
     }
   }
   return { hasText: false, problem: null };
+}
+
+/** The part of a DevTools protocol DOM node `hasClosedShadowRoot` reads. */
+export interface ProtocolNode {
+  children?: ProtocolNode[];
+  shadowRoots?: (ProtocolNode & { shadowRootType?: string })[];
+  contentDocument?: ProtocolNode;
+}
+
+/**
+ * Whether the document, read with `DOM.getDocument({ depth: -1, pierce: true })`,
+ * holds a closed shadow root anywhere, frames included. Its content is hidden
+ * from `readPrintableText`, so it cannot be checked. Browser-internal shadow
+ * roots (of form fields and media) do not count.
+ */
+export function hasClosedShadowRoot(node: ProtocolNode): boolean {
+  const pending: ProtocolNode[] = [node];
+  for (let at = pending.pop(); at; at = pending.pop()) {
+    for (const shadow of at.shadowRoots ?? []) {
+      if (shadow.shadowRootType === "closed") return true;
+      pending.push(shadow);
+    }
+    pending.push(...(at.children ?? []));
+    if (at.contentDocument) pending.push(at.contentDocument);
+  }
+  return false;
 }

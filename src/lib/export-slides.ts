@@ -6,7 +6,15 @@ import { wrapSlideHtml, extractFontFamilies, usesItalic } from "./slide-html";
 import { getInlinedFontCSS, type FontInstances } from "./fonts";
 import { UnprintableSlideError, unprintableSlideError } from "./export-pdf";
 import { inspectPdf } from "./pdf-content";
-import { PRINT_CLIP_CSS, bodyIsTheSlide, printPageCss, readPrintableText } from "./print-check";
+import {
+  PRINT_CLIP_CSS,
+  bodyIsTheSlide,
+  hasClosedShadowRoot,
+  printPageCss,
+  readPrintableText,
+  type PrintProblem,
+  type ProtocolNode,
+} from "./print-check";
 import type { Slide, AspectRatio } from "@/types/carousel";
 import { DIMENSIONS } from "@/types/carousel";
 
@@ -323,6 +331,36 @@ export async function exportSlide(
 }
 
 /**
+ * Runs the print checks of `print-check.ts` on a loaded slide: refuses a closed
+ * shadow root, which the in-page check cannot see into, then checks the slide
+ * and every frame in it. A frame the check cannot run in is refused too.
+ */
+async function checkForPrint(page: Page): Promise<{ hasText: boolean; problem: PrintProblem | null }> {
+  const session = await page.createCDPSession();
+  try {
+    const { root } = (await session.send("DOM.getDocument", { depth: -1, pierce: true })) as { root: ProtocolNode };
+    if (hasClosedShadowRoot(root)) return { hasText: true, problem: "unreadable" };
+  } finally {
+    await session.detach().catch(() => {});
+  }
+
+  let hasText = false;
+  for (const frame of page.frames()) {
+    const isSlide = frame === page.mainFrame();
+    let result: Awaited<ReturnType<typeof readPrintableText>>;
+    try {
+      result = await frame.evaluate(readPrintableText, isSlide);
+    } catch (error) {
+      if (isSlide) throw error;
+      return { hasText: true, problem: "unreadable" };
+    }
+    if (result.problem) return result;
+    hasText ||= result.hasText;
+  }
+  return { hasText, problem: null };
+}
+
+/**
  * Prints one slide to a one-page native PDF with Chromium: text stays text
  * with its fonts embedded, CSS and SVG graphics stay vector wherever Chromium
  * can draw them as vectors, and images stay images.
@@ -354,7 +392,7 @@ export async function exportSlidePdf(
       // `@media print` rules the preview never shows.
       await page.emulateMediaType("screen");
 
-      const text = await page.evaluate(readPrintableText);
+      const text = await checkForPrint(page);
       if (text.problem) throw new UnprintableSlideError(text.problem);
 
       const pdf = await page.pdf({

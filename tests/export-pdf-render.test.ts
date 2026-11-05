@@ -256,6 +256,9 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "generated content": [box(`<style>.g::before{content:"Generated words"}</style><p class="g"></p>`), ["Generated", "words"]],
       // Filters are refused only around something that can draw text.
       "a drop-shadow on a shape beside it": [box(`<div style="width:200px;height:200px;background:#c4622d;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"></div><p>Caption words</p>`), ["Caption", "words"]],
+      "a declarative shadow root": [box(`<div><template shadowrootmode="open"><p>Shadow words</p></template></div>`), ["Shadow", "words"]],
+      "a framed document": [box(`<iframe srcdoc="<p style='font-size:48px;font-family:sans-serif'>Framed words</p>" style="width:600px;height:300px;border:0"></iframe>`), ["Framed", "words"]],
+      "a drop-shadow on a broken image without alt text beside it": [box(`<img src="/uploads/missing.png" alt="" style="width:200px;height:200px;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><p>Caption words</p>`), ["Caption", "words"]],
       "a drop-shadow on an icon-only SVG symbol beside it": [box(`<svg width="300" height="300"><defs><symbol id="icon" viewBox="0 0 10 10"><path d="M0 0L10 0L5 10z" fill="#c4622d"/></symbol></defs><use href="#icon" width="300" height="300" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"/></svg><p>Caption words</p>`), ["Caption", "words"]],
     };
     const refused: Record<string, [string, RegExp]> = {
@@ -279,6 +282,12 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
       "a filter on a form field": [box(`<input value="Typed words" style="font-size:48px;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">`), /^Slide 2 applies a CSS filter to text/],
       "a filter on an SVG symbol that holds text": [`<svg width="1080" height="600" style="font-family:${SANS}"><defs><symbol id="label"><text x="100" y="300" font-size="80">Symbol words</text></symbol></defs><use href="#label" style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"/></svg>`, /^Slide 2 applies a CSS filter to text/],
       "a filter on a framed document": [box(`<iframe srcdoc="<p style='font-size:48px'>Framed words</p>" style="width:600px;height:300px;border:0;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"></iframe>`), /^Slide 2 applies a CSS filter to text/],
+      // Declarative shadow DOM renders without scripts, in the preview too.
+      "a filter around an open shadow root": [box(`<div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><template shadowrootmode="open"><p>Shadow words</p></template></div>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter inside an open shadow root": [box(`<div><template shadowrootmode="open"><p style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">Shadow words</p></template></div>`), /^Slide 2 applies a CSS filter to text/],
+      "a closed shadow root, which cannot be checked": [box(`<div><template shadowrootmode="closed"><p>Shadow words</p></template></div>`), /^Slide 2 could not be checked before printing/],
+      "a filter inside a framed document": [box(`<iframe srcdoc="<p style='font-size:48px;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))'>Framed words</p>" style="width:600px;height:300px;border:0"></iframe>`), /^Slide 2 applies a CSS filter to text/],
+      "a filter around a broken image's alt text": [box(`<div style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))"><img src="/uploads/missing.png" alt="Alt words" style="width:600px;height:200px"></div>`), /^Slide 2 applies a CSS filter to text/],
       "a filter beside elements named after the document's own properties": [box(`<img name="body"><img name="documentElement"><form name="createTreeWalker"><input name="parentElement"><input name="querySelectorAll"></form><p style="filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))">Clobbered words</p>`), /^Slide 2 applies a CSS filter to text/],
       "CSS that defeats the print clip": [`<style>body{overflow:visible!important;position:static!important}</style>${box("<p>Shrunk words</p>")}<div style="position:absolute;top:200px;right:-300px;width:600px;height:600px;background:#c4622d"></div>`, /^Slide 2 has content reaching past its edges/],
     };

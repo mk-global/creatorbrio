@@ -264,9 +264,11 @@ Some effects behave differently on paper than on screen, or in some PDF readers,
 
 Refused before printing, with status 422 and a message naming the slide and the effect:
 
-- A CSS or SVG `filter` or a `-webkit-box-reflect` turns the element into an image of everything in it, so it is refused when anything inside the element could draw text: a text node, `::before` or `::after` text (counters included), a form field, an embedded frame, a list marker, or an SVG `<use>` of a symbol holding `<text>`.
+- A CSS or SVG `filter` or a `-webkit-box-reflect` turns the element into an image of everything in it, so it is refused when anything inside the element could draw text: a text node, `::before` or `::after` text (counters included), a form field, an embedded frame, a list marker, a broken image's alt text, or an SVG `<use>` of a symbol holding `<text>`.
+  The check looks inside open shadow roots and runs in every frame of the slide, so text placed there is held to the same rule.
   The check is deliberately conservative and does not ask whether that text is visible, so hidden text under a filter is refused too.
   A filter on an image, a shape or an icon with no text is fine.
+- A closed shadow root anywhere in the slide, frames included, because its content cannot be checked; a frame the check cannot run in is refused for the same reason.
 - A `backdrop-filter` anywhere on the slide, because Chromium leaves the text inside it, and can leave content painted after it, out of the PDF.
 - Text filled through `background-clip: text` (gradient or image text): it prints as text, but Apple's Preview and poppler-based readers draw it as a solid block.
 - A CSS or SVG mask (`mask`, `mask-image`) on anything visible: Apple's Preview and poppler-based readers draw the masked image or text without its fade.

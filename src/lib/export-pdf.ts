@@ -130,7 +130,7 @@ export function unprintableSlideError(
       "uses a CSS or SVG mask, which PDF readers such as Apple Preview draw without its fade. " +
       "Ask the design agent to replace the mask with a gradient overlay or a plain shape",
     unreadable:
-      "could not be checked before printing, because its document has no ordinary page body. " +
+      "could not be checked before printing, because part of it is hidden from inspection (a closed shadow root or an unreadable frame). " +
       "Ask the design agent to rebuild the slide as plain HTML inside the page body",
     overflow:
       "has content reaching past its edges that the PDF could not clip, so the page would come out shrunk. " +
