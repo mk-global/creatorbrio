@@ -14,7 +14,7 @@ import type { ClipTone, LaneClipView } from "@/lib/video/studio/timeline-view";
 
 const TONES: Record<ClipTone, string> = {
   video: "border-sky-300 bg-sky-100 text-sky-950",
-  image: "border-teal-300 bg-teal-100 text-teal-950",
+  image: "border-pink-300 bg-pink-100 text-pink-950",
   audio: "border-emerald-300 bg-emerald-100 text-emerald-950",
   title: "border-violet-300 bg-violet-100 text-violet-950",
   captions: "border-amber-300 bg-amber-100 text-amber-950",

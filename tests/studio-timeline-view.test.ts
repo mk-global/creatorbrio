@@ -75,8 +75,8 @@ describe("the Studio timeline's view", () => {
   it("gives every clip an accessible name with kind, label, timecodes and lane, in timeline order", () => {
     const lanes = laneViews(production(), library);
     const footage = lanes.find((l) => l.label === "Footage")!;
-    expect(footage.clips.map((c) => c.name)).toEqual(["Video: Interview take 2, 0:00.00 to 0:03.00, Footage track", "Video: Interview take 2, 0:03.00 to 0:04.00, Footage track"]);
-    expect(clipAccessibleName(graphic("t", "graphics.title-card", {}), "Hi", "Titles", 30)).toBe("Title card: Hi, 0:01.00 to 0:02.15, Titles track");
+    expect(footage.clips.map((c) => c.name)).toEqual(["Video: Interview take 2, 00:00:00:00 to 00:00:03:00, Footage track", "Video: Interview take 2, 00:00:03:00 to 00:00:04:00, Footage track"]);
+    expect(clipAccessibleName(graphic("t", "graphics.title-card", {}), "Hi", "Titles", 30)).toBe("Title card: Hi, 00:00:01:00 to 00:00:02:15, Titles track");
   });
 
   it("keeps ruler labels at least 72 px apart at every zoom step", () => {

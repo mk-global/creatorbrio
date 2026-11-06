@@ -93,7 +93,7 @@ export const KEYBOARD_HELP: { keys: string[]; action: string }[] = [
   { keys: ["Shift", "←/→"], action: "Move one second" },
   { keys: ["[", "]"], action: "Trim the start one frame earlier or later" },
   { keys: [",", "."], action: "Trim the end one frame earlier or later" },
-  { keys: ["Shift", "[ ] , ."], action: "Trim by one second" },
+  { keys: ["Shift", "[ ]", ", ."], action: "Trim by one second" },
   { keys: ["Alt", "←/→"], action: "Swap with the clip before or after" },
   { keys: ["S"], action: "Split at the playhead" },
   { keys: ["Delete"], action: "Delete the clip" },

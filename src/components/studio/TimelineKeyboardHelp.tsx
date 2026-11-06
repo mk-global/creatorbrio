@@ -41,7 +41,7 @@ export function TimelineKeyboardHelp() {
           id={id}
           role="dialog"
           aria-label="Timeline keyboard shortcuts"
-          className="absolute bottom-full right-0 z-30 mb-1 w-80 rounded-lg border border-border bg-surface p-3 shadow-lg"
+          className="absolute bottom-full right-0 z-30 mb-1 w-96 rounded-lg border border-border bg-surface p-3 shadow-lg"
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
