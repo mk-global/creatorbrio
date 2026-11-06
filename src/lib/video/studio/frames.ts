@@ -18,10 +18,15 @@ export function secondsToFrame(seconds: number, fps: number): number {
   return Math.max(0, Math.round(seconds * fps));
 }
 
-/** A frame as `m:ss.ff` (minutes, seconds and the frame within the second). */
+/**
+ * A frame as SMPTE timecode, `HH:MM:SS:FF` (hours, minutes, seconds and the
+ * frame within the second). Colons throughout, as video tools write it: a
+ * dot before the frames would read as a decimal fraction of a second.
+ */
 export function formatTimecode(frame: number, fps: number): string {
-  const whole = Math.max(0, Math.floor(frame));
-  const seconds = Math.floor(whole / fps);
-  const ff = whole % fps;
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}.${String(ff).padStart(2, "0")}`;
+  const whole = Number.isFinite(frame) ? Math.max(0, Math.floor(frame)) : 0;
+  const rate = Math.max(1, Math.round(fps));
+  const seconds = Math.floor(whole / rate);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(Math.floor(seconds / 3600))}:${two(Math.floor(seconds / 60) % 60)}:${two(seconds % 60)}:${two(whole % rate)}`;
 }

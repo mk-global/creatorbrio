@@ -70,7 +70,7 @@ export function MediaBinItem({ media, fps, inProduction, busy, retrying, onAdd, 
           )}
           {state === "ready" && !inProduction && <span className="text-[11px] text-muted-foreground">Ready</span>}
           {inProduction && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-1.5 py-px text-[11px] font-medium text-accent">
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-px text-[11px] font-medium text-foreground/80">
               <Check className="h-3 w-3" aria-hidden />
               In this production
             </span>

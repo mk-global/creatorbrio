@@ -112,7 +112,7 @@ describe("a library media's state", () => {
   });
 
   it("gives the length in whole frames at the production's rate, or an image's upright size", () => {
-    expect(mediaDetail(media("video", {}, { durationUs: 62_533_333 }), 30)).toBe("1:02.15");
+    expect(mediaDetail(media("video", {}, { durationUs: 62_533_333 }), 30)).toBe("00:01:02:15");
     expect(mediaDetail(media("audio", {}), 30)).toBe("");
     const picture = { codec: "png", width: 1920, height: 1080, frameRate: null, variableFrameRate: false, pixelFormat: null, bitDepth: null, color: { primaries: null, transfer: null, matrix: null, range: null }, dynamicRange: "sdr" as const };
     expect(mediaDetail(media("image", {}, { video: { ...picture, rotation: 0 } }), 30)).toBe("1920 × 1080");
