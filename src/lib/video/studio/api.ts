@@ -64,6 +64,9 @@ export class StudioApi {
       const error = (json as { error?: Record<string, unknown> } | null)?.error;
       if (error && typeof error.code === "string") {
         const { code, message, ...details } = error;
+        // How long to wait, from the header the server sends with 429 and 503.
+        const retryAfter = Number(res.headers.get("retry-after"));
+        if (Number.isFinite(retryAfter) && retryAfter > 0) details.retryAfterSeconds = retryAfter;
         throw new StudioApiError(res.status, code, typeof message === "string" ? message : code, details);
       }
       throw new StudioApiError(res.status, "unexpected_response", `The app answered ${res.status} without an explanation.`);

@@ -147,6 +147,26 @@ describe("the Studio's production session", () => {
     expect(titleClips(session)).toEqual([["t1", 0, 30]]);
   });
 
+  it("keeps showing the production when its page unsubscribes and subscribes again, as React's development mode remounts", async () => {
+    const session = new ProductionSession(api, ID);
+    let seen = 0;
+    const first = session.subscribe(() => seen++);
+    first();
+    session.subscribe(() => seen++);
+    await session.load();
+    expect(seen).toBeGreaterThan(0);
+    expect(session.getSnapshot()).toMatchObject({ status: "ready", view: { productionId: ID } });
+  });
+
+  it("passes the server's Retry-After on to the page", async () => {
+    const wrong = "AAAAA-AAAAA-AAAAA-AAAAA";
+    let last: StudioApiError | null = null;
+    for (let i = 0; i < 8 && last?.code !== "rate_limited"; i++) last = await api.pair(wrong).then(() => null, (e: StudioApiError) => e);
+    expect(last).toMatchObject({ status: 429, code: "rate_limited" });
+    expect(last!.details.retryAfterSeconds).toEqual(expect.any(Number));
+    expect(last!.details.retryAfterSeconds as number).toBeGreaterThan(0);
+  });
+
   it("runs one command at a time", async () => {
     const session = await ready();
     const first = session.apply("Add title", [title("t1", 0, 30, "Hello")]);
