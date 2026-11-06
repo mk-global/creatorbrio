@@ -74,7 +74,7 @@ A capability validates its parameters strictly and emits the CSS and markup of o
 | `graphics.lower-third@1.0.0` | `title` (1 to 60), `subtitle?` (up to 80), `accent?` | Slides in over 10 frames and out over the last 8, bottom left, above the caption band |
 | `graphics.title-card@1.0.0` | `title` (1 to 80), `subtitle?` (up to 120), `align` (`center` or `top`), `scrim` | Fades and scales in over 12 frames and out over the last 8; the scrim is a dark card inside the safe zone |
 
-- Text is counted in code points after trimming, and the trimmed text is stored; control characters, line and paragraph separators are refused.
+- Text is counted and drawn in code points after trimming its ends; the stored parameters keep what was sent. Control characters and line and paragraph separators are refused.
 - Everything is drawn inside the safe zone: on 9:16, 60 px from the left, 14% from the top, 120 px from the right and 35% from the bottom, scaled to the canvas; on other canvases 60 px at the sides and top and 120 px at the bottom, scaled by the shorter side.
   This is a creator convention, not a Meta specification.
 - Capability parameters are admitted when a change is committed, through the store's catalog (`StoreOptions.capabilities`).
@@ -85,6 +85,7 @@ A capability validates its parameters strictly and emits the CSS and markup of o
 `buildOverlay()` (`overlay.ts`) compiles the plan's graphics into one HTML document with one `<style>` and no script.
 Every animation is delayed by `calc(<seconds>s - var(--t, 0s))`, so the export seeks it with `document.getAnimations()` and the preview with the `--t` variable alone.
 A graphic is shown on exactly its frames `[start, start + duration)`, sampled at frame centres, `(f + 0.5) / fps`.
+`tests/overlay-preview-parity.test.ts` checks that the preview document in an `<iframe sandbox="">` and the export capture agree at 20 frames across every capability, apart from anti-aliasing at glyph edges.
 
 **Security boundary.** The compiler and the capabilities are what stands between production text and a browser, so the document is checked after it is built, not only trusted:
 - every user string is HTML-escaped, and CSS carries only values validated against strict patterns;
@@ -121,8 +122,9 @@ The final pass must deliver exactly the plan's frame count.
 **Mix.** Each sound is trimmed, delayed and padded in samples, and its gain envelope is written as a gain signal, one 32-bit float gain per sample of the render equal to the envelope at that sample, which FFmpeg multiplies into the sound.
 An envelope's complexity therefore never changes the graph or the cost per sample; an earlier design that wrote the envelope as one FFmpeg expression failed to parse at a few hundred points, which a fade over a ducked music bed reaches.
 
-**Loudness.** The mix is normalised with two-pass `loudnorm` to `Timeline.audio.masterLufs` with a true-peak ceiling 0.5 dB under the profile's, then encoded with the profile's AAC settings and measured again.
-If the encoded result is more than 0.2 LU from the target or its true peak is above the ceiling, a static gain and an oversampled limiter correct it, in at most four passes.
+**Loudness.** The mix is normalised with two-pass `loudnorm` to `Timeline.audio.masterLufs`, aiming its true peak 0.5 dB under the profile's limit, then encoded with the profile's AAC settings and measured again.
+If the encoded result is more than 0.2 LU from the target, or its true peak is less than 0.1 dB under the profile's limit, a static gain and an oversampled limiter correct it, in at most four passes.
+Verification then checks the profile's limit itself.
 A mix below the profile's silence floor is left as it is (`skipped-silence`), and a plan without sound gets a silent track (`no-audio`).
 
 **Deadlines.** The video pass may take the larger of 300 s and 30 s per output second, the mix the larger of 120 s and 10 s per second, and each loudness run the larger of 60 s and 5 s per second.
@@ -134,13 +136,13 @@ Cancelling kills every browser and FFmpeg process of the render.
 - the container;
 - one video stream: H.264 High, yuv420p, the canvas size, frame rate (`r_frame_rate` and `avg_frame_rate`), frame count, BT.709 primaries, transfer and matrix, limited range, and duration;
 - one audio stream: AAC-LC, 48 kHz stereo, and duration;
-- all three durations within one frame of the plan, the profile's maximum duration and faststart;
+- all three durations within one frame of the plan, the production's `format.maxDurationMs` and faststart;
 - integrated loudness within the profile's tolerance of the target and the true peak under the ceiling, measured from the file, unless the mix was silent or absent.
 
 Each check records what was expected and what was found.
 A file that fails any check fails the render permanently as `verification_failed`; its files and `verification.json` stay for inspection but are never served.
 
-`manifest.json` (`manifest.ts`, schema version 1) records the render and production ids, revision, profile and its version, plan and compiler versions, canvas, frame count, the input media hashes, fonts with their hashes, the overlay document's hash and captured-frame digest, the tool versions, the Chromium flags hash, worker count, loudness measurements, the verification outcome and the size and SHA-256 of each published file.
+`manifest.json` (`manifest.ts`, schema version 1) records the render and production ids, revision, profile and its version, plan and compiler versions, canvas, frame count, the input media hashes, fonts with their hashes, the overlay document's hash and captured-frame digest, the tool versions, the Chromium flags hash, worker count, loudness measurements, the verification outcome and the size and SHA-256 of the video and both caption files.
 It never holds a path, a media file name or any text from the production.
 
 ## Render jobs
