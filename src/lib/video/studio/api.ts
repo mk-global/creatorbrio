@@ -44,7 +44,8 @@ const enc = encodeURIComponent;
 export class StudioApi {
   constructor(private readonly fetchImpl: Fetch = (input, init) => fetch(input, init)) {}
 
-  private async call<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
+  /** Sends one request with the Studio header and the session cookie; a refusal becomes a `StudioApiError`. */
+  private async send(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<Response> {
     const headers: Record<string, string> = { [STUDIO_HEADER.name]: STUDIO_HEADER.value };
     if (body !== undefined) headers["content-type"] = "application/json";
     let res: Response;
@@ -53,25 +54,12 @@ export class StudioApi {
     } catch {
       throw new StudioApiError(0, "network_error", "The app did not answer. Check that CreatorBrio is still running.");
     }
-    const text = await res.text();
-    let json: unknown = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      json = null;
-    }
-    if (!res.ok) {
-      const error = (json as { error?: Record<string, unknown> } | null)?.error;
-      if (error && typeof error.code === "string") {
-        const { code, message, ...details } = error;
-        // How long to wait, from the header the server sends with 429 and 503.
-        const retryAfter = Number(res.headers.get("retry-after"));
-        if (Number.isFinite(retryAfter) && retryAfter > 0) details.retryAfterSeconds = retryAfter;
-        throw new StudioApiError(res.status, code, typeof message === "string" ? message : code, details);
-      }
-      throw new StudioApiError(res.status, "unexpected_response", `The app answered ${res.status} without an explanation.`);
-    }
-    return json as T;
+    if (!res.ok) throw await refusalOf(res);
+    return res;
+  }
+
+  private async call<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
+    return parseJson(await (await this.send(method, path, body)).text()) as T;
   }
 
   // -- session ----------------------------------------------------------------
@@ -153,6 +141,42 @@ export class StudioApi {
   retryRender(productionId: string, renderId: string): Promise<{ status: "queued"; render: RenderView }> {
     return this.call("POST", `/api/video/productions/${enc(productionId)}/renders/${enc(renderId)}/retry`, {});
   }
+
+  /**
+   * One file of a succeeded render, for the page to save. A plain link cannot
+   * carry the Studio header, so downloads go through here; the whole file is
+   * read into memory, which a reel of at most 90 seconds allows.
+   */
+  async renderFile(productionId: string, renderId: string, name: RenderView["files"][number]): Promise<Blob> {
+    try {
+      return await (await this.send("GET", renderFileUrl(productionId, renderId, name))).blob();
+    } catch (error) {
+      if (error instanceof StudioApiError) throw error;
+      throw new StudioApiError(0, "network_error", "The download was interrupted. Check that CreatorBrio is still running.");
+    }
+  }
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `StudioApiError` for a response that is not 2xx: the server's stable code and details, or a generic one. */
+async function refusalOf(res: Response): Promise<StudioApiError> {
+  const json = parseJson(await res.text().catch(() => ""));
+  const error = (json as { error?: Record<string, unknown> } | null)?.error;
+  if (error && typeof error.code === "string") {
+    const { code, message, ...details } = error;
+    // How long to wait, from the header the server sends with 429 and 503.
+    const retryAfter = Number(res.headers.get("retry-after"));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) details.retryAfterSeconds = retryAfter;
+    return new StudioApiError(res.status, code, typeof message === "string" ? message : code, details);
+  }
+  return new StudioApiError(res.status, "unexpected_response", `The app answered ${res.status} without an explanation.`);
 }
 
 /** Where a media element reads a derived file; the media-element rule lets it omit the Studio header. */

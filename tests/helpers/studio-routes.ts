@@ -28,6 +28,7 @@ const routes: Route[] = [
   { pattern: /^\/api\/video\/productions\/([^/]+)\/renders\/([^/]+)$/, names: ["id", "renderId"], load: () => import("@/app/api/video/productions/[id]/renders/[renderId]/route") },
   { pattern: /^\/api\/video\/productions\/([^/]+)\/renders\/([^/]+)\/cancel$/, names: ["id", "renderId"], load: () => import("@/app/api/video/productions/[id]/renders/[renderId]/cancel/route") },
   { pattern: /^\/api\/video\/productions\/([^/]+)\/renders\/([^/]+)\/retry$/, names: ["id", "renderId"], load: () => import("@/app/api/video/productions/[id]/renders/[renderId]/retry/route") },
+  { pattern: /^\/api\/video\/productions\/([^/]+)\/renders\/([^/]+)\/files\/([^/]+)$/, names: ["id", "renderId", "name"], load: () => import("@/app/api/video/productions/[id]/renders/[renderId]/files/[name]/route") },
   { pattern: /^\/api\/video\/media$/, names: [], load: () => import("@/app/api/video/media/route") },
   { pattern: /^\/api\/video\/media\/([^/]+)$/, names: ["id"], load: () => import("@/app/api/video/media/[id]/route") },
   { pattern: /^\/api\/video\/media\/([^/]+)\/proxy$/, names: ["id"], load: () => import("@/app/api/video/media/[id]/proxy/route") },
