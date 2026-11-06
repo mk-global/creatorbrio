@@ -28,24 +28,47 @@
  *   stay in the render folder for inspection, with verification.json, but the
  *   job is `failed`, so they are never served as a deliverable.
  * - One render runs at a time in a process, in a lane of its own, so preview
- *   jobs (`MediaJobs`) keep flowing during an export. `job.lock` keeps two
- *   processes from running the same render; a lock whose process has stopped
- *   is taken over, and `start()` queues again a render left running by a
- *   stopped process (`interrupted`).
- * - Cancelling a queued render cancels it at once; cancelling a running one
- *   aborts its signal, which stops its browsers and FFmpeg, and the render
- *   becomes `cancelled` (not failed) when the pipeline returns. A render
- *   running in another live process cannot be cancelled from this one.
- * - Requesting a render while one is queued or running for the same
- *   production, revision and profile returns that render instead. This is
- *   exact within a process; two processes racing may both create one, which
- *   is harmless (both render the same snapshot).
+ *   jobs (`MediaJobs`) keep flowing during an export.
+ * - `job.lock` keeps two processes from running the same render. It is made
+ *   by writing the holder to a unique file and hard-linking it into place, so
+ *   it is never seen half written; an unreadable lock counts as held until it
+ *   is `LOCK_GRACE_MS` old. A lock whose holder has stopped is taken over by
+ *   moving it aside, checking that it is still the lock that was judged
+ *   stale, and linking a new one; a process removes only its own lock.
+ * - A queued or running record is written only under `job.lock`: by the
+ *   runner from its claim to its last write, and by a process that cancels
+ *   it or queues an interrupted one again. (A person's retry writes a failed
+ *   or cancelled record, which no runner touches.) The runner re-reads the
+ *   record before each of its writes and stops, writing nothing, when the
+ *   record is no longer its own.
+ * - The owner (process id, host, process start time and instance) is on the
+ *   record while the render runs and while it waits between attempts. An
+ *   owner whose process id is alive but started at another time is gone.
+ * - `start()` queues again a render left running by a stopped process
+ *   (`interrupted`). That attempt counts: once it was the last one, the render
+ *   fails as transient `interrupted` instead.
+ * - Cancelling a queued render, or one waiting between attempts in this
+ *   process, cancels it at once; cancelling a running one aborts its signal,
+ *   which stops its browsers and FFmpeg, and the render becomes `cancelled`
+ *   (not failed) when the pipeline returns. A render running or waiting in
+ *   another live process cannot be cancelled from this one. A person may
+ *   cancel a render whose owner is neither this process nor confirmed alive
+ *   (it ran under another host name, for example), which also removes that
+ *   owner's lock; this is the only lock a process removes without holding it.
+ * - A job.json write that fails once the render has started (a full disk)
+ *   fails the render as `io_error` on a best-effort basis; if that write
+ *   fails too, the record says `running` with no runner, and a person can
+ *   cancel it.
+ * - Requesting a render while one is queued or running for the same document
+ *   (by the snapshot's SHA-256) and profile returns that render instead. This
+ *   is exact within a process; two processes racing may both create one,
+ *   which is harmless (both render the same snapshot).
  *
  * Log events (`[video render] ...`) carry ids, attempts and codes only, never
  * paths or messages.
  */
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Mutex } from "async-mutex";
 
@@ -81,8 +104,26 @@ const HISTORY_KEPT = 20;
 const WORK_DIR = "work";
 /** Not a valid id, so never mistaken for a production folder. */
 const STAGING_DIR = ".staging";
+const LOCK_FILE = "job.lock";
+/** How long an unreadable job.lock counts as held, as if its creator were still writing it. */
+export const LOCK_GRACE_MS = 30_000;
+
+type LockHolder = ProcessOwner & { instance: string };
+/** `ours` is a lock this instance already holds, for another step of the same render. */
+type LockResult = "acquired" | "ours" | "held";
 
 const isActive = (state: RenderState) => state === "queued" || state === "running";
+
+const snapshotSha256 = (production: Production) => createHash("sha256").update(JSON.stringify(production), "utf-8").digest("hex");
+
+function parseHolder(raw: string): LockHolder | null {
+  try {
+    const holder = JSON.parse(raw) as LockHolder;
+    return typeof holder?.pid === "number" && typeof holder.host === "string" && typeof holder.instance === "string" ? holder : null;
+  } catch {
+    return null;
+  }
+}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -183,7 +224,8 @@ export class RenderJobs {
    */
   request(production: Production, profileId: ExportProfileId): Promise<{ created: boolean; job: RenderJob }> {
     return this.requests.runExclusive(async () => {
-      const existing = (await this.list(production.id)).find((j) => isActive(j.state) && j.revision === production.revision && j.profileId === profileId);
+      const hash = snapshotSha256(production);
+      const existing = (await this.list(production.id)).find((j) => j.profileId === profileId && j.snapshotSha256 === hash && this.inProgress(j));
       if (existing) return { created: false, job: existing };
       const renderId = this.newRenderId();
       const at = this.iso();
@@ -194,6 +236,7 @@ export class RenderJobs {
         productionId: production.id,
         revision: production.revision,
         profileId,
+        snapshotSha256: hash,
         state: "queued",
         attempts: 0,
         requestedAt: at,
@@ -235,42 +278,82 @@ export class RenderJobs {
         if (job.state === "queued") {
           this.push(job.productionId, job.renderId);
         } else if (job.state === "running" && !this.ownerRunning(job)) {
-          const requeued = await this.transitions.runExclusive(async () => {
-            const current = await this.read(job.productionId, job.renderId);
-            if (!current || current.state !== "running" || this.ownerRunning(current)) return false;
-            current.state = "queued";
-            delete current.owner;
-            await this.write(this.event(current, "interrupted"));
-            return true;
-          });
-          if (!requeued) continue;
-          this.log("render_interrupted", { productionId: job.productionId, renderId: job.renderId, attempt: job.attempts });
-          this.push(job.productionId, job.renderId);
+          const dir = this.renderDir(job.productionId, job.renderId);
+          if ((await this.lock(dir)) !== "acquired") continue;
+          let next: RenderState | null;
+          try {
+            next = await this.transitions.runExclusive(async () => {
+              const current = await this.read(job.productionId, job.renderId);
+              if (!current || current.state !== "running" || this.ownerRunning(current)) return null;
+              delete current.owner;
+              this.event(current, "interrupted", { attempt: current.attempts });
+              if (current.attempts >= MAX_RENDER_ATTEMPTS) {
+                current.state = "failed";
+                current.failure = { failureClass: "transient", code: "interrupted", message: "the server stopped during the render's last attempt" };
+                this.event(current, "failed", { attempt: current.attempts, code: "interrupted" });
+              } else {
+                current.state = "queued";
+              }
+              await this.write(current);
+              return current.state;
+            });
+          } finally {
+            await this.unlock(dir);
+          }
+          if (!next) continue;
+          const ids = { productionId: job.productionId, renderId: job.renderId, attempt: job.attempts };
+          this.log("render_interrupted", ids);
+          if (next === "failed") this.log("render_failed", { ...ids, failureClass: "transient", code: "interrupted" });
+          else this.push(job.productionId, job.renderId);
         }
       }
     })();
     return this.started;
   }
 
-  /** A person cancels a render. */
+  /**
+   * A person cancels a render. A queued render, one waiting between attempts
+   * in this process, and one whose owner is neither this process nor
+   * confirmed alive are cancelled at once; a render running here is asked to
+   * stop (`pending`). Anything else is refused.
+   */
   cancel(productionId: string, renderId: string): Promise<CancelResult> {
     return this.transitions.runExclusive(async (): Promise<CancelResult> => {
       const job = await this.read(productionId, renderId);
       if (!job) return { ok: false, code: "not_found" };
       const controller = this.active.get(renderId);
-      if (controller && isActive(job.state)) {
+      if (controller && isActive(job.state) && job.owner?.instance === this.instance) {
+        if (job.state === "running") {
+          controller.abort();
+          return { ok: true, job, pending: true };
+        }
+        // Waiting between attempts: settled now, then the runner wakes and finds it cancelled.
+        this.active.delete(renderId);
+        const result = await this.cancelNow(job);
         controller.abort();
-        return { ok: true, job, pending: true };
+        return result;
       }
-      if (job.state === "queued" || (job.state === "running" && !this.ownerRunning(job))) {
-        job.state = "cancelled";
-        delete job.owner;
-        await this.write(this.event(job, "cancelled"));
-        this.log("render_cancelled", { productionId, renderId, attempt: job.attempts });
-        return { ok: true, job, pending: false };
+      if (!isActive(job.state) || this.ownerConfirmedAlive(job)) return { ok: false, code: "not_cancellable", job };
+      // Under the render's lock, so a runner in another process cannot claim it meanwhile.
+      const dir = this.renderDir(productionId, renderId);
+      const held = await this.lock(dir, job.owner?.instance);
+      if (held === "held") return { ok: false, code: "not_cancellable", job };
+      try {
+        const current = held === "acquired" ? await this.read(productionId, renderId) : job;
+        if (!current || !isActive(current.state)) return { ok: false, code: "not_cancellable", job: current ?? job };
+        return await this.cancelNow(current);
+      } finally {
+        if (held === "acquired") await this.unlock(dir);
       }
-      return { ok: false, code: "not_cancellable", job };
     });
+  }
+
+  private async cancelNow(job: RenderJob): Promise<CancelResult> {
+    job.state = "cancelled";
+    delete job.owner;
+    await this.write(this.event(job, "cancelled", job.attempts > 0 ? { attempt: job.attempts } : {}));
+    this.log("render_cancelled", { productionId: job.productionId, renderId: job.renderId, attempt: job.attempts });
+    return { ok: true, job, pending: false };
   }
 
   /** A person asks for a failed or cancelled render to run again from its snapshot. */
@@ -316,14 +399,42 @@ export class RenderJobs {
     job.history = job.history.slice(-HISTORY_KEPT);
     const file = path.join(/*turbopackIgnore: true*/ this.renderDir(job.productionId, job.renderId), "job.json");
     const tmp = `${file}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify(job, null, 2) + "\n", { mode: 0o644 });
-    await rename(tmp, file);
+    try {
+      await writeFile(tmp, JSON.stringify(job, null, 2) + "\n", { mode: 0o644 });
+      await rename(tmp, file);
+    } catch (error) {
+      await rm(tmp, { force: true });
+      throw error;
+    }
   }
 
+  /**
+   * Whether the render's owner may still be running it: this instance while
+   * it works on the render, or another process not known to have stopped. An
+   * owner with this process's id and another instance is an earlier runner.
+   */
   private ownerRunning(job: RenderJob): boolean {
     if (!job.owner) return false;
-    if (job.owner.instance === this.instance) return true;
+    if (job.owner.instance === this.instance) return this.active.has(job.renderId);
     return job.owner.pid !== process.pid && ownerAlive(job.owner) !== false;
+  }
+
+  /** Whether the render's owner is known to be running it; only then is a person's cancel refused. */
+  private ownerConfirmedAlive(job: RenderJob): boolean {
+    if (!job.owner) return false;
+    if (job.owner.instance === this.instance) return this.active.has(job.renderId);
+    return job.owner.pid !== process.pid && ownerAlive(job.owner) === true;
+  }
+
+  /** Queued, or running with an owner that may still be running it. */
+  private inProgress(job: RenderJob): boolean {
+    return job.state === "queued" || (job.state === "running" && this.ownerRunning(job));
+  }
+
+  /** Whether the record on disk is still this instance's running attempt. */
+  private async stillRunningHere(job: RenderJob): Promise<boolean> {
+    const disk = await this.read(job.productionId, job.renderId);
+    return disk?.state === "running" && disk.owner?.instance === this.instance;
   }
 
   private push(productionId: string, renderId: string): void {
@@ -345,59 +456,93 @@ export class RenderJobs {
     }
   }
 
-  /** Takes the cross-process lock, or returns false when a live process holds it. */
-  private async lock(dir: string): Promise<boolean> {
-    const file = path.join(/*turbopackIgnore: true*/ dir, "job.lock");
-    for (let attempt = 0; attempt < 2; attempt++) {
+  /**
+   * Takes the render's cross-process lock. A lock whose holder has stopped,
+   * an unreadable one older than `LOCK_GRACE_MS`, and (for a person's cancel)
+   * one held by `breakHolder` when that holder is not confirmed alive are
+   * taken over; any other is `held`.
+   */
+  private async lock(dir: string, breakHolder?: string): Promise<LockResult> {
+    const file = path.join(/*turbopackIgnore: true*/ dir, LOCK_FILE);
+    const identity = JSON.stringify({ ...currentProcess(), instance: this.instance });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Written whole first, then linked into place: the lock never exists half written.
+      const tmp = `${file}.${randomUUID()}.tmp`;
       try {
-        const handle = await open(file, "wx", 0o644);
-        await handle.writeFile(JSON.stringify({ ...currentProcess(), instance: this.instance }));
-        await handle.close();
-        return true;
+        await writeFile(tmp, identity, { mode: 0o644 });
+        await link(tmp, file);
+        return "acquired";
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const holder = await readFile(file, "utf-8").then((t) => JSON.parse(t) as ProcessOwner & { instance: string }, () => null);
-        if (holder && (holder.instance === this.instance || ownerAlive(holder) !== false)) return false;
-        await rm(file, { force: true });
+      } finally {
+        await rm(tmp, { force: true });
       }
+      const raw = await readFile(file, "utf-8").catch(() => null);
+      if (raw === null) continue;
+      const holder = parseHolder(raw);
+      if (holder?.instance === this.instance) return "ours";
+      if (holder) {
+        const alive = ownerAlive(holder);
+        if (alive !== false && !(breakHolder !== undefined && holder.instance === breakHolder && alive !== true)) return "held";
+      } else {
+        const info = await stat(file).catch(() => null);
+        if (info && Date.now() - info.mtimeMs < LOCK_GRACE_MS) return "held";
+      }
+      if (!(await removeLockIf(file, raw))) return "held";
     }
-    return false;
+    return "held";
+  }
+
+  /** Removes the render's lock if this instance holds it. */
+  private async unlock(dir: string): Promise<void> {
+    const file = path.join(/*turbopackIgnore: true*/ dir, LOCK_FILE);
+    const holder = parseHolder(await readFile(file, "utf-8").catch(() => ""));
+    if (holder?.instance === this.instance) await rm(file, { force: true });
   }
 
   private async runJob(productionId: string, renderId: string): Promise<void> {
     const dir = this.renderDir(productionId, renderId);
-    if (!(await this.lock(dir))) return;
+    if ((await this.lock(dir)) !== "acquired") return;
     const controller = new AbortController();
+    const ids = { productionId, renderId };
+    const claim: { job?: RenderJob } = {};
     try {
+      // Claimed and started in one step, so nothing can cancel it in between unseen.
       const claimed = await this.transitions.runExclusive(async () => {
         const current = await this.read(productionId, renderId);
-        if (!current || current.state !== "queued") return null;
+        if (this.stopped || !current || current.state !== "queued") return false;
+        claim.job = current;
         this.active.set(renderId, controller);
-        return current;
+        await this.begin(current);
+        return true;
       });
-      if (!claimed) return;
-      const job: RenderJob = claimed;
-      const ids = { productionId, renderId };
+      const job = claim.job;
+      if (!claimed || !job) return;
       for (;;) {
-        job.state = "running";
-        job.attempts += 1;
-        job.owner = { ...currentProcess(), instance: this.instance };
-        for (const field of ["failure", "verification", "progress"] as const) delete job[field];
-        await this.write(this.event(job, "started", { attempt: job.attempts }));
-        this.log("render_started", { ...ids, attempt: job.attempts });
-
-        // Progress is written at most once per interval, in order, and never after the attempt ends.
+        // Progress is written when the stage changes and otherwise at most once
+        // per interval, in order, never after the attempt ends, and only while
+        // the record is still this attempt's.
         let writes = Promise.resolve();
         let live = true;
         let lastWrite = 0;
+        let lastStage: RenderProgress["stage"] | null = null;
         const onProgress = (progress: RenderProgress) => {
           if (!live) return;
           job.progress = { stage: progress.stage, done: progress.done, total: progress.total };
           const now = this.clock();
-          if (now - lastWrite < this.progressIntervalMs) return;
+          if (progress.stage === lastStage && now - lastWrite < this.progressIntervalMs) return;
+          lastStage = progress.stage;
           lastWrite = now;
           const snapshot: RenderJob = { ...job, updatedAt: new Date(now).toISOString(), history: [...job.history] };
-          writes = writes.then(() => this.write(snapshot)).catch((error) => this.log("render_error", { ...ids, name: (error as Error)?.name, code: (error as NodeJS.ErrnoException)?.code }));
+          writes = writes
+            .then(() =>
+              this.transitions.runExclusive(async () => {
+                if (await this.stillRunningHere(job)) return this.write(snapshot);
+                // A person cancelled it from another process: stop working on it.
+                controller.abort();
+              })
+            )
+            .catch((error) => this.log("render_error", { ...ids, name: (error as Error)?.name, code: (error as NodeJS.ErrnoException)?.code }));
         };
         const outcome = await this.attempt(job, dir, controller.signal, onProgress);
         live = false;
@@ -409,27 +554,69 @@ export class RenderJobs {
         await sleep(this.backoff(job.attempts + 1), controller.signal);
         const resumed = await this.transitions.runExclusive(async () => {
           if (this.stopped) return false;
-          if (!controller.signal.aborted) return true;
-          await this.cancelled(job);
-          return false;
+          // Cancelled while waiting, here (which also woke the sleep) or elsewhere: nothing more to write.
+          const current = await this.read(productionId, renderId);
+          if (current?.state !== "queued" || current.owner?.instance !== this.instance) return false;
+          await this.begin(job);
+          return true;
         });
         if (!resumed) return;
       }
+    } catch (error) {
+      const job = claim.job;
+      if (job && !this.stopped) await this.transitions.runExclusive(() => this.failAfterError(job, error)).catch(() => undefined);
+      throw error;
     } finally {
       this.active.delete(renderId);
-      await rm(path.join(/*turbopackIgnore: true*/ dir, "job.lock"), { force: true });
+      await this.unlock(dir);
     }
+  }
+
+  /** Starts the render's next attempt on disk; the caller holds `transitions`. */
+  private async begin(job: RenderJob): Promise<void> {
+    job.state = "running";
+    job.attempts += 1;
+    job.owner = { ...currentProcess(), instance: this.instance };
+    for (const field of ["failure", "verification", "progress"] as const) delete job[field];
+    await this.write(this.event(job, "started", { attempt: job.attempts }));
+    this.log("render_started", { productionId: job.productionId, renderId: job.renderId, attempt: job.attempts });
+  }
+
+  /**
+   * After a job.json write failed during the render, records it as failed
+   * from what is on disk, on a best-effort basis, unless the record has moved
+   * on without this runner. The caller holds `transitions`.
+   */
+  private async failAfterError(job: RenderJob, error: unknown): Promise<void> {
+    const disk = await this.read(job.productionId, job.renderId);
+    if (!disk || !isActive(disk.state) || (disk.owner && disk.owner.instance !== this.instance)) return;
+    const failure = classifyRenderError(error);
+    disk.state = "failed";
+    disk.failure = failure;
+    delete disk.owner;
+    await this.write(this.event(disk, "failed", { attempt: disk.attempts, code: failure.code }));
+    this.active.delete(job.renderId);
+    this.log("render_failed", { productionId: job.productionId, renderId: job.renderId, attempt: disk.attempts, failureClass: failure.failureClass, code: failure.code });
   }
 
   /**
    * Records an attempt's outcome; the caller holds `transitions`. Returns
    * "retry" when the render waits for another attempt, "done" otherwise. A
-   * stopping server writes nothing, so the render stays `running` on disk.
+   * stopping server writes nothing, so the render stays `running` on disk, and
+   * so does a runner whose record was cancelled by another process.
    */
   private async settle(job: RenderJob, outcome: Outcome, signal: AbortSignal, dir: string): Promise<"done" | "retry"> {
     if (this.stopped) return "done";
     const ids = { productionId: job.productionId, renderId: job.renderId, attempt: job.attempts };
-    delete job.owner;
+    if (!(await this.stillRunningHere(job))) {
+      const disk = await this.read(job.productionId, job.renderId);
+      if (disk?.state === "cancelled") {
+        await clearOutputs(dir);
+        this.log("render_cancelled", ids);
+      }
+      this.active.delete(job.renderId);
+      return "done";
+    }
     if (signal.aborted) {
       await clearOutputs(dir);
       await this.cancelled(job);
@@ -441,6 +628,7 @@ export class RenderJobs {
       if (failedChecks.length === 0) {
         job.state = "succeeded";
         job.outputs = outcome.outputs;
+        delete job.owner;
         delete job.progress;
         await this.write(this.event(job, "succeeded", { attempt: job.attempts }));
         this.active.delete(job.renderId);
@@ -452,12 +640,14 @@ export class RenderJobs {
     const failure = outcome.failure;
     job.failure = failure;
     if (failure.failureClass === "transient" && job.attempts < MAX_RENDER_ATTEMPTS) {
+      // Waiting for the next attempt: the owner stays, so other processes see the render as taken.
       job.state = "queued";
       await this.write(this.event(job, "failed", { attempt: job.attempts, code: failure.code }));
       this.log("render_retrying", { ...ids, code: failure.code });
       return "retry";
     }
     job.state = "failed";
+    delete job.owner;
     await this.write(this.event(job, "failed", { attempt: job.attempts, code: failure.code }));
     this.active.delete(job.renderId);
     this.log("render_failed", { ...ids, failureClass: failure.failureClass, code: failure.code });
@@ -466,6 +656,7 @@ export class RenderJobs {
 
   private async cancelled(job: RenderJob): Promise<void> {
     job.state = "cancelled";
+    delete job.owner;
     await this.write(this.event(job, "cancelled", { attempt: job.attempts }));
     this.active.delete(job.renderId);
     this.log("render_cancelled", { productionId: job.productionId, renderId: job.renderId, attempt: job.attempts });
@@ -498,6 +689,29 @@ export class RenderJobs {
       await rm(work, { recursive: true, force: true });
     }
   }
+}
+
+/**
+ * Removes a lock judged stale, but only if it is still the lock that was read
+ * (`raw`): it is moved aside first, and put back when another process had
+ * replaced it meanwhile. Returns whether the stale lock is gone.
+ */
+async function removeLockIf(file: string, raw: string): Promise<boolean> {
+  const aside = `${file}.${randomUUID()}.stale`;
+  try {
+    await rename(file, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+  const moved = await readFile(aside, "utf-8").catch(() => null);
+  if (moved !== raw) {
+    await link(aside, file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+  }
+  await rm(aside, { force: true });
+  return moved === raw;
 }
 
 async function clearOutputs(dir: string): Promise<void> {

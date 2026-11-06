@@ -57,13 +57,20 @@ export interface RenderJob {
   productionId: string;
   revision: number;
   profileId: ExportProfileId;
+  /**
+   * SHA-256 of the snapshot's production document (its JSON), so a request
+   * for the same content finds this render even when a store recovery has
+   * given other content the same revision number. Absent on older records.
+   */
+  snapshotSha256?: string;
   state: RenderState;
-  /** Attempts since the render was requested or last retried by a person. */
+  /** Attempts since the render was requested or last retried by a person; an attempt a stopped process left running counts. */
   attempts: number;
   requestedAt: string;
   updatedAt: string;
+  /** The runner, while the render is running or waiting between attempts. */
   owner?: ProcessOwner & { instance: string };
-  /** The running attempt's progress, written at most about once a second; kept on failure to show where it stopped. */
+  /** The running attempt's progress, written when its stage changes and otherwise at most about once a second; kept on failure to show where it stopped. */
   progress?: RenderProgress;
   failure?: RenderJobFailure;
   /** The verification outcome of the last finished attempt: whether it passed and the ids of failed checks. */

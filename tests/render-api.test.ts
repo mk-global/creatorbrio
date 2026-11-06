@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { ApiContext } from "@/lib/video/production/api/handlers";
+import { RenderFailure } from "@/lib/video/render/execute-types";
 import { RenderJobs } from "@/lib/video/render/jobs";
 import type { RenderPipeline } from "@/lib/video/render/render-record";
 import type { GraphicsClip, Production } from "@/types/production";
@@ -71,11 +72,11 @@ async function restart() {
 }
 
 /** A fresh context whose render runner uses `pipeline`. */
-function usePipeline(pipeline: RenderPipeline): ApiContext {
+function usePipeline(pipeline: RenderPipeline, backoffMs = 1): ApiContext {
   const ctx = api.apiContext();
   // The context's own runner has nothing to run yet: the data folder was just emptied.
   ctx.renders.stop();
-  ctx.renders = new RenderJobs({ root: path.join(dataDir, "video-renders"), pipeline, backoff: () => 1, log: () => undefined });
+  ctx.renders = new RenderJobs({ root: path.join(dataDir, "video-renders"), pipeline, backoff: () => backoffMs, log: () => undefined });
   void ctx.renders.start();
   return ctx;
 }
@@ -381,6 +382,25 @@ describe("cancel and retry", () => {
     const cancelled = await send(cancel.POST, { human: true, body: {} }, params(later.job.renderId));
     expect(cancelled).toMatchObject({ status: 202, body: { status: "cancelled", render: { state: "cancelled" } } });
     gate.resolve();
+    await ctx.renders.idle();
+  });
+
+  it("cancels a render waiting between attempts at once", async () => {
+    const ctx = usePipeline(
+      fakePipeline(async () => {
+        throw new RenderFailure("transient", "timeout", "a frame did not finish in time");
+      }),
+      60_000
+    );
+    await createProduction();
+    const { body } = await requestRender();
+    const id = body.render.renderId;
+    for (let i = 0; i < 100 && (await ctx.renders.read(PRODUCTION_ID, id))!.history.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
+    expect((await send(one.GET, { human: true }, params(id))).body).toMatchObject({ state: "queued", attempts: 1, failure: { code: "timeout" } });
+    const cancelled = await send(cancel.POST, { human: true, body: {} }, params(id));
+    expect(cancelled).toMatchObject({ status: 202, body: { status: "cancelled", render: { state: "cancelled" } } });
+    expect(cancelled.body.render.cancelRequested).toBeUndefined();
+    expect((await send(one.GET, { human: true }, params(id))).body).toMatchObject({ state: "cancelled", attempts: 1 });
     await ctx.renders.idle();
   });
 });

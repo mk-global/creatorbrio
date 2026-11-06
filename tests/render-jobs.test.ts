@@ -5,12 +5,13 @@
  * recovery, the cross-process lock, duplicate requests and the snapshot.
  */
 import { hostname } from "node:os";
-import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ToolError } from "@/lib/video/media/tools";
+import { processStartedAt } from "@/lib/video/process-owner";
 import { RenderFailure } from "@/lib/video/render/execute-types";
 import { RenderJobs } from "@/lib/video/render/jobs";
 import { classifyRenderError, type RenderJob, type RenderPipeline } from "@/lib/video/render/render-record";
@@ -45,6 +46,21 @@ async function finished(runner: RenderJobs, job: RenderJob): Promise<RenderJob> 
 }
 
 const events = (job: RenderJob) => job.history.map((h) => h.event);
+
+/** Waits until the render's record holds `count` history events. */
+async function untilEvents(runner: RenderJobs, job: RenderJob, count: number): Promise<void> {
+  for (let i = 0; i < 100 && (await runner.read(job.productionId, job.renderId))!.history.length < count; i++) await new Promise((r) => setTimeout(r, 10));
+}
+
+/** Makes the runner's job.json writes fail with ENOSPC while `fails(job)` is true. */
+function failWrites(runner: RenderJobs, fails: (job: RenderJob) => boolean): void {
+  const target = runner as unknown as { write(job: RenderJob): Promise<void> };
+  const original = target.write.bind(runner);
+  target.write = async (job) => {
+    if (fails(job)) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    return original(job);
+  };
+}
 
 describe("a render that succeeds", () => {
   it("publishes every file at once, from the snapshot, and leaves no work behind", async () => {
@@ -127,6 +143,33 @@ describe("a render that succeeds", () => {
     expect(running.progress).toEqual({ stage: "video", done: 5, total: 30 });
     release.resolve();
     expect((await finished(runner, job)).progress).toBeUndefined();
+  });
+
+  it("writes progress whenever the stage changes, even within the interval", async () => {
+    let clock = 1_000_000;
+    const seen = deferred();
+    const release = deferred();
+    const runner = jobs(
+      fakePipeline(async ({ onProgress }) => {
+        onProgress({ stage: "audio", done: 1, total: 1 });
+        clock += 100;
+        onProgress({ stage: "mux", done: 0, total: 1 });
+        clock += 100;
+        // Within the same stage the interval still applies.
+        onProgress({ stage: "mux", done: 1, total: 1 });
+        seen.resolve();
+        await release.promise;
+      }),
+      { clock: () => clock, progressIntervalMs: 1000 }
+    );
+    await runner.start();
+    const { job } = await runner.request(footageProduction(), "instagram");
+    await seen.promise;
+    await new Promise((r) => setTimeout(r, 50));
+    const running = (await runner.read(job.productionId, job.renderId))!;
+    release.resolve();
+    await runner.idle();
+    expect(running.progress).toEqual({ stage: "mux", done: 0, total: 1 });
   });
 });
 
@@ -262,9 +305,76 @@ describe("cancel and retry", () => {
     );
     await runner.start();
     const { job } = await runner.request(footageProduction(), "instagram");
-    for (let i = 0; i < 50 && (await runner.read(job.productionId, job.renderId))!.history.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
-    expect(await runner.cancel(job.productionId, job.renderId)).toMatchObject({ ok: true, pending: true });
-    expect(await finished(runner, job)).toMatchObject({ state: "cancelled", attempts: 1 });
+    await untilEvents(runner, job, 3);
+    expect(await runner.cancel(job.productionId, job.renderId)).toMatchObject({ ok: true, pending: false, job: { state: "cancelled" } });
+    // Settled at once: on disk, without waiting for the pause to end.
+    expect(await runner.read(job.productionId, job.renderId)).toMatchObject({ state: "cancelled", attempts: 1 });
+    expect(runner.cancelPending(job.renderId)).toBe(false);
+    const done = await finished(runner, job);
+    expect(done).toMatchObject({ state: "cancelled", attempts: 1 });
+    expect(done.owner).toBeUndefined();
+    expect(events(done)).toEqual(["queued", "started", "failed", "cancelled"]);
+  });
+
+  it("refuses a cancel from another process while the render waits between attempts, and never loses one", async () => {
+    const pipeline = fakePipeline(async (_input, call) => {
+      if (call === 1) throw new RenderFailure("transient", "timeout", "a frame did not finish in time");
+    });
+    const a = jobs(pipeline, { backoff: () => 300 });
+    const b = jobs(fakePipeline());
+    await a.start();
+    const { job } = await a.request(footageProduction(), "instagram");
+    await untilEvents(a, job, 3);
+    // The waiting render is still owned on disk, so other processes see it as taken.
+    expect(await b.read(job.productionId, job.renderId)).toMatchObject({ state: "queued", owner: { instance: a.instance } });
+    expect(await b.cancel(job.productionId, job.renderId)).toMatchObject({ ok: false, code: "not_cancellable" });
+    const done = await finished(a, job);
+    expect(done.state).toBe("succeeded");
+    expect(events(done)).toEqual(["queued", "started", "failed", "started", "succeeded"]);
+    expect(pipeline.calls).toHaveLength(2);
+  });
+
+  it.skipIf(processStartedAt(process.ppid) === null)("leaves a render another live process is waiting on alone", async () => {
+    const parked = jobs({ run: () => new Promise(() => undefined) });
+    parked.stop();
+    const { job } = await parked.request(footageProduction(), "instagram");
+    // The parent process stands in for a server waiting between attempts: queued, owned and locked.
+    const owner = { pid: process.ppid, host: hostname(), startedAt: processStartedAt(process.ppid)!, instance: "other" };
+    const waiting: RenderJob = { ...job, attempts: 1, owner, failure: { failureClass: "transient", code: "timeout", message: "a frame did not finish in time" } };
+    const dir = parked.renderDir(job.productionId, job.renderId);
+    await writeFile(path.join(dir, "job.json"), JSON.stringify(waiting));
+    await writeFile(path.join(dir, "job.lock"), JSON.stringify(owner));
+    let ran = false;
+    const runner = jobs(
+      fakePipeline(async () => {
+        ran = true;
+      })
+    );
+    expect(await runner.cancel(job.productionId, job.renderId)).toMatchObject({ ok: false, code: "not_cancellable", job: { state: "queued" } });
+    await runner.start();
+    await runner.idle();
+    expect(ran).toBe(false);
+    expect(await runner.read(job.productionId, job.renderId)).toMatchObject({ state: "queued", owner: { instance: "other" } });
+    expect(await readFile(path.join(dir, "job.lock"), "utf-8")).toBe(JSON.stringify(owner));
+  });
+
+  it("does not run a queued render another process cancelled after its lock was released", async () => {
+    // Process b cancels while process a is between attempts but has not been given the lock (it was stopped).
+    const a = jobs(
+      fakePipeline(async () => {
+        throw new RenderFailure("transient", "timeout", "a frame did not finish in time");
+      }),
+      { backoff: () => 60_000 }
+    );
+    await a.start();
+    const { job } = await a.request(footageProduction(), "instagram");
+    await untilEvents(a, job, 3);
+    a.stop();
+    await a.idle();
+    const b = jobs(fakePipeline());
+    expect(await b.cancel(job.productionId, job.renderId)).toMatchObject({ ok: true, pending: false, job: { state: "cancelled" } });
+    await b.start();
+    expect(await finished(b, job)).toMatchObject({ state: "cancelled", attempts: 1 });
   });
 
   it("retries failed and cancelled renders from the start, and refuses everything else", async () => {
@@ -304,12 +414,12 @@ describe("cancel and retry", () => {
 });
 
 describe("restarts and processes", () => {
-  async function runningRecord(runner: RenderJobs, owner: RenderJob["owner"]): Promise<RenderJob> {
+  async function runningRecord(runner: RenderJobs, owner: RenderJob["owner"], attempts = 1): Promise<RenderJob> {
     // A stopped runner records the request without running it.
     const parked = jobs({ run: () => new Promise(() => undefined) });
     parked.stop();
     const { job } = await parked.request(footageProduction(), "instagram");
-    const running: RenderJob = { ...job, state: "running", attempts: 1, owner, history: [...job.history, { at: job.updatedAt, event: "started", attempt: 1 }] };
+    const running: RenderJob = { ...job, state: "running", attempts, owner, history: [...job.history, { at: job.updatedAt, event: "started", attempt: attempts }] };
     await writeFile(path.join(runner.renderDir(job.productionId, job.renderId), "job.json"), JSON.stringify(running));
     return running;
   }
@@ -365,6 +475,144 @@ describe("restarts and processes", () => {
     expect(ran).toBe(false);
     expect((await runner.read(job.productionId, job.renderId))!.state).toBe("queued");
   });
+
+  it("fails a render interrupted on its last attempt instead of queueing it again", async () => {
+    const pipeline = fakePipeline();
+    const runner = jobs(pipeline);
+    const owner = { pid: 2 ** 22 + 12345, host: hostname(), instance: "gone" };
+    const job = await runningRecord(runner, owner, 3);
+    await runner.start();
+    const done = await finished(runner, job);
+    expect(done).toMatchObject({ state: "failed", attempts: 3, failure: { failureClass: "transient", code: "interrupted" } });
+    expect(done.owner).toBeUndefined();
+    expect(events(done).slice(-2)).toEqual(["interrupted", "failed"]);
+    expect(pipeline.calls).toHaveLength(0);
+    // A person can still run it again.
+    expect(await runner.retry(job.productionId, job.renderId)).toMatchObject({ ok: true });
+    expect(await finished(runner, job)).toMatchObject({ state: "succeeded", attempts: 1 });
+  });
+
+  it("counts an interrupted attempt, so the next one is attempt two", async () => {
+    const runner = jobs(fakePipeline());
+    const job = await runningRecord(runner, { pid: 2 ** 22 + 12345, host: hostname(), instance: "gone" });
+    await runner.start();
+    expect(await finished(runner, job)).toMatchObject({ state: "succeeded", attempts: 2 });
+  });
+
+  it.skipIf(processStartedAt(process.ppid) === null)("queues again a render whose owner's process id now belongs to another process", async () => {
+    const runner = jobs(fakePipeline());
+    // The parent process is alive, but it started at another time than the recorded owner.
+    const owner = { pid: process.ppid, host: hostname(), startedAt: 1_000, instance: "gone" };
+    const job = await runningRecord(runner, owner);
+    await writeFile(path.join(runner.renderDir(job.productionId, job.renderId), "job.lock"), JSON.stringify(owner));
+    await runner.start();
+    const done = await finished(runner, job);
+    expect(done.state).toBe("succeeded");
+    expect(events(done)).toContain("interrupted");
+  });
+
+  it.skipIf(processStartedAt(process.ppid) === null)("still respects a live owner whose start time matches", async () => {
+    const runner = jobs(fakePipeline());
+    const owner = { pid: process.ppid, host: hostname(), startedAt: processStartedAt(process.ppid)!, instance: "other" };
+    const job = await runningRecord(runner, owner);
+    await writeFile(path.join(runner.renderDir(job.productionId, job.renderId), "job.lock"), JSON.stringify(owner));
+    await runner.start();
+    await runner.idle();
+    expect((await runner.read(job.productionId, job.renderId))!.state).toBe("running");
+    expect(await runner.cancel(job.productionId, job.renderId)).toMatchObject({ ok: false, code: "not_cancellable" });
+  });
+
+  it("lets a person cancel and retry a render whose owner cannot be checked", async () => {
+    const runner = jobs(fakePipeline());
+    // Recorded under another host name, as after the computer's name changed.
+    const owner = { pid: process.ppid, host: "renamed-host.invalid", instance: "elsewhere" };
+    const job = await runningRecord(runner, owner);
+    const lock = path.join(runner.renderDir(job.productionId, job.renderId), "job.lock");
+    await writeFile(lock, JSON.stringify(owner));
+    await runner.start();
+    await runner.idle();
+    // Not recovered automatically: the owner might still be running.
+    expect((await runner.read(job.productionId, job.renderId))!.state).toBe("running");
+    expect(await runner.cancel(job.productionId, job.renderId)).toMatchObject({ ok: true, pending: false, job: { state: "cancelled" } });
+    expect(await readdir(runner.renderDir(job.productionId, job.renderId))).not.toContain("job.lock");
+    expect(await runner.retry(job.productionId, job.renderId)).toMatchObject({ ok: true });
+    expect(await finished(runner, job)).toMatchObject({ state: "succeeded", attempts: 1 });
+  });
+
+  it("treats a lock that is still being written as held, and only an abandoned one as stale", async () => {
+    let ran = 0;
+    const pipeline = fakePipeline(async () => {
+      ran++;
+    });
+    const parked = jobs({ run: () => new Promise(() => undefined) });
+    parked.stop();
+    const { job } = await parked.request(footageProduction(), "instagram");
+    const lock = path.join(parked.renderDir(job.productionId, job.renderId), "job.lock");
+    // Another process has created the lock and not yet written its owner.
+    await writeFile(lock, "");
+    const first = jobs(pipeline);
+    await first.start();
+    await first.idle();
+    expect(ran).toBe(0);
+    expect((await first.read(job.productionId, job.renderId))!.state).toBe("queued");
+    expect(await readFile(lock, "utf-8")).toBe("");
+
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old);
+    const second = jobs(pipeline);
+    await second.start();
+    expect(await finished(second, job)).toMatchObject({ state: "succeeded" });
+    expect(ran).toBe(1);
+  });
+
+  it("never removes a lock it does not hold", async () => {
+    const other = JSON.stringify({ pid: process.ppid, host: hostname(), instance: "other" });
+    const runner = jobs(
+      fakePipeline(async ({ workDir }) => {
+        // Whatever happened, another holder's lock is now in place.
+        await writeFile(path.join(path.dirname(workDir), "job.lock"), other);
+      })
+    );
+    await runner.start();
+    const { job } = await runner.request(footageProduction(), "instagram");
+    await runner.idle();
+    expect(await readFile(path.join(runner.renderDir(job.productionId, job.renderId), "job.lock"), "utf-8")).toBe(other);
+  });
+
+  it("fails a render whose final record write failed, instead of leaving it running", async () => {
+    const runner = jobs(fakePipeline());
+    let once = true;
+    failWrites(runner, (job) => {
+      if (job.state !== "succeeded" || !once) return false;
+      once = false;
+      return true;
+    });
+    await runner.start();
+    const production = footageProduction();
+    const { job } = await runner.request(production, "instagram");
+    const done = await finished(runner, job);
+    expect(done).toMatchObject({ state: "failed", failure: { failureClass: "transient", code: "io_error" } });
+    expect(done.owner).toBeUndefined();
+    expect(await runner.retry(job.productionId, job.renderId)).toMatchObject({ ok: true });
+    expect(await finished(runner, job)).toMatchObject({ state: "succeeded" });
+  });
+
+  it("lets a person cancel a render whose record could not be written at all, and request it again", async () => {
+    const runner = jobs(fakePipeline());
+    let broken = true;
+    failWrites(runner, (job) => broken && job.state !== "running");
+    await runner.start();
+    const production = footageProduction();
+    const { job } = await runner.request(production, "instagram");
+    await runner.idle();
+    expect(await runner.read(job.productionId, job.renderId)).toMatchObject({ state: "running" });
+    broken = false;
+    // Nothing runs it any more, so it is neither shown as in progress nor stuck.
+    const again = await runner.request(production, "instagram");
+    expect(again.created).toBe(true);
+    expect(await runner.cancel(job.productionId, job.renderId)).toMatchObject({ ok: true, pending: false, job: { state: "cancelled" } });
+    await runner.idle();
+  });
 });
 
 describe("requests", () => {
@@ -387,6 +635,26 @@ describe("requests", () => {
     const ids = (await runner.list(production.id)).map((j) => j.renderId);
     expect(ids).toHaveLength(3);
     expect(ids).toEqual([...ids].sort().reverse());
+  });
+
+  it("does not return a render of different content that carries the same revision number", async () => {
+    // Store recovery can give new content a revision number an earlier render already used.
+    const gate = deferred();
+    const runner = jobs(fakePipeline(() => gate.promise));
+    await runner.start();
+    const production = footageProduction();
+    const first = await runner.request(production, "instagram");
+    const recovered = { ...footageProduction(), name: "Recovered and edited" };
+    expect(recovered.revision).toBe(production.revision);
+    const second = await runner.request(recovered, "instagram");
+    // The same content still finds its render.
+    const third = await runner.request(recovered, "instagram");
+    gate.resolve();
+    await runner.idle();
+    expect(second.created).toBe(true);
+    expect(second.job.renderId).not.toBe(first.job.renderId);
+    expect((await runner.readRequest(second.job.productionId, second.job.renderId))!.production.name).toBe("Recovered and edited");
+    expect(third).toMatchObject({ created: false, job: { renderId: second.job.renderId } });
   });
 
   it("renders the snapshot taken at request time, whatever happens to the production afterwards", async () => {

@@ -105,7 +105,12 @@ export function getRender(request: Request, productionId: string, rawRenderId: s
   });
 }
 
-/** Cancels a queued render at once (`cancelled`), or asks a running one to stop (`cancelling`, then `cancelled`). */
+/**
+ * Cancels a queued render, or one waiting between attempts, at once
+ * (`cancelled`), or asks a running one to stop (`cancelling`, then
+ * `cancelled`). A render that another live server process is running or
+ * waiting on is refused with 409 `not_cancellable`.
+ */
 export function cancelRender(request: Request, productionId: string, rawRenderId: string): Promise<Response> {
   return run(async () => {
     const { ctx } = await authorize(request, productionId, { human: true });
@@ -114,7 +119,7 @@ export function cancelRender(request: Request, productionId: string, rawRenderId
     if (result.code === "not_found") throw notFound();
     return errorResponse(409, {
       code: "not_cancellable",
-      message: "only a queued render, or one running in this server, can be cancelled",
+      message: "only a queued or running render can be cancelled, and one that another running server is working on only from that server",
       render: result.job ? renderView(result.job) : null,
     });
   });
