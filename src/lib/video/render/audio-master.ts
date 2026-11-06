@@ -20,8 +20,10 @@
  *      peak to a mix limited at -1.5 dBTP. A result still outside after the
  *      last pass is returned as it is; the verifier then fails the render.
  */
+import { writeFile } from "node:fs/promises";
+
 import type { LoudnessResult } from "./execute-types";
-import { encodedCheckArgs, loudnessTargets, measureArgs, mixRun, normaliseArgs, parseLoudnorm, trimArgs, type AudioSourceFile } from "./ffmpeg-audio";
+import { encodedCheckArgs, envelopeSamples, floatWav, loudnessTargets, measureArgs, mixRun, normaliseArgs, parseLoudnorm, trimArgs, type AudioSourceFile } from "./ffmpeg-audio";
 import { GraphError, runArgs, totalSamples, type FfmpegRun } from "./ffmpeg-graph";
 import type { RenderPlan } from "./plan";
 import type { ExportProfile } from "./profile";
@@ -52,7 +54,10 @@ export async function masterAudio(options: MasterOptions): Promise<{ file: strin
   const total = totalSamples(plan);
   const passes = plan.audio.length === 0 ? 1 : 3;
   const mix = at("mix.wav");
-  const mixing = mixRun(plan, options.files, mix);
+  const mixing = mixRun(plan, options.files, mix, (index) => at(`gain-${index}.wav`));
+  for (const { sourceIndex, file } of mixing.envelopes) {
+    await writeFile(file, floatWav(envelopeSamples(plan.audio[sourceIndex].envelope, total)));
+  }
   await runTool("ffmpeg", runArgs(mixing, await options.graphFor("mix", mixing)), { timeoutMs: Math.max(120_000, seconds * 10_000), signal });
   options.onPass?.(1, passes);
   if (plan.audio.length === 0) return { file: mix, loudness: { measured: null, normalisation: "no-audio" } };

@@ -1,7 +1,7 @@
 /**
  * The export's pure pieces (#144), which run without FFmpeg or Chromium (CI
- * has neither): the FFmpeg argument and filter-graph builders, the envelope
- * expression evaluated numerically against `gainAt`, loudnorm parsing, the
+ * has neither): the FFmpeg argument and filter-graph builders, the gain
+ * signal checked sample by sample against `gainAt`, loudnorm parsing, the
  * pinned Chromium flags, the overlay PNG normaliser and the renderer's input
  * checks that refuse before any browser starts.
  */
@@ -15,14 +15,15 @@ import { RenderFailure, type OverlayDocument } from "@/lib/video/render/execute-
 import { toRenderFailure } from "@/lib/video/render/execute";
 import {
   encodedCheckArgs,
-  envelopeExpression,
-  GAIN_STEP_SAMPLES,
+  envelopeSamples,
+  floatWav,
   loudnessTargets,
   measureArgs,
   mixRun,
   normaliseArgs,
   parseLoudnorm,
   rangeTarget,
+  shapesSound,
   trimArgs,
 } from "@/lib/video/render/ffmpeg-audio";
 import {
@@ -47,86 +48,12 @@ import { ToolError } from "@/lib/video/media/tools";
 // The G1 gate's pinned flags, which the product must use unchanged.
 import { CHROME_ARGS } from "../scripts/gates/g1/chrome-args.mjs";
 
-/** A small compiler for the subset of FFmpeg expressions the envelope uses, independent of the code under test. */
-function compile(expression: string): (t: number) => number {
-  type Fn = (t: number) => number;
-  let i = 0;
-  const peek = () => expression[i];
-  const take = (c: string) => {
-    if (expression[i] !== c) throw new Error(`expected ${c} at ${i} in ${expression.slice(i, i + 20)}`);
-    i++;
-  };
-  const factor = (): Fn => {
-    if (peek() === "(") {
-      i++;
-      const v = sum();
-      take(")");
-      return v;
-    }
-    if (peek() === "-") {
-      i++;
-      const v = factor();
-      return (t) => -v(t);
-    }
-    const name = /^[a-z]+/.exec(expression.slice(i))?.[0];
-    if (name === "t") {
-      i++;
-      return (t) => t;
-    }
-    if (name === "gte" || name === "lt") {
-      i += name.length;
-      take("(");
-      const a = sum();
-      take(",");
-      const b = sum();
-      take(")");
-      return name === "gte" ? (t) => Number(a(t) >= b(t)) : (t) => Number(a(t) < b(t));
-    }
-    const number = /^\d+(\.\d+)?/.exec(expression.slice(i))?.[0];
-    if (!number) throw new Error(`unexpected input at ${i}: ${expression.slice(i, i + 20)}`);
-    i += number.length;
-    const value = Number(number);
-    return () => value;
-  };
-  const product = (): Fn => {
-    let v = factor();
-    while (peek() === "*" || peek() === "/") {
-      const op = expression[i++];
-      const left = v;
-      const right = factor();
-      v = op === "*" ? (t) => left(t) * right(t) : (t) => left(t) / right(t);
-    }
-    return v;
-  };
-  const sum = (): Fn => {
-    const terms: { sign: number; fn: Fn }[] = [{ sign: 1, fn: product() }];
-    while (peek() === "+" || peek() === "-") {
-      const sign = expression[i++] === "+" ? 1 : -1;
-      terms.push({ sign, fn: product() });
-    }
-    return (t) => terms.reduce((acc, term) => acc + term.sign * term.fn(t), 0);
-  };
-  const fn = sum();
-  if (i !== expression.length) throw new Error(`trailing input at ${i}`);
-  return fn;
-}
-
-const evaluate = (expression: string, t: number) => compile(expression)(t);
-
-/** Compares the expression with `gainAt` at the centre of every gain step across the envelope. */
-function maxError(envelope: GainPoint[]): number {
-  const expression = envelopeExpression(envelope);
-  if (expression === null) throw new Error("expected an expression");
-  const gain = compile(expression);
-  const step = GAIN_STEP_SAMPLES / AUDIO_SAMPLE_RATE;
-  const first = Math.floor(envelope[0].atUs / 1e6 / step) - 2;
-  const last = Math.ceil(envelope[envelope.length - 1].atUs / 1e6 / step) + 2;
+/** The largest difference between the gain signal and `gainAt` (rounded to float32) over a render of `total` samples. */
+function maxError(envelope: GainPoint[], total: number): number {
+  const samples = envelopeSamples(envelope, total);
+  expect(samples.length).toBe(total);
   let worst = 0;
-  for (let k = first; k <= last; k++) {
-    const t = k * step;
-    const centreUs = (t + step / 2) * 1e6;
-    worst = Math.max(worst, Math.abs(gain(t) - gainAt(envelope, centreUs)));
-  }
+  for (let s = 0; s < total; s++) worst = Math.max(worst, Math.abs(samples[s] - Math.fround(gainAt(envelope, (s * 1e6) / AUDIO_SAMPLE_RATE))));
   return worst;
 }
 
@@ -196,8 +123,8 @@ describe("number formatting", () => {
   });
 });
 
-describe("envelope expression", () => {
-  it("matches gainAt at every gain step for ramps, steps and holds", () => {
+describe("envelope gain signal", () => {
+  it("is exactly gainAt at every sample for ramps, steps and holds, and silent outside", () => {
     const envelope: GainPoint[] = [
       { atUs: 100_000, gain: 0 },
       { atUs: 600_000, gain: 1 },
@@ -207,45 +134,54 @@ describe("envelope expression", () => {
       { atUs: 2_533_333, gain: 0.8 },
       { atUs: 3_000_000, gain: 0 },
     ];
-    expect(maxError(envelope)).toBeLessThan(1e-6);
+    expect(maxError(envelope, 4 * AUDIO_SAMPLE_RATE)).toBe(0);
+    const samples = envelopeSamples(envelope, 4 * AUDIO_SAMPLE_RATE);
+    expect(samples[0]).toBe(0);
+    expect(samples[AUDIO_SAMPLE_RATE]).toBe(1);
+    expect(samples[3.5 * AUDIO_SAMPLE_RATE]).toBe(0);
   });
 
-  it("matches a dense, irregular envelope", () => {
+  it("is exact for a dense, irregular envelope of thousands of points, as a fade over a ducked bed needs", () => {
     const envelope: GainPoint[] = [];
     let at = 33_333;
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 10_000; i++) {
       envelope.push({ atUs: at, gain: Math.round((0.5 + 0.45 * Math.sin(i / 7)) * 1e6) / 1e6 });
-      at += 1 + ((i * 7919) % 20_000);
+      at += 1 + ((i * 7919) % 2_000);
     }
-    expect(maxError(envelope)).toBeLessThan(1e-6);
+    const total = Math.ceil((at / 1e6) * AUDIO_SAMPLE_RATE) + 100;
+    expect(maxError(envelope, total)).toBe(0);
   });
 
-  it("is a flat sum of one term per segment, with no nesting", () => {
-    const expression = envelopeExpression([
-      { atUs: 0, gain: 0 },
+  it("follows gainAt where points share a time", () => {
+    const envelope: GainPoint[] = [
+      { atUs: 0, gain: 0.5 },
+      { atUs: 500_000, gain: 0.5 },
       { atUs: 500_000, gain: 1 },
-      { atUs: 1_000_000, gain: 0 },
-    ])!;
-    expect(expression.split("+gte(").length).toBe(2);
-    expect(expression).not.toMatch(/if\(/);
-    expect(expression).not.toMatch(/e[+-]?\d/);
-    expect(expression).not.toContain("--");
-    expect(expression).not.toContain("+-");
+      { atUs: 1_000_000, gain: 1 },
+    ];
+    expect(maxError(envelope, AUDIO_SAMPLE_RATE + 10)).toBe(0);
   });
 
-  it("needs no filter for unity gain and is silent outside the envelope", () => {
-    expect(envelopeExpression([{ atUs: 0, gain: 1 }, { atUs: 2_000_000, gain: 1 }])).toBeNull();
-    const constant = envelopeExpression([{ atUs: 1_000_000, gain: 0.5 }, { atUs: 2_000_000, gain: 0.5 }])!;
-    expect(evaluate(constant, 0.5)).toBe(0);
-    expect(evaluate(constant, 1.5)).toBe(0.5);
-    expect(evaluate(constant, 2.5)).toBe(0);
+  it("is written as a mono 48 kHz float WAV", () => {
+    const wav = floatWav(new Float32Array([0, 0.5, 1]));
+    expect(wav.length).toBe(44 + 12);
+    expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
+    expect(wav.toString("ascii", 8, 16)).toBe("WAVEfmt ");
+    expect([wav.readUInt16LE(20), wav.readUInt16LE(22), wav.readUInt32LE(24), wav.readUInt16LE(34)]).toEqual([3, 1, 48000, 32]);
+    expect(wav.readUInt32LE(40)).toBe(12);
+    expect(wav.readFloatLE(48)).toBe(0.5);
+  });
+
+  it("needs no gain signal for unity gain", () => {
+    expect(shapesSound([{ atUs: 0, gain: 1 }, { atUs: 2_000_000, gain: 1 }])).toBe(false);
+    expect(shapesSound([{ atUs: 1_000_000, gain: 0.5 }, { atUs: 2_000_000, gain: 0.5 }])).toBe(true);
   });
 
   it("refuses envelopes that are empty, unordered or not finite", () => {
-    expect(() => envelopeExpression([])).toThrow(GraphError);
-    expect(() => envelopeExpression([{ atUs: 10, gain: 1 }, { atUs: 5, gain: 1 }])).toThrow(GraphError);
-    expect(() => envelopeExpression([{ atUs: 0, gain: Number.POSITIVE_INFINITY }, { atUs: 5, gain: 1 }])).toThrow(GraphError);
-    expect(() => envelopeExpression([{ atUs: 0.5, gain: 1 }, { atUs: 5, gain: 1 }])).toThrow(GraphError);
+    expect(() => shapesSound([])).toThrow(GraphError);
+    expect(() => shapesSound([{ atUs: 10, gain: 1 }, { atUs: 5, gain: 1 }])).toThrow(GraphError);
+    expect(() => shapesSound([{ atUs: 0, gain: Number.POSITIVE_INFINITY }, { atUs: 5, gain: 1 }])).toThrow(GraphError);
+    expect(() => envelopeSamples([{ atUs: 0.5, gain: 1 }, { atUs: 5, gain: 1 }], 10)).toThrow(GraphError);
   });
 });
 
@@ -265,33 +201,43 @@ describe("audio mix run", () => {
         ],
       }),
       files,
-      "/work/mix.wav"
+      "/work/mix.wav",
+      (index) => `/work/gain-${index}.wav`
     );
-    expect(run.inputs).toEqual(["-ss", "1.5", "-i", "file:/media/clip.mov", "-i", "file:/media/voice.wav"]);
-    const [first, second, mix] = run.graph.split(";");
+    expect(run.inputs).toEqual(["-ss", "1.5", "-i", "file:/media/clip.mov", "-i", "file:/media/voice.wav", "-i", "file:/work/gain-1.wav"]);
+    expect(run.envelopes).toEqual([{ sourceIndex: 1, file: "/work/gain-1.wav" }]);
+    const [first, second, gain, shaped, mix] = run.graph.split(";");
     expect(first).toContain("[0:a:0]aresample=48000");
     expect(first).toContain("atrim=end_sample=96000,apad=whole_len=96000");
     expect(first).not.toContain("adelay");
-    expect(first).not.toContain("volume=");
+    expect(first).not.toContain("amultiply");
     expect(first).toMatch(/atrim=end_sample=192000,apad=whole_len=192000\[a0\]$/);
     expect(second).toContain("[1:a:0]pan=stereo|c0=c0|c1=c0,aresample=48000");
     expect(second).toContain("atrim=end_sample=120000,apad=whole_len=120000");
     expect(second).toContain("adelay=delays=72000S:all=1,asetpts=N/SR/TB");
-    expect(second).toContain(`asetnsamples=n=${GAIN_STEP_SAMPLES}:p=0,volume=volume='`);
-    expect(second).toContain("':eval=frame:precision=float");
+    expect(second).toMatch(/atrim=end_sample=192000,apad=whole_len=192000\[p1\]$/);
+    expect(gain).toBe("[2:a:0]aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=mono,pan=stereo|c0=c0|c1=c0,aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo[g1]");
+    expect(shaped).toBe("[p1][g1]amultiply,atrim=end_sample=192000,apad=whole_len=192000[a1]");
     expect(mix).toBe("[a0][a1]amix=inputs=2:normalize=0:duration=longest:dropout_transition=0,atrim=end_sample=192000,apad=whole_len=192000,aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo[mix]");
     expect(run.outputs).toEqual(expect.arrayContaining(["-c:a", "pcm_f32le", "-fflags", "+bitexact", "-map_metadata", "-1"]));
     expect(run.outputs.at(-1)).toBe("file:/work/mix.wav");
   });
 
   it("makes silence of the render's length when the plan has no sound", () => {
-    const run = mixRun(plan({ durationFrames: 45 }), files, "/work/mix.wav");
+    const run = mixRun(plan({ durationFrames: 45 }), files, "/work/mix.wav", () => "/work/unused.wav");
     expect(run.inputs).toEqual([]);
     expect(run.graph).toBe("anullsrc=r=48000:cl=stereo,atrim=end_sample=72000,apad=whole_len=72000,aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo[mix]");
   });
 
   it("refuses a sound whose media is missing", () => {
-    expect(() => mixRun(plan({ audio: [source({ mediaId: "nope" })] }), files, "/work/mix.wav")).toThrow(GraphError);
+    expect(() => mixRun(plan({ audio: [source({ mediaId: "nope" })] }), files, "/work/mix.wav", () => "/work/gain.wav")).toThrow(GraphError);
+  });
+
+  it("keeps the graph the same size however many points an envelope has", () => {
+    const dense: GainPoint[] = Array.from({ length: 10_000 }, (_, i) => ({ atUs: i * 100, gain: (i % 7) / 7 }));
+    const small = mixRun(plan({ audio: [source({ envelope: [{ atUs: 0, gain: 0 }, { atUs: 1_000_000, gain: 1 }] })] }), files, "/w/mix.wav", (i) => `/w/gain-${i}.wav`);
+    const large = mixRun(plan({ audio: [source({ envelope: dense })] }), files, "/w/mix.wav", (i) => `/w/gain-${i}.wav`);
+    expect(large.graph).toBe(small.graph);
   });
 });
 

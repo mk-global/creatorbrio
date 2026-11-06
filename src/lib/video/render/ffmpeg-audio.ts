@@ -8,58 +8,86 @@
  * each `AudioSource` is its own input, seeked accurately to `sourceInUs`,
  * resampled to 48 kHz stereo (a mono source is copied to both channels),
  * trimmed to its clip and padded with silence when the source is shorter,
- * delayed by exactly `startFrame * 48000 / fps` samples, then shaped by its
- * envelope and padded to the render's length. The envelope becomes a
- * `volume` expression evaluated every 16 samples (`GAIN_STEP_SAMPLES`, a
- * third of a millisecond, at the centre of each step), written as a flat sum
- * of one linear term per envelope segment. The sources are summed with
- * `amix` without normalisation. The mix always has exactly
+ * delayed by exactly `startFrame * 48000 / fps` samples, padded to the
+ * render's length, then shaped by its envelope. The envelope is written as a
+ * gain signal (`envelopeSamples`, a mono float WAV with one gain per sample
+ * of the render, exactly `gainAt` at each sample's time) and multiplied into
+ * the sound with `amultiply`, so its cost per sample is constant however many
+ * points it has: an expression of one term per segment fails to parse, and
+ * would be far too slow to evaluate, at the thousands of points a fade over a
+ * ducked bed can need. The sources are summed with `amix` without
+ * normalisation. The mix always has exactly
  * `round(durationFrames * 48000 / fps)` samples; no sound gives silence.
- *
  */
 import type { AudioSource, GainPoint, RenderPlan } from "./plan";
 import type { ExportProfile } from "./profile";
 import { AUDIO_SAMPLE_RATE, audioEncoderArgs, BITEXACT, COMMON, GraphError, num, samplesFor, seconds, totalSamples, type FfmpegRun } from "./ffmpeg-graph";
 import { fileUrl } from "@/lib/video/media/tools";
 
-/** Samples per gain step: a whole number of these fits every supported frame rate's frame, so steps never straddle a clip edge. */
-export const GAIN_STEP_SAMPLES = 16;
 /** loudnorm's accepted integrated-loudness targets. */
 const LOUDNORM_TARGET = { min: -70, max: -5 };
 
 /**
- * The `volume` expression for an envelope, in timeline seconds `t` at the
- * start of each `GAIN_STEP_SAMPLES` step, evaluated at the step's centre:
- * `gte(t,a)*lt(t,b)*(g+k*(t-a))` per segment, summed. Outside the envelope
- * the gain is 0, as `gainAt` defines it. Returns null when the gain is 1
- * throughout, so no filter is needed.
+ * Checks an envelope and says whether it shapes its sound: false when the
+ * gain is 1 throughout, so no gain signal is needed (outside the envelope the
+ * sound is already silent padding).
  */
-export function envelopeExpression(envelope: readonly GainPoint[]): string | null {
+export function shapesSound(envelope: readonly GainPoint[]): boolean {
   if (envelope.length === 0) throw new GraphError("a sound has an empty gain envelope");
   for (let i = 0; i < envelope.length; i++) {
     const point = envelope[i];
     if (!Number.isSafeInteger(point.atUs) || !Number.isFinite(point.gain) || point.gain < 0) throw new GraphError("a gain envelope point is invalid");
     if (i > 0 && point.atUs < envelope[i - 1].atUs) throw new GraphError("a gain envelope is not in time order");
   }
-  if (envelope.length > 1 && envelope.every((point) => point.gain === 1)) return null;
-  const centre = GAIN_STEP_SAMPLES / 2 / AUDIO_SAMPLE_RATE;
-  const terms: string[] = [];
-  for (let i = 0; i + 1 < envelope.length; i++) {
-    const from = envelope[i];
-    const to = envelope[i + 1];
-    if (to.atUs === from.atUs) continue;
-    const start = from.atUs / 1_000_000 - centre;
-    const end = to.atUs / 1_000_000 - centre;
-    const slope = ((to.gain - from.gain) * 1_000_000) / (to.atUs - from.atUs);
-    const window = `gte(t,${num(start)})*lt(t,${num(end)})`;
-    if (slope === 0) {
-      if (from.gain !== 0) terms.push(`${window}*${num(from.gain)}`);
+  return !(envelope.length > 1 && envelope.every((point) => point.gain === 1));
+}
+
+/**
+ * The envelope's gain at each of the render's `total` samples, at sample s's
+ * time `s * 1e6 / 48000` microseconds, computed exactly as `gainAt` does
+ * (0 outside the envelope), in one pass.
+ */
+export function envelopeSamples(envelope: readonly GainPoint[], total: number): Float32Array {
+  shapesSound(envelope);
+  const out = new Float32Array(total);
+  const n = envelope.length;
+  const first = envelope[0].atUs;
+  const last = envelope[n - 1].atUs;
+  let seg = 0;
+  for (let s = 0; s < total; s++) {
+    const atUs = (s * 1_000_000) / AUDIO_SAMPLE_RATE;
+    if (atUs < first) continue;
+    if (atUs > last) break;
+    if (atUs === last) {
+      out[s] = envelope[n - 1].gain;
       continue;
     }
-    const offset = start < 0 ? `t+${num(-start)}` : `t-${num(start)}`;
-    terms.push(`${window}*(${num(from.gain)}${slope < 0 ? "-" : "+"}${num(Math.abs(slope))}*(${offset}))`);
+    while (seg + 1 < n - 1 && envelope[seg + 1].atUs <= atUs) seg++;
+    const a = envelope[seg];
+    const b = envelope[seg + 1];
+    out[s] = a.gain + ((b.gain - a.gain) * (atUs - a.atUs)) / (b.atUs - a.atUs);
   }
-  return terms.length === 0 ? "0" : terms.join("+");
+  return out;
+}
+
+/** A mono 48 kHz 32-bit float WAV of `samples`. */
+export function floatWav(samples: Float32Array): Buffer {
+  const data = samples.length * 4;
+  const wav = Buffer.alloc(44 + data);
+  wav.write("RIFF", 0, "ascii");
+  wav.writeUInt32LE(36 + data, 4);
+  wav.write("WAVEfmt ", 8, "ascii");
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(3, 20); // IEEE float
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(AUDIO_SAMPLE_RATE, 24);
+  wav.writeUInt32LE(AUDIO_SAMPLE_RATE * 4, 28);
+  wav.writeUInt16LE(4, 32);
+  wav.writeUInt16LE(32, 34);
+  wav.write("data", 36, "ascii");
+  wav.writeUInt32LE(data, 40);
+  for (let i = 0; i < samples.length; i++) wav.writeFloatLE(samples[i], 44 + i * 4);
+  return wav;
 }
 
 export interface AudioSourceFile {
@@ -69,12 +97,25 @@ export interface AudioSourceFile {
   channels: number;
 }
 
-/** Pass 1: the mix of every sound in the plan, as 48 kHz stereo float WAV. */
-export function mixRun(plan: RenderPlan, files: ReadonlyMap<string, AudioSourceFile>, output: string): FfmpegRun {
+/** The mix run, and the gain signals that must be written before it runs. */
+export interface MixRun extends FfmpegRun {
+  /** For each sound its envelope shapes: the plan's audio index and the gain-signal WAV the run reads. */
+  envelopes: { sourceIndex: number; file: string }[];
+}
+
+/**
+ * Pass 1: the mix of every sound in the plan, as 48 kHz stereo float WAV.
+ * `gainFile(index)` names where the gain signal of `plan.audio[index]` is to be
+ * written; the caller writes `envelopeSamples` there for each of `envelopes`.
+ */
+export function mixRun(plan: RenderPlan, files: ReadonlyMap<string, AudioSourceFile>, output: string, gainFile: (sourceIndex: number) => string): MixRun {
   const fps = plan.canvas.fps;
   const total = totalSamples(plan);
   const inputs: string[] = [];
+  const gainInputs: string[] = [];
+  const envelopes: MixRun["envelopes"] = [];
   const chains: string[] = [];
+  const n = plan.audio.length;
   plan.audio.forEach((source: AudioSource, index) => {
     const file = files.get(source.mediaId);
     if (!file) throw new GraphError("a sound's media is not available");
@@ -83,7 +124,7 @@ export function mixRun(plan: RenderPlan, files: ReadonlyMap<string, AudioSourceF
     inputs.push("-i", fileUrl(file.path));
     const length = samplesFor(source.durationFrames, fps);
     const delay = samplesFor(source.startFrame, fps);
-    const gain = envelopeExpression(source.envelope);
+    const shaped = shapesSound(source.envelope);
     chains.push(
       [
         `[${index}:a:0]${file.channels === 1 ? "pan=stereo|c0=c0|c1=c0," : ""}aresample=${AUDIO_SAMPLE_RATE}`,
@@ -93,19 +134,28 @@ export function mixRun(plan: RenderPlan, files: ReadonlyMap<string, AudioSourceF
         `apad=whole_len=${length}`,
         ...(delay > 0 ? [`adelay=delays=${delay}S:all=1`] : []),
         "asetpts=N/SR/TB",
-        ...(gain === null ? [] : [`asetnsamples=n=${GAIN_STEP_SAMPLES}:p=0`, `volume=volume='${gain}':eval=frame:precision=float`]),
         `atrim=end_sample=${total}`,
-        `apad=whole_len=${total}[a${index}]`,
+        `apad=whole_len=${total}${shaped ? `[p${index}]` : `[a${index}]`}`,
       ].join(",")
     );
+    if (!shaped) return;
+    const gainIndex = n + envelopes.length;
+    const gain = gainFile(index);
+    envelopes.push({ sourceIndex: index, file: gain });
+    gainInputs.push("-i", fileUrl(gain));
+    chains.push(
+      `[${gainIndex}:a:0]aformat=sample_fmts=flt:sample_rates=${AUDIO_SAMPLE_RATE}:channel_layouts=mono,pan=stereo|c0=c0|c1=c0,` +
+        `aformat=sample_fmts=flt:sample_rates=${AUDIO_SAMPLE_RATE}:channel_layouts=stereo[g${index}]`,
+      `[p${index}][g${index}]amultiply,atrim=end_sample=${total},apad=whole_len=${total}[a${index}]`
+    );
   });
-  const n = plan.audio.length;
   const finish = `atrim=end_sample=${total},apad=whole_len=${total},aformat=sample_fmts=flt:sample_rates=${AUDIO_SAMPLE_RATE}:channel_layouts=stereo[mix]`;
   if (n === 0) chains.push(`anullsrc=r=${AUDIO_SAMPLE_RATE}:cl=stereo,${finish}`);
   else if (n === 1) chains.push(`[a0]${finish}`);
   else chains.push(`${plan.audio.map((_, i) => `[a${i}]`).join("")}amix=inputs=${n}:normalize=0:duration=longest:dropout_transition=0,${finish}`);
   return {
-    inputs,
+    inputs: [...inputs, ...gainInputs],
+    envelopes,
     graph: chains.join(";"),
     outputs: ["-map", "[mix]", "-c:a", "pcm_f32le", "-ar", String(AUDIO_SAMPLE_RATE), "-ac", "2", ...BITEXACT, "-f", "wav", fileUrl(output)],
   };
