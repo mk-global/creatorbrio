@@ -69,7 +69,7 @@ export function TextField({ label, value, onChange, onSubmit, max, errors, place
         }}
         aria-invalid={invalid || undefined}
         aria-describedby={invalid ? `${id}-errors` : hint ? `${id}-hint` : undefined}
-        className={cn("h-8 text-xs", invalid && "border-destructive")}
+        className={cn("h-8 text-xs", invalid && "border-destructive focus-visible:ring-destructive/50")}
       />
       {hint && !invalid && (
         <p id={`${id}-hint`} className="mt-1 text-[11px] text-muted-foreground">
@@ -96,7 +96,7 @@ export function ChoiceField<T extends string>({ label, value, options, onChange,
   return (
     <fieldset aria-describedby={invalid ? `${id}-errors` : undefined}>
       <legend className="mb-1 text-xs font-medium text-foreground">{label}</legend>
-      <div className={cn("grid gap-1 rounded-lg border border-border bg-muted p-0.5", invalid && "border-destructive")} style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+      <div className={cn("grid gap-1 rounded-lg border border-border bg-muted p-0.5", invalid && "border-destructive focus-visible:ring-destructive/50")} style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
         {options.map((option) => (
           <label
             key={option.value}
@@ -160,7 +160,7 @@ export function ColorField({ label, value, onChange, onSubmit, errors, hint }: {
           spellCheck={false}
           aria-invalid={invalid || undefined}
           aria-describedby={invalid ? `${id}-errors` : hint ? `${id}-hint` : undefined}
-          className={cn("h-8 font-mono text-xs", invalid && "border-destructive")}
+          className={cn("h-8 font-mono text-xs", invalid && "border-destructive focus-visible:ring-destructive/50")}
         />
       </div>
       {hint && !invalid && (

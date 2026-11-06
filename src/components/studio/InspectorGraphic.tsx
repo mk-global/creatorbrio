@@ -6,6 +6,7 @@
  * draft as one `setGraphicParams` change set; a refusal keeps the draft and
  * shows each issue at its field; Revert discards the draft.
  */
+import { useRef } from "react";
 import { Save, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import {
   type GraphicDraft,
   type GraphicKindInfo,
 } from "@/lib/video/studio/capability-forms";
+import type { Refusal } from "@/lib/video/studio/production-session";
 import type { GraphicsClip } from "@/types/production";
 import { InspectorCaptions } from "./InspectorCaptions";
 import { ReadOnlyParams } from "./InspectorClip";
@@ -30,6 +32,8 @@ export interface DraftEntry {
   base: string;
   /** The last refused Save's issues, shown until the next Save or a Revert. */
   issues: FormIssues | null;
+  /** The session's refusal of that Save, so a Revert can dismiss its banner too. */
+  refusal?: Refusal | null;
 }
 
 interface Props {
@@ -48,6 +52,7 @@ export interface FieldsProps<D extends GraphicDraft> {
 
 export function InspectorGraphic({ clip, info, entry, update }: Props) {
   const { session, state } = useWorkspace();
+  const formRef = useRef<HTMLFormElement>(null);
   const stored = clip.capability.params;
   const storedJson = JSON.stringify(stored);
   const draft = entry?.draft ?? draftFromParams(info.kind, stored);
@@ -78,7 +83,20 @@ export function InspectorGraphic({ clip, info, entry, update }: Props) {
     const refusal = snapshot.refusal;
     const sorted = refusal && snapshot.view ? formIssues(refusal.issues, snapshot.view.production, clip.id) : { fields: {}, general: [] };
     if (Object.keys(sorted.fields).length === 0 && sorted.general.length === 0) sorted.general.push(refusal?.message ?? "The change was not saved.");
-    update((previous) => (previous ? { ...previous, issues: sorted } : null));
+    update((previous) => (previous ? { ...previous, issues: sorted, refusal } : null));
+    // Take the person to the first field the refusal names, which may be scrolled out of view.
+    requestAnimationFrame(() => {
+      const field = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
+      field?.focus({ preventScroll: true });
+      // Centred, so the sticky Save bar never covers it.
+      field?.scrollIntoView({ block: "center" });
+    });
+  };
+
+  const revert = () => {
+    // The banner is about the Save being reverted; one about anything else stays.
+    if (entry?.refusal && state.refusal === entry.refusal) session.dismissRefusal();
+    update(() => null);
   };
 
   const fields: FieldsProps<GraphicDraft> = {
@@ -90,6 +108,7 @@ export function InspectorGraphic({ clip, info, entry, update }: Props) {
 
   return (
     <form
+      ref={formRef}
       className="flex flex-col"
       aria-label={`${info.label} parameters`}
       onSubmit={(e) => {
@@ -124,7 +143,7 @@ export function InspectorGraphic({ clip, info, entry, update }: Props) {
           <span className="mr-auto text-[11px] text-muted-foreground" aria-live="polite">
             {dirty ? "Unsaved changes" : "Saved"}
           </span>
-          <Button type="button" variant="ghost" size="sm" disabled={!entry} onClick={() => update(() => null)}>
+          <Button type="button" variant="ghost" size="sm" disabled={!entry} onClick={revert}>
             <Undo2 className="h-3.5 w-3.5" aria-hidden />
             Revert
           </Button>

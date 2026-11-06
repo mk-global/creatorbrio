@@ -33,7 +33,9 @@ export function ExportRenderCard({ render, currentRevision, showVideo, act }: Pr
   const status = renderStatus(render, currentRevision);
   const [pending, setPending] = useState<"cancel" | "retry" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const [videoOpen, setVideoOpen] = useState(showVideo);
+  // The newest succeeded render plays inline unless the person chose otherwise; it may succeed after the card first showed.
+  const [videoChoice, setVideoOpen] = useState<boolean | null>(null);
+  const videoOpen = videoChoice ?? showVideo;
   const requested = new Date(render.requestedAt);
 
   const run = async (action: "cancel" | "retry") => {
@@ -116,9 +118,13 @@ export function ExportRenderCard({ render, currentRevision, showVideo, act }: Pr
         </div>
       )}
 
+      {problem && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {problem}
+        </p>
+      )}
       {(status.canCancel || status.canRetry) && (
         <div className="mt-3 flex items-center justify-end gap-2">
-          {problem && <p className="mr-auto text-xs text-destructive">{problem}</p>}
           {status.canCancel && (
             <Button type="button" variant="outline" size="sm" disabled={pending !== null} onClick={() => void run("cancel")}>
               <X className="h-3.5 w-3.5" aria-hidden />

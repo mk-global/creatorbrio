@@ -10,7 +10,7 @@ import { Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { addCue, newCueRange, removeCue, updateCue } from "@/lib/video/studio/caption-cues";
+import { addCue, removeCue, updateCue } from "@/lib/video/studio/caption-cues";
 import { CAPTION_LIMITS, fieldKey, type CaptionsDraft, type CueDraft } from "@/lib/video/studio/capability-forms";
 import { formatTimecode } from "@/lib/video/studio/frames";
 import { cn } from "@/lib/utils";
@@ -22,7 +22,7 @@ export function InspectorCaptions({ draft, change, submit, errors, durationFrame
   const { state } = useWorkspace();
   const fps = state.view.production.format.fps;
   const listId = useId();
-  const room = newCueRange(draft.cues, durationFrames, fps) !== null && draft.cues.length < CAPTION_LIMITS.cues;
+  const room = draft.cues.length < CAPTION_LIMITS.cues && addCue(draft.cues, durationFrames, fps) !== null;
   const setCues = (cues: CueDraft[]) => change({ ...draft, cues });
 
   return (
@@ -137,7 +137,7 @@ function CueRow({ index, cue, fps, onChange, onRemove, onSubmit, errors }: CueRo
         onKeyDown={enter}
         aria-invalid={textErrors ? true : undefined}
         aria-describedby={textErrors ? `${id}-text-errors` : undefined}
-        className={cn("h-8 text-xs", textErrors && "border-destructive")}
+        className={cn("h-8 text-xs", textErrors && "border-destructive focus-visible:ring-destructive/50")}
       />
       <FieldErrors id={`${id}-text-errors`} messages={textErrors} />
       <div className="mt-1.5 grid grid-cols-2 gap-2">
@@ -169,7 +169,7 @@ function FrameInput(props: { id: string; label: string; short: string; value: st
           onKeyDown={onKeyDown}
           aria-invalid={errors ? true : undefined}
           aria-describedby={errors ? `${id}-errors` : undefined}
-          className={cn("h-7 px-2 text-xs tabular-nums", errors && "border-destructive")}
+          className={cn("h-7 px-2 text-xs tabular-nums", errors && "border-destructive focus-visible:ring-destructive/50")}
         />
       </div>
       <FieldErrors id={`${id}-errors`} messages={errors} />

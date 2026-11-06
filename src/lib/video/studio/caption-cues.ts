@@ -37,16 +37,37 @@ export function newCueRange(cues: readonly CueDraft[], durationFrames: number, f
   return null;
 }
 
-/** The cues with a new one at the first free place, kept in order of start; null when there is no room. */
+/**
+ * The cues with a new one at the first free place, kept in order of start.
+ * When every frame is taken, the last cue long enough is split in two at its
+ * middle and the new cue takes the second half, so a clip whose one cue spans
+ * it (as a new caption clip's does) can still get a second cue. Null when no
+ * cue can be split either.
+ */
 export function addCue(cues: readonly CueDraft[], durationFrames: number, fps: number): CueDraft[] | null {
   const range = newCueRange(cues, durationFrames, fps);
-  if (!range) return null;
+  if (!range) return splitLastCue(cues);
   const cue: CueDraft = { start: String(range.start), end: String(range.end), text: NEW_CUE_TEXT };
   const index = cues.findIndex((c) => {
     const start = frameOf(c.start);
     return start !== null && start > range.start;
   });
   return index < 0 ? [...cues, cue] : [...cues.slice(0, index), cue, ...cues.slice(index)];
+}
+
+function splitLastCue(cues: readonly CueDraft[]): CueDraft[] | null {
+  let best = -1;
+  cues.forEach((cue, i) => {
+    const start = frameOf(cue.start);
+    const end = frameOf(cue.end);
+    if (start === null || end === null || end - start < 2) return;
+    if (best < 0 || start > frameOf(cues[best].start)!) best = i;
+  });
+  if (best < 0) return null;
+  const start = frameOf(cues[best].start)!;
+  const end = frameOf(cues[best].end)!;
+  const middle = start + Math.floor((end - start) / 2);
+  return [...cues.slice(0, best), { ...cues[best], end: String(middle) }, { start: String(middle), end: String(end), text: NEW_CUE_TEXT }, ...cues.slice(best + 1)];
 }
 
 export function removeCue(cues: readonly CueDraft[], index: number): CueDraft[] {

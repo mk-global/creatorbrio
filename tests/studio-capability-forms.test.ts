@@ -206,8 +206,14 @@ describe("caption cues", () => {
     expect(newCueRange([cue(20, 120)], 120, 30)).toEqual({ start: 0, end: 20 });
   });
 
-  it("has no room in a full clip, and ignores cues still being typed", () => {
-    expect(addCue([cue(0, 60), cue(60, 120)], 120, 30)).toBeNull();
+  it("splits the last cue in two when every frame is taken, as in a new caption clip", () => {
+    expect(addCue([cue(0, 120, "Your caption")], 120, 30)).toEqual([cue(0, 60, "Your caption"), { start: "60", end: "120", text: "New caption" }]);
+    expect(addCue([cue(0, 60, "a"), cue(60, 121, "b")], 120, 30)).toEqual([cue(0, 60, "a"), cue(60, 90, "b"), { start: "90", end: "121", text: "New caption" }]);
+    // Nothing is free and no cue is two frames long.
+    expect(addCue([cue(0, 1)], 1, 30)).toBeNull();
+  });
+
+  it("ignores cues still being typed", () => {
     expect(newCueRange([{ start: "", end: "abc", text: "typing" }], 120, 30)).toEqual({ start: 0, end: 60 });
   });
 

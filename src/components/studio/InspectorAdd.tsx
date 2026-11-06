@@ -57,8 +57,9 @@ export function InspectorAdd() {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-xs font-medium text-foreground">{info.label}</span>
-                  <span className="block truncate text-[11px] text-muted-foreground">
-                    {info.hint} · {info.seconds} s on {trackLabel(info.trackId)}
+                  <span className="block text-[11px] leading-4 text-muted-foreground">{info.hint}</span>
+                  <span className="block text-[11px] leading-4 text-muted-foreground/80">
+                    {info.seconds} s on the {trackLabel(info.trackId).toLowerCase()} track
                   </span>
                 </span>
               </button>
