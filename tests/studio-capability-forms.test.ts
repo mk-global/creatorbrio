@@ -26,7 +26,7 @@ import {
   type CueDraft,
   type LowerThirdDraft,
 } from "@/lib/video/studio/capability-forms";
-import { clipFacts, firstFreeStart, insertGraphic } from "@/lib/video/studio/clip-placement";
+import { clipFacts, firstFreeStart, freshClipId, insertGraphic } from "@/lib/video/studio/clip-placement";
 import type { RefusalIssue } from "@/lib/video/studio/types";
 import type { Clip, GraphicsClip, Production } from "@/types/production";
 
@@ -170,6 +170,13 @@ describe("placing a new graphic", () => {
     expect(title.ok && "provenance" in (title.op as { clip: object }).clip).toBe(false);
     const captions = insertGraphic(doc, "captions", 30, "new-cap");
     expect(captions).toMatchObject({ ok: true, trackId: STUDIO_TRACKS.captions, start: 30, duration: 120 });
+  });
+
+  it("gets a fresh clip id the production does not use", () => {
+    const doc = production();
+    const id = freshClipId(doc);
+    expect(id).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
+    expect(doc.timeline.tracks.some((t) => t.id === id)).toBe(false);
   });
 
   it("explains a production without the track", () => {

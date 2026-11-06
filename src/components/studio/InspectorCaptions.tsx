@@ -144,6 +144,9 @@ function CueRow({ index, cue, fps, onChange, onRemove, onSubmit, errors }: CueRo
         <FrameInput id={`${id}-start`} label={`Cue ${n} start frame`} short="Start" value={cue.start} onChange={(v) => onChange("start", v)} onKeyDown={enter} errors={startErrors} />
         <FrameInput id={`${id}-end`} label={`Cue ${n} end frame`} short="End" value={cue.end} onChange={(v) => onChange("end", v)} onKeyDown={enter} errors={endErrors} />
       </div>
+      {/* Frame errors span the row, so a message is not squeezed into one narrow column. */}
+      <FieldErrors id={`${id}-start-errors`} messages={startErrors?.map((m) => `Start: ${m}`)} />
+      <FieldErrors id={`${id}-end-errors`} messages={endErrors?.map((m) => `End: ${m}`)} />
       <FieldErrors id={`${id}-row-errors`} messages={rowErrors} />
     </li>
   );
@@ -172,7 +175,6 @@ function FrameInput(props: { id: string; label: string; short: string; value: st
           className={cn("h-7 px-2 text-xs tabular-nums", errors && "border-destructive focus-visible:ring-destructive/50")}
         />
       </div>
-      <FieldErrors id={`${id}-errors`} messages={errors} />
     </div>
   );
 }

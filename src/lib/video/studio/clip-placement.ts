@@ -9,6 +9,7 @@
 import { STUDIO_TRACKS } from "@/lib/video/production/new-production";
 import type { Clip, Production, Track } from "@/types/production";
 import { CAPABILITY_VERSION, defaultDurationFrames, defaultParams, graphicKindInfo, graphicKindOf, type GraphicKind } from "./capability-forms";
+import { cryptoRandom, newClipId, usedIds } from "./production-ids";
 import type { ProductionOp } from "./types";
 
 /** The first start at or after `fromFrame` where `durationFrames` frames fit between the given clips. */
@@ -21,6 +22,11 @@ export function firstFreeStart(clips: readonly { start: number; duration: number
     start = end;
   }
   return start;
+}
+
+/** A clip id `production` does not use yet, from the clock and the cryptographic generator (for the page; tests pass their own ids). */
+export function freshClipId(production: Production): string {
+  return newClipId(usedIds(production), Date.now(), cryptoRandom);
 }
 
 export type GraphicInsert =

@@ -49,7 +49,7 @@ describe("render status", () => {
       render({ state: "failed", progress: { stage: "video", done: 10, total: 40 }, failure: { failureClass: "permanent", code: "verification_failed", message: "the export did not pass verification" }, verification: { ok: false, failedChecks: ["faststart", "audio_codec"] } }),
       3
     );
-    expect(status).toMatchObject({ label: "Failed", tone: "danger", canCancel: false, canRetry: true, failure: "The export did not pass verification.", stage: "Encoding video", progress: { percent: 25 } });
+    expect(status).toMatchObject({ label: "Failed", tone: "danger", canCancel: false, canRetry: true, failure: "The export did not pass verification.", stage: "Stopped while encoding video", progress: { percent: 25 } });
     expect(status.verification).toEqual({ ok: false, text: "Failed checks: faststart, audio_codec" });
   });
 
@@ -87,7 +87,10 @@ describe("the render list", () => {
   it("summarises the unfinished render for the header", () => {
     expect(activeSummary([a, c])).toBeNull();
     expect(activeSummary([render()])).toBe("Queued");
-    expect(activeSummary([render(), { ...b, progress: { stage: "video", done: 21, total: 50 } }])).toBe("Rendering 42%");
+    expect(activeSummary([render(), { ...b, progress: { stage: "video", done: 21, total: 50 } }])).toBe("Rendering video 42%");
+    // A stage counted in one unit has no meaningful percentage.
+    expect(activeSummary([{ ...b, progress: { stage: "audio", done: 1, total: 1 } }])).toBe("Rendering sound");
+    expect(activeSummary([{ ...b, progress: undefined }])).toBe("Rendering");
   });
 });
 

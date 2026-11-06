@@ -72,7 +72,7 @@ export function renderStatus(render: RenderView, currentRevision: number): Rende
   return {
     label: cancelling ? "Cancelling" : LABELS[render.state],
     tone: render.state === "succeeded" ? "success" : render.state === "failed" ? "danger" : isActive(render) ? "progress" : "neutral",
-    stage: showProgress && render.progress ? STAGES[render.progress.stage] : render.state === "queued" ? "Waiting to start" : null,
+    stage: render.progress && showProgress ? (render.state === "running" ? STAGES[render.progress.stage] : `Stopped while ${STAGES[render.progress.stage].toLowerCase()}`) : render.state === "queued" ? "Waiting to start" : null,
     progress: showProgress ? progress : null,
     canCancel: isActive(render) && !cancelling,
     canRetry: render.state === "failed" || render.state === "cancelled",
@@ -108,11 +108,25 @@ export function describeCompileIssue(issue: CompileIssue): { text: string; clipI
   return { text: sentence(issue.message), clipId: issue.clipId ?? null };
 }
 
-/** The header button's short status while a render is unfinished, e.g. "Rendering 42%". */
+/** Each stage in a word, for the header button. */
+const SHORT_STAGES: Record<NonNullable<RenderView["progress"]>["stage"], string> = {
+  overlay: "graphics",
+  video: "video",
+  audio: "sound",
+  mux: "packaging",
+};
+
+/**
+ * The header button's short status while a render is unfinished, e.g.
+ * "Rendering video 42%". Progress is per stage, so the percentage is shown
+ * only for stages counted in more than one unit.
+ */
 export function activeSummary(renders: readonly RenderView[]): string | null {
   const active = renders.find((r) => r.state === "running") ?? renders.find(isActive);
   if (!active) return null;
   if (active.state === "queued") return "Queued";
   const p = active.progress;
-  return p && p.total > 0 ? `Rendering ${Math.floor((p.done / p.total) * 100)}%` : "Rendering";
+  if (!p) return "Rendering";
+  const stage = `Rendering ${SHORT_STAGES[p.stage]}`;
+  return p.total > 1 ? `${stage} ${Math.floor((p.done / p.total) * 100)}%` : stage;
 }

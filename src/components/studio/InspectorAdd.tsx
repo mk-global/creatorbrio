@@ -9,7 +9,7 @@ import { Captions, Heading, IdCard, type LucideIcon } from "lucide-react";
 
 import { formatTimecode } from "@/lib/video/studio/frames";
 import { GRAPHIC_KINDS, type GraphicKind } from "@/lib/video/studio/capability-forms";
-import { insertGraphic, trackLabel } from "@/lib/video/studio/clip-placement";
+import { freshClipId, insertGraphic, trackLabel } from "@/lib/video/studio/clip-placement";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "./workspace";
 
@@ -21,8 +21,8 @@ export function InspectorAdd() {
   const fps = production.format.fps;
   const [problem, setProblem] = useState<string | null>(null);
 
-  const add = async (kind: GraphicKind) => {
-    const placed = insertGraphic(production, kind, playheadState.frame, `${kind}-${crypto.randomUUID()}`);
+  async function add(kind: GraphicKind) {
+    const placed = insertGraphic(production, kind, playheadState.frame, freshClipId(production));
     if (!placed.ok) {
       setProblem(placed.reason);
       return;
@@ -30,7 +30,7 @@ export function InspectorAdd() {
     setProblem(null);
     const label = GRAPHIC_KINDS.find((k) => k.kind === kind)!.label;
     if ((await session.apply(`Add ${label.toLowerCase()}`, [placed.op])) === "applied") select(placed.clipId);
-  };
+  }
 
   return (
     <div className="p-4">

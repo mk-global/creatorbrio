@@ -91,7 +91,7 @@ export function ExportRenderCard({ render, currentRevision, showVideo, act }: Pr
       {status.files.includes("video.mp4") && (
         <div className="mt-3">
           {videoOpen ? (
-            <video controls preload="metadata" src={renderFileUrl(render.productionId, render.renderId, "video.mp4")} className="mx-auto block max-h-80 rounded-lg bg-black" aria-label={`Exported video, revision ${render.revision}`} />
+            <video controls preload="metadata" src={renderFileUrl(render.productionId, render.renderId, "video.mp4")} className="mx-auto block aspect-[9/16] h-80 rounded-lg bg-black" aria-label={`Exported video, revision ${render.revision}`} />
           ) : (
             <Button type="button" variant="outline" size="sm" onClick={() => setVideoOpen(true)}>
               Play here
