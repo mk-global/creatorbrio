@@ -36,6 +36,8 @@ Browser upload is not offered yet: Next.js keeps only the first 10 MB of a body 
 1. The path must be absolute and name a regular file: folders, symbolic links, devices and anything inside CreatorBrio's data folder are refused.
 2. Files over 32 GiB are refused before anything is read.
 3. ffprobe reads the file in place; a file that is not video, audio or a still image is refused and never copied.
+   For a still image ffprobe also decodes the first frame, whose orientation (EXIF in JPEG, `eXIf` in PNG) becomes the record's rotation, so the image is placed and previewed upright.
+   An image that does not decode, or whose orientation is mirrored (EXIF 2, 4, 5 or 7) or not a quarter turn, is refused as `unsupported_media`.
 4. The file is cloned into its own folder under `tmp/` (copy-on-write on APFS, a full copy elsewhere), made read-only, hashed while streaming, and probed again: the copy is what the record describes.
 5. The record is written next to it, and the folder is renamed onto `objects/<sha256>`.
    That rename publishes the media in one step.
@@ -55,6 +57,7 @@ They are previews only.
 | Image | `proxy.png`: within 1080×1920 (or 1920×1080), transparency kept. |
 
 `peaks.json` is `{ version, peaksPerSecond, peaks }`: the loudest sample in each bucket, from 0 to 255, at 100 per second, fewer for media longer than about 17 minutes so that a file never holds more than 100,000 values.
+Peak i is at file time i / peaksPerSecond: a sound stream that starts after its file does is preceded by silence and gaps of 10 ms or more become silence, as in the export, so the waveform lines up with the exported sound.
 
 **HDR.** HLG and PQ video is converted on VideoToolbox: the hardware decodes and converts the colour to BT.709 with `scale_vt` (the G2 record, #98), and the frames are then turned upright in software, because FFmpeg drops the rotation on that hardware path.
 This FFmpeg build has no software tone-mapping, so on a computer without `scale_vt` the job fails with the configuration code `hdr_conversion_unavailable` rather than producing a washed-out preview.

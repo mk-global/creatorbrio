@@ -117,9 +117,11 @@ The pause was needed because Chromium otherwise advanced animations while a docu
 
 **Picture and sound.** One FFmpeg graph cuts, rotates, scales and crops the originals, converts HLG and PQ to BT.709, composites at 4:4:4 with the overlay converted explicitly to BT.709, and subsamples once to 4:2:0.
 It encodes with libx264 at the profile's settings, bitexact flags and fixed threads, so the same plan encodes identically.
+A track made of several clips, or with gaps, is put back on the frame grid after its pieces are joined, because joining them leaves microsecond timestamps that made the track end a frame early.
 The final pass must deliver exactly the plan's frame count.
 
-**Mix.** Each sound is trimmed, delayed and padded in samples, and its gain envelope is written as a gain signal, one 32-bit float gain per sample of the render equal to the envelope at that sample, which FFmpeg multiplies into the sound.
+**Mix.** Each sound follows its stream's timestamps, as its picture does: a stream that starts after its file does is preceded by silence, measured from the seek point, and a gap of 10 ms or more inside it becomes silence (an overlap that large is dropped).
+It is then trimmed, delayed and padded in samples, and its gain envelope is written as a gain signal, one 32-bit float gain per sample of the render equal to the envelope at that sample, which FFmpeg multiplies into the sound.
 An envelope's complexity therefore never changes the graph or the cost per sample; an earlier design that wrote the envelope as one FFmpeg expression failed to parse at a few hundred points, which a fade over a ducked music bed reaches.
 
 **Loudness.** The mix is normalised with two-pass `loudnorm` to `Timeline.audio.masterLufs`, aiming its true peak 0.5 dB under the profile's limit, then encoded with the profile's AAC settings and measured again.
@@ -169,20 +171,25 @@ failed, cancelled ──retry──▶ queued
 
 - A render folder appears whole: its snapshot and job record are written under `.staging/` and renamed into place together.
 - One render runs at a time in a process, in its own lane, so preview jobs keep flowing during an export.
-  `job.lock`, created exclusively, keeps two processes from running the same render; a lock whose process has stopped is taken over.
+  `job.lock` keeps two processes from running the same render: it is written whole to a temporary file and hard-linked into place, so it is never seen half written, and it stays held through the pauses between attempts.
+  A lock that cannot be read counts as held for 30 s after it was last changed.
+  A lock whose owner has stopped is taken over by moving it aside and checking it is the one that was read; a process otherwise removes only its own lock.
+- An owner is recorded as its process id, host and start time (read with `ps`), so a process id reused after a reboot is not mistaken for the owner; without `ps` only the id is compared.
 - An attempt builds into `work/`, which the next attempt clears.
   The outputs are renamed into the render folder only when all of them exist, and `job.json` saying `succeeded` is the commit point for serving them.
-- When the API starts, renders still queued, and renders left `running` by a stopped process (`interrupted`), are queued again.
-- Requesting a render while one is queued or running for the same revision and profile returns that render (200, `existing`).
+- When the API starts, renders still queued are run, and renders left `running` by an owner confirmed stopped are `interrupted`: the attempt counts, and the render is queued again, or fails as transient `interrupted` if that was its third attempt.
+- If a render's record cannot be written after it started, it is failed as transient `io_error` on a best-effort basis and not retried automatically; a person retries it.
+- Requesting a render while one is queued or running for the same document (the snapshot's SHA-256, not the revision number, which recovery can reuse) and profile returns that render (200, `existing`).
 - Cancelling a queued render, or one waiting between attempts, cancels it at once.
   Cancelling a running render stops its processes, and it ends `cancelled`, never `failed`.
-  A render running in another live process cannot be cancelled from this one (409 `not_cancellable`).
-- Progress is `{ stage, done, total }` for the stages `overlay`, `video`, `audio` and `mux`, written at most once a second.
+  A render that another live process is running, or waiting to retry, cannot be cancelled from this one (409 `not_cancellable`).
+  A render whose owner is neither this process nor confirmed alive, for example one recorded under another host name, can be cancelled by a person, which also removes that owner's lock, and then retried.
+- Progress is `{ stage, done, total }` for the stages `overlay`, `video`, `audio` and `mux`, written whenever the stage changes and otherwise at most once a second.
   While the file is verified, the last mux progress is still shown.
 
 | Failure class | Codes | What happens |
 |---|---|---|
-| Transient | `timeout`, `interrupted`, `io_error` (disk full or busy) | Retried up to three attempts in all, then `failed` |
+| Transient | `timeout`, `interrupted`, `io_error` (disk full or busy) | Retried up to three attempts in all, then `failed`; an `io_error` writing the job record fails at once |
 | Permanent | `tool_failed`, `overlay_navigation`, `overlay_request_blocked`, `overlay_font_failed`, `verification_failed`, `snapshot_invalid` (the snapshot is missing or damaged, its media is no longer registered, or it no longer compiles), `internal_error` | `failed` at once |
 | Configuration | `tool_missing`, `ffmpeg_too_old`, `encoder_missing`, `browser_missing`, `browser_sandbox_disabled`, `hdr_conversion_unavailable`, `font_bundle_missing`, `font_bundle_mismatch` | `failed` at once; fix the installation, then retry |
 

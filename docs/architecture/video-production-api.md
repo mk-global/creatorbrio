@@ -143,7 +143,7 @@ A real browser showed exactly that before this was changed.
 | Method and path | Who | Body | Success |
 |---|---|---|---|
 | `GET /api/video/productions/:id/renders` | human | none | 200 `{ renders }`: every render of the production, newest first; an unknown production has none |
-| `POST /api/video/productions/:id/renders` | human | `{ profile? }`, default `instagram` | 202 `{ status: "queued", render }`, or 200 `{ status: "existing", render }` while a render of this revision and profile is queued or running |
+| `POST /api/video/productions/:id/renders` | human | `{ profile? }`, default `instagram` | 202 `{ status: "queued", render }`, or 200 `{ status: "existing", render }` while a render of this exact document and profile is queued or running |
 | `GET /api/video/productions/:id/renders/:renderId` | human | none | 200: the render's state, attempts, progress, `failure`, `verification` and, once it succeeded, its `files` |
 | `POST /api/video/productions/:id/renders/:renderId/cancel` | human | none | 202 `{ status: "cancelled" \| "cancelling", render }`; while cancelling, the render carries `cancelRequested: true` |
 | `POST /api/video/productions/:id/renders/:renderId/retry` | human | none | 202 `{ status: "queued", render }`: a failed or cancelled render is queued again from its snapshot |
@@ -177,7 +177,7 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 | 403 | `forbidden` | The authority may not do this, or the token is for another production |
 | 400 | `invalid_path`, `not_a_file`, `inside_data_directory` | An import path that is not absolute, names a folder, link or device, or lies inside CreatorBrio's data folder |
 | 404 | `not_found`, `run_not_found`, `media_not_found`, `render_not_found`, `file_not_found` | No such production, open run, media, render, file to import, or derived or render file name |
-| 409 | `job_not_failed`, `not_ready` (with `derived` or `render`), `not_cancellable`, `not_retryable` (with `render`) | Only a failed job can be retried; a derived or render file is not available yet; only a queued render, or one running in this server, can be cancelled; only a failed or cancelled render can be retried |
+| 409 | `job_not_failed`, `not_ready` (with `derived` or `render`), `not_cancellable`, `not_retryable` (with `render`) | Only a failed job can be retried; a derived or render file is not available yet; only a queued or running render can be cancelled, and one that another running server is working on only from that server; only a failed or cancelled render can be retried |
 | 413 | `too_large` | The file to import is over the import limit (32 GiB) |
 | 415 | `unsupported_media` | The file to import is not video, audio or a still image that ffprobe can read |
 | 503 | `tool_missing` | ffprobe is not installed |
