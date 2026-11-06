@@ -80,6 +80,39 @@ function uprightFilter(rotation: number): string | null {
   return null;
 }
 
+/** Whether this FFmpeg can convert HLG and PQ video to BT.709 SDR (VideoToolbox `scale_vt`, G2 #98). */
+export function hdrConversionAvailable(): boolean {
+  return ffmpegHas("filters", "scale_vt") && ffmpegHas("filters", "hwdownload");
+}
+
+/**
+ * The input options and filter chain that decode HLG or PQ video on
+ * VideoToolbox and turn it into upright 8-bit BT.709 SDR (yuv420p, tagged tv
+ * range) at `size`, the upright output size. Shared by the preview proxy and
+ * the export (#144), which must convert HDR originals the same way before
+ * compositing. Callers check `hdrConversionAvailable()` first.
+ *
+ * FFmpeg's automatic rotation is dropped on this hardware path, so the
+ * source's rotation is ignored on input and the converted frames are turned
+ * upright in software.
+ */
+export function hdrToSdr(size: { w: number; h: number }, rotation: number): { input: string[]; filter: string } {
+  const coded = rotation === 90 || rotation === 270 ? { w: size.h, h: size.w } : size;
+  return {
+    input: ["-display_rotation", "0", "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"],
+    filter: [
+      `scale_vt=w=${coded.w}:h=${coded.h}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709`,
+      "hwdownload",
+      "format=p010le",
+      uprightFilter(rotation),
+      "format=yuv420p",
+      SDR_FRAMES,
+    ]
+      .filter(Boolean)
+      .join(","),
+  };
+}
+
 async function videoProxy(record: MediaRecord, original: string, out: string, signal: AbortSignal): Promise<"sdr" | "hdr-converted"> {
   const video = record.facts.video!;
   const size = fitSize(video.width, video.height, video.rotation, { w: 540, h: 960 });
@@ -87,23 +120,10 @@ async function videoProxy(record: MediaRecord, original: string, out: string, si
   let input: string[];
   let filter: string;
   if (hdr) {
-    if (!ffmpegHas("filters", "scale_vt") || !ffmpegHas("filters", "hwdownload")) {
+    if (!hdrConversionAvailable()) {
       throw new ProxyFailure("configuration", "hdr_conversion_unavailable", "HDR footage needs FFmpeg with VideoToolbox (scale_vt) to make a preview on this computer");
     }
-    // FFmpeg's automatic rotation is dropped on this hardware path, so the source's rotation is
-    // ignored on input and the converted frames are turned upright in software.
-    const coded = video.rotation === 90 || video.rotation === 270 ? { w: size.h, h: size.w } : size;
-    input = ["-display_rotation", "0", "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"];
-    filter = [
-      `scale_vt=w=${coded.w}:h=${coded.h}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709`,
-      "hwdownload",
-      "format=p010le",
-      uprightFilter(video.rotation),
-      "format=yuv420p",
-      SDR_FRAMES,
-    ]
-      .filter(Boolean)
-      .join(",");
+    ({ input, filter } = hdrToSdr(size, video.rotation));
   } else {
     // Software decoding: FFmpeg turns the picture upright itself and writes no rotation flag.
     input = [];

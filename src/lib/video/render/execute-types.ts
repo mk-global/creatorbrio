@@ -82,7 +82,8 @@ export type RenderFailureClass = "transient" | "permanent" | "configuration";
  * Codes: `timeout`, `interrupted`, `io_error` (transient); `tool_failed`,
  * `overlay_navigation`, `overlay_request_blocked`, `overlay_font_failed`,
  * `internal_error` (permanent); `tool_missing`, `ffmpeg_too_old`,
- * `encoder_missing`, `browser_missing`, `hdr_conversion_unavailable`
+ * `encoder_missing`, `browser_missing`, `browser_sandbox_disabled`,
+ * `hdr_conversion_unavailable`, `font_bundle_missing`, `font_bundle_mismatch`
  * (configuration). Messages never contain paths.
  */
 export class RenderFailure extends Error {
