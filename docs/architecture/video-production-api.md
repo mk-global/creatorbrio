@@ -138,6 +138,24 @@ They are sent with `Accept-Ranges: bytes`, `X-Content-Type-Options: nosniff`, a 
 They are never cached: a browser's HTTP cache is shared by every port of the same host, so a cached copy would let a page on another port, or a plain navigation, read the bytes without passing these checks.
 A real browser showed exactly that before this was changed.
 
+### Renders
+
+| Method and path | Who | Body | Success |
+|---|---|---|---|
+| `GET /api/video/productions/:id/renders` | human | none | 200 `{ renders }`: every render of the production, newest first; an unknown production has none |
+| `POST /api/video/productions/:id/renders` | human | `{ profile? }`, default `instagram` | 202 `{ status: "queued", render }`, or 200 `{ status: "existing", render }` while a render of this revision and profile is queued or running |
+| `GET /api/video/productions/:id/renders/:renderId` | human | none | 200: the render's state, attempts, progress, `failure`, `verification` and, once it succeeded, its `files` |
+| `POST /api/video/productions/:id/renders/:renderId/cancel` | human | none | 202 `{ status: "cancelled" \| "cancelling", render }`; while cancelling, the render carries `cancelRequested: true` |
+| `POST /api/video/productions/:id/renders/:renderId/retry` | human | none | 202 `{ status: "queued", render }`: a failed or cancelled render is queued again from its snapshot |
+| `GET`, `HEAD /api/video/productions/:id/renders/:renderId/files/:name` | human; for `video.mp4` also a paired browser's media element | none | 200 or 206: `video.mp4`, `captions.srt`, `captions.vtt` or `manifest.json`, once the render succeeded |
+
+A request compiles the production's current revision first.
+If it cannot be exported, it is refused with 422 `render_refused`, the `revision` and the compiler's `issues`, and nothing is queued; the codes are in [video-rendering.md](video-rendering.md#the-render-plan).
+Otherwise the document that compiled is snapshotted, so later edits never change that render.
+Rendering reads originals and runs browsers and FFmpeg on this computer, so it is a person's action only; agents get 403 on every render route.
+Render files are sent as downloads (`Content-Disposition: attachment; filename="<productionId>-<renderId>-<name>"`) with the same headers and caching rules as derived files; only `video.mp4` supports Range requests.
+A render's lifecycle, failure codes and recovery are in [video-rendering.md](video-rendering.md#render-jobs).
+
 ### Confirmation
 
 Commands that replace content or end a run need `expectedGeneration`: the `generation` from the caller's latest read, or from the `production_corrupt` error for recovery.
@@ -158,8 +176,8 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 | 403 | `session_request_refused` | A session cookie on a request without the Studio header (outside the media-element exception), with cross-site fetch metadata, or without this app's Origin on a write |
 | 403 | `forbidden` | The authority may not do this, or the token is for another production |
 | 400 | `invalid_path`, `not_a_file`, `inside_data_directory` | An import path that is not absolute, names a folder, link or device, or lies inside CreatorBrio's data folder |
-| 404 | `not_found`, `run_not_found`, `media_not_found`, `file_not_found` | No such production, open run, media, file to import, or derived file name |
-| 409 | `job_not_failed`, `not_ready` (with `derived`) | Only a failed job can be retried; a derived file is not available yet |
+| 404 | `not_found`, `run_not_found`, `media_not_found`, `render_not_found`, `file_not_found` | No such production, open run, media, render, file to import, or derived or render file name |
+| 409 | `job_not_failed`, `not_ready` (with `derived` or `render`), `not_cancellable`, `not_retryable` (with `render`) | Only a failed job can be retried; a derived or render file is not available yet; only a queued render, or one running in this server, can be cancelled; only a failed or cancelled render can be retried |
 | 413 | `too_large` | The file to import is over the import limit (32 GiB) |
 | 415 | `unsupported_media` | The file to import is not video, audio or a still image that ffprobe can read |
 | 503 | `tool_missing` | ffprobe is not installed |
@@ -167,6 +185,7 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 | 413 | `body_too_large` | The body exceeds 2 MiB |
 | 415 | `unsupported_media_type` | The body is not JSON |
 | 422 | `rejected` (with `stage` and `issues`) | The engine refused the change; nothing was written |
+| 422 | `render_refused` (with `revision` and `issues`) | The current revision cannot be exported; nothing was queued |
 | 423 | `recovery_required` (with `runId`, `ownerAlive`) | An agent run is open and is not this server's; a person must decide |
 | 428 | `confirmation_required` | A destructive command lacks `expectedGeneration` |
 | 429 | `rate_limited` (with `Retry-After`) | Too many failed pairing attempts |

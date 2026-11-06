@@ -43,6 +43,7 @@ flowchart LR
 | Design Agent | Writes the copy and builds every slide in HTML and CSS through the app's API | `src/lib/chat-system-prompt.ts` |
 | Storage | JSON files with a per-file lock and atomic writes, plus uploaded files | `src/lib/data.ts`, `data/`, `public/uploads/` |
 | Rendering and export | One shared slide document for preview and export, rendered in one headless browser per server process: screenshots for PNG, native Chromium printing for the LinkedIn PDF, merged page by page without re-rendering | `src/lib/slide-html.ts`, `src/lib/export-slides.ts`, `src/lib/print-check.ts`, `src/lib/export-pdf.ts`, `src/lib/pdf-shadows.ts`, `src/lib/pdf-content.ts`, `src/lib/fonts.ts` |
+| Video rendering | Compiles an admitted production revision into a render plan, captures its script-free caption and graphics overlay in hardened Chromium, cuts and mixes the originals in FFmpeg, and verifies the Instagram MP4 before publishing it, as durable render jobs | `src/lib/video/render/`, `src/lib/video/capabilities/` |
 
 ## How a request flows
 
@@ -77,5 +78,6 @@ The details are in [creative-workflow.md](creative-workflow.md).
 - [design-decisions.md](design-decisions.md): why the system is shaped this way, and the trade-offs.
 - [video-production-store.md](video-production-store.md): the Video Studio production store (not yet used by the app): layout, commit protocol, concurrency and crash guarantees, recovery.
 - [video-media-registry.md](video-media-registry.md): the Video Studio media registry and asset ledger: import by path, derived preview files and their jobs, HDR proxies.
+- [video-rendering.md](video-rendering.md): Video Studio rendering and export: the render plan, caption and graphics capabilities, the overlay document and its security boundary, the executor, verification, the manifest and render jobs.
 - [video-production-api.md](video-production-api.md): the Video Studio Production API (no UI uses it yet): endpoints, human and agent authority, confirmation, error codes.
 - [../PROVENANCE.md](../PROVENANCE.md) and [../MAINTAINING.md](../MAINTAINING.md): origin, licence and maintenance.
