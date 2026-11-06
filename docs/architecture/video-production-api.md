@@ -4,7 +4,7 @@
 
 The local HTTP API over the [production store](video-production-store.md) (WS1 #120) and the [media registry](video-media-registry.md) (#140).
 It lives in `src/lib/video/production/api/`, with thin route files under `src/app/api/video/productions/` and `src/app/api/video/media/`.
-No UI uses it yet.
+The [Studio page](video-studio-page.md) at `/studio` is its user interface.
 
 ## One mutation path
 
@@ -115,8 +115,12 @@ Each body may carry only the fields listed for its endpoint.
 | `POST /api/video/productions/:id/runs` | human | `{ scope? }` | 201 `{ runId, token, generation }`; the run id is issued by the server |
 | `POST /api/video/productions/:id/runs/:runId/decision` | human | `{ decision: "keep" \| "discard" \| "resume", expectedGeneration }` | 200; `resume` (interrupted runs only) returns a new `token` |
 | `POST /api/video/productions/:id/recover` | human | `{ fromGeneration, expectedGeneration }` | 200 |
+| `GET /api/video/productions/:id/preview` | human | none | 200 `{ productionId, revision, generation, preview }`: `preview` is `{ ok: true, plan, overlay: { html, activeRanges } }`, or `{ ok: false, issues }` when the revision cannot be exported |
 
 Each route exports only the methods listed, so Next.js answers any other method with 405.
+
+The preview is compiled by the same compiler and overlay builder the export uses, for the stored revision, so the Studio draws what the export would draw ([video-studio-page.md](video-studio-page.md#preview)).
+A revision that cannot be exported is still a 200, with the compiler's issues; an overlay that cannot be built answers 503 when it is a configuration problem (such as a missing font) and 500 otherwise, with the renderer's code.
 
 ### Media
 
@@ -154,6 +158,7 @@ If it cannot be exported, it is refused with 422 `render_refused`, the `revision
 Otherwise the document that compiled is snapshotted, so later edits never change that render.
 Rendering reads originals and runs browsers and FFmpeg on this computer, so it is a person's action only; agents get 403 on every render route.
 Render files are sent as downloads (`Content-Disposition: attachment; filename="<productionId>-<renderId>-<name>"`) with the same headers and caching rules as derived files; only `video.mp4` supports Range requests.
+A download link cannot send the Studio header, so the Studio page reads a render file with the header and saves it from memory; a navigation without the header is refused like any other cookie request.
 A render's lifecycle, failure codes and recovery are in [video-rendering.md](video-rendering.md#render-jobs).
 
 ### Confirmation
@@ -194,7 +199,6 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 
 ## Not built yet
 
-- **The Studio page itself**, which will call `/api/video/session` and send the Studio header.
 - **Stage-exit approvals** when edits are applied.
 - **Browser upload** of media: Next.js keeps only the first 10 MB of a request body that passes `src/proxy.ts`, so uploads need their own route design ([#141](https://github.com/mk-global/creatorbrio/issues/141)).
   Import is by path.

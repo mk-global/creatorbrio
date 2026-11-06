@@ -43,6 +43,7 @@ flowchart LR
 | Design Agent | Writes the copy and builds every slide in HTML and CSS through the app's API | `src/lib/chat-system-prompt.ts` |
 | Storage | JSON files with a per-file lock and atomic writes, plus uploaded files | `src/lib/data.ts`, `data/`, `public/uploads/` |
 | Rendering and export | One shared slide document for preview and export, rendered in one headless browser per server process: screenshots for PNG, native Chromium printing for the LinkedIn PDF, merged page by page without re-rendering | `src/lib/slide-html.ts`, `src/lib/export-slides.ts`, `src/lib/print-check.ts`, `src/lib/export-pdf.ts`, `src/lib/pdf-shadows.ts`, `src/lib/pdf-content.ts`, `src/lib/fonts.ts` |
+| Video Studio page | The `/studio` editor: pairs a browser, imports media by path, previews a production against one clock, edits it one change set at a time with undo and redo, and exports a verified Reel; it owns no state and calls only the Production API | `src/app/studio/`, `src/components/studio/`, `src/lib/video/studio/` |
 | Video rendering | Compiles an admitted production revision into a render plan, captures its script-free caption and graphics overlay in hardened Chromium, cuts and mixes the originals in FFmpeg, and verifies the Instagram MP4 before publishing it, as durable render jobs | `src/lib/video/render/`, `src/lib/video/capabilities/` |
 
 ## How a request flows
@@ -60,7 +61,7 @@ The details are in [creative-workflow.md](creative-workflow.md).
 
 - The app listens on `127.0.0.1` only, and its API refuses requests from other hosts and cross-site origins.
 - Data is plain JSON in `data/` and files in `public/uploads/`; backing up means copying those folders.
-- There is no database, queue, scheduler, vector store or agent framework; long work runs inside the request that asked for it, within fixed limits.
+- There is no database, external queue, vector store or agent framework. Carousel work runs inside the request that asked for it, within fixed limits; Video Studio media preparation and rendering run as durable jobs in the app's own process, recorded as files under `data/` ([video-media-registry.md](video-media-registry.md), [video-rendering.md](video-rendering.md#render-jobs)).
 - Both agents are Claude CLI processes on the user's own Claude account.
 - Image generation is optional and separate: a local service with a small public contract (a loopback `POST /generate` with a prompt and aspect ratio, returning a PNG). It is not part of this repository, and without it every other feature works.
 
@@ -76,8 +77,9 @@ The details are in [creative-workflow.md](creative-workflow.md).
 - [visual-director.md](visual-director.md): how the Director reasons, the Creative Brief, capabilities, the plan and its evaluation.
 - [creative-workflow.md](creative-workflow.md): stages, outcomes, retry, cancellation, limits and the generated-image lifecycle.
 - [design-decisions.md](design-decisions.md): why the system is shaped this way, and the trade-offs.
-- [video-production-store.md](video-production-store.md): the Video Studio production store (not yet used by the app): layout, commit protocol, concurrency and crash guarantees, recovery.
+- [video-production-store.md](video-production-store.md): the Video Studio production store: layout, commit protocol, concurrency and crash guarantees, recovery.
 - [video-media-registry.md](video-media-registry.md): the Video Studio media registry and asset ledger: import by path, derived preview files and their jobs, HDR proxies.
 - [video-rendering.md](video-rendering.md): Video Studio rendering and export: the render plan, caption and graphics capabilities, the overlay document and its security boundary, the executor, verification, the manifest and render jobs.
-- [video-production-api.md](video-production-api.md): the Video Studio Production API (no UI uses it yet): endpoints, human and agent authority, confirmation, error codes.
+- [video-production-api.md](video-production-api.md): the Video Studio Production API: endpoints, human and agent authority, confirmation, error codes.
+- [video-studio-page.md](video-studio-page.md): the Video Studio page: pairing, the production session, the preview clock and its sync, the timeline, Inspector and export, and what was measured.
 - [../PROVENANCE.md](../PROVENANCE.md) and [../MAINTAINING.md](../MAINTAINING.md): origin, licence and maintenance.
