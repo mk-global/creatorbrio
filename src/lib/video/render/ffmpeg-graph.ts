@@ -7,8 +7,10 @@
  *
  * Picture, at 4:4:4 BT.709 limited range until the very end: a black base at
  * the canvas size; each track is one stream of exactly `durationFrames`
- * frames, its clips concatenated in time with fully transparent gaps. A
- * clip's source is opened `PREROLL_US` before `sourceInUs` (accurate seek),
+ * frames, its clips concatenated in time with fully transparent gaps and the
+ * result put back on the frame grid (concat stamps its output in
+ * microseconds, which can end the track just before the base's last frame
+ * and so cut the render a frame short). A clip's source is opened `PREROLL_US` before `sourceInUs` (accurate seek),
  * shifted so `sourceInUs` is time 0, and converted to the plan's rate so
  * frame k shows the source frame on screen at `sourceInUs + k / fps` (the
  * latest one starting at or before it, within `SELECT_TOLERANCE_US`); a source
@@ -116,7 +118,8 @@ function layerChain(plan: RenderPlan, layer: VideoLayer, index: number, input: P
     "setsar=1",
   ];
   if (layer.kind === "still") {
-    // Looped at the plan's rate for one frame longer than needed; the trim makes it exact.
+    // Looped at the plan's rate for one frame longer than needed; the trim makes it exact. Autorotation stays on:
+    // it turns an EXIF-oriented still upright, and the facts read that same turn from the decoded frame (`facts.ts`).
     const options = ["-loop", "1", "-framerate", String(fps), "-t", num((frames + 1) / fps, 6)];
     return { options, chain: [`[${index}:v:0]setpts=PTS-STARTPTS`, ...place].join(",") };
   }
@@ -190,7 +193,8 @@ export function videoRun(plan: RenderPlan, profile: ExportProfile, files: Readon
       segments.push(`[g${t}_end]`);
     }
     const track = `t${t}`;
-    chains.push(segments.length === 1 ? `${segments[0]}null[${track}]` : `${segments.join("")}concat=n=${segments.length}:v=1:a=0[${track}]`);
+    // Frame n of a joined track is frame n of the render: concat's microsecond timestamps are replaced by the grid.
+    chains.push(segments.length === 1 ? `${segments[0]}null[${track}]` : `${segments.join("")}concat=n=${segments.length}:v=1:a=0,settb=1/${fps},setpts=N[${track}]`);
     chains.push(`[${below}][${track}]overlay=x=0:y=0:format=yuv444:eof_action=endall[c${t}]`);
     below = `c${t}`;
   });

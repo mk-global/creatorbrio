@@ -3,7 +3,10 @@
  * the size a fade over a ducked bed produces, is applied sample-accurately.
  * The mix used to carry the envelope as one `volume` expression, which FFmpeg
  * could not parse at a few hundred points, so such productions failed to
- * render (`tool_failed`). Skipped where FFmpeg is missing (CI, #142).
+ * render (`tool_failed`). Each source's sound stays at its file time when its
+ * audio stream starts after the file does or has a gap: the mix used to count
+ * samples from the stream's first one, so such sound played early and out of
+ * sync with the picture. Skipped where FFmpeg is missing (CI, #142).
  */
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
@@ -15,7 +18,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fileUrl, toolPath } from "@/lib/video/media/tools";
 import { masterAudio } from "@/lib/video/render/audio-master";
 import { gainAt } from "@/lib/video/render/audio-envelope";
-import type { GainPoint, RenderPlan } from "@/lib/video/render/plan";
+import { mixRun } from "@/lib/video/render/ffmpeg-audio";
+import { runArgs, totalSamples } from "@/lib/video/render/ffmpeg-graph";
+import type { AudioSource, GainPoint, RenderPlan } from "@/lib/video/render/plan";
 import { INSTAGRAM_PROFILE } from "@/lib/video/render/profile";
 import { FFMPEG_MISSING } from "./helpers/media-fixtures";
 
@@ -46,14 +51,79 @@ function denseEnvelope(): GainPoint[] {
   return points;
 }
 
+/** Sample-accurate 30 ms 1 kHz beeps at the start of every second. */
+const BEEPS = "aevalsrc=exprs='if(lt(mod(t\\,1)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0)':s=48000:d=4";
+
+/** Where each beep of the left channel of an interleaved stereo mix starts, in seconds. */
+function onsets(mix: Float32Array): number[] {
+  const found: number[] = [];
+  let last = -Infinity;
+  for (let s = 0; s < mix.length / 2; s++) {
+    if (Math.abs(mix[2 * s]) < 0.05) continue;
+    if (s - last > RATE / 10) found.push(s / RATE);
+    last = s;
+  }
+  return found;
+}
+
 describe.skipIf(FFMPEG_MISSING)(`the sound mix with real FFmpeg${FFMPEG_MISSING ? ` (skipped: ${FFMPEG_MISSING})` : ""}`, () => {
   let dir: string;
   let tone: string;
+  /** A video whose AAC audio stream starts about 0.48 s after the file (and the picture) does, with beeps at file times 0.5, 1.5, 2.5 and 3.5 s. */
+  let late: string;
+  /** Audio whose stream jumps 50 ms forward at 1.9 s, with beeps at 0, 1, 2.05 and 3.05 s. */
+  let gapped: string;
 
   beforeAll(async () => {
     dir = await realpath(await mkdtemp(path.join(tmpdir(), "cb-mix-")));
     tone = path.join(dir, "tone.wav");
     await run(toolPath("ffmpeg")!, ["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", `sine=frequency=1000:sample_rate=${RATE}:duration=2`, "-ac", "1", "-c:a", "pcm_f32le", fileUrl(tone)]);
+    late = path.join(dir, "late.mp4");
+    await run(toolPath("ffmpeg")!, [
+      "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=30:d=4", "-itsoffset", "0.5", "-f", "lavfi", "-i", BEEPS,
+      "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ac", "2", fileUrl(late),
+    ]);
+    gapped = path.join(dir, "gapped.mkv");
+    await run(toolPath("ffmpeg")!, [
+      "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", BEEPS,
+      "-af", "asetnsamples=n=960,asetpts='if(gte(T,1.9),PTS+0.05/TB,PTS)'", "-c:a", "pcm_s16le", "-ac", "2", fileUrl(gapped),
+    ]);
+  });
+
+  /** The mix of one unshaped sound of `file` over a 90-frame (3 s) render, as interleaved stereo samples. */
+  async function mixOf(file: string, sourceInUs: number): Promise<Float32Array> {
+    const sound: AudioSource = {
+      clipId: "s", trackId: "t", role: "voice", mediaId: "m", startFrame: 0, durationFrames: 90, sourceInUs,
+      envelope: [{ atUs: 0, gain: 1 }, { atUs: 3_000_000, gain: 1 }],
+    };
+    const plan: RenderPlan = {
+      version: 1, productionId: "prod-mix", revision: 1, profile: "instagram", canvas: { width: 64, height: 64, fps: 30 }, durationFrames: 90,
+      video: [], audio: [sound], graphics: [], captions: [], inputs: [], loudness: { targetLufs: -14 },
+    };
+    const out = path.join(await mkdtemp(path.join(dir, "mix-")), "mix.wav");
+    const mix = mixRun(plan, new Map([["m", { path: file, channels: 2 }]]), out, () => path.join(dir, "unused.wav"));
+    expect(mix.envelopes).toEqual([]);
+    await run(toolPath("ffmpeg")!, runArgs(mix, ["-filter_complex", mix.graph]));
+    const samples = floatSamples(await readFile(out));
+    expect(samples.length).toBe(2 * totalSamples(plan));
+    return samples;
+  }
+
+  const expectNear = (actual: number[], expected: number[]) => {
+    expect(actual).toHaveLength(expected.length);
+    actual.forEach((t, i) => expect(Math.abs(t - expected[i])).toBeLessThan(0.003));
+  };
+
+  it("keeps sound whose stream starts after the file at its file time, from the start and from an in-point", { timeout: 60_000 }, async () => {
+    // The picture shows file time sourceInUs + k / fps at frame k; the sound must too.
+    expectNear(onsets(await mixOf(late, 0)), [0.5, 1.5, 2.5]);
+    expectNear(onsets(await mixOf(late, 200_000)), [0.3, 1.3, 2.3]);
+    // An in-point after the stream's start is unaffected.
+    expectNear(onsets(await mixOf(late, 700_000)), [0.8, 1.8, 2.8]);
+  });
+
+  it("turns a gap inside a sound's stream into silence instead of pulling what follows earlier", { timeout: 60_000 }, async () => {
+    expectNear(onsets(await mixOf(gapped, 0)), [0, 1, 2.05]);
   });
 
   afterAll(async () => {

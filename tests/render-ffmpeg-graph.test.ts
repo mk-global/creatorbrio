@@ -207,12 +207,13 @@ describe("audio mix run", () => {
     expect(run.inputs).toEqual(["-ss", "1.5", "-i", "file:/media/clip.mov", "-i", "file:/media/voice.wav", "-i", "file:/work/gain-1.wav"]);
     expect(run.envelopes).toEqual([{ sourceIndex: 1, file: "/work/gain-1.wav" }]);
     const [first, second, gain, shaped, mix] = run.graph.split(";");
-    expect(first).toContain("[0:a:0]aresample=48000");
+    // Each source follows its stream's timestamps (a late start or a gap of 10 ms or more becomes silence), not its sample count.
+    expect(first).toContain("[0:a:0]aresample=48000:async=1:min_hard_comp=0.01:first_pts=0,aformat=");
     expect(first).toContain("atrim=end_sample=96000,apad=whole_len=96000");
     expect(first).not.toContain("adelay");
     expect(first).not.toContain("amultiply");
     expect(first).toMatch(/atrim=end_sample=192000,apad=whole_len=192000\[a0\]$/);
-    expect(second).toContain("[1:a:0]pan=stereo|c0=c0|c1=c0,aresample=48000");
+    expect(second).toContain("[1:a:0]pan=stereo|c0=c0|c1=c0,aresample=48000:async=1:min_hard_comp=0.01:first_pts=0,aformat=");
     expect(second).toContain("atrim=end_sample=120000,apad=whole_len=120000");
     expect(second).toContain("adelay=delays=72000S:all=1,asetpts=N/SR/TB");
     expect(second).toMatch(/atrim=end_sample=192000,apad=whole_len=192000\[p1\]$/);
@@ -375,7 +376,7 @@ describe("video run", () => {
     const shift = (us: number) => num(us / 1e6, 6);
     expect(run.graph).toContain(`[2:v:0]setpts=PTS-${shift(PREROLL_US + SELECT_TOLERANCE_US)}/TB,fps=fps=30:start_time=0:round=up,tpad=stop_mode=clone:stop=30,trim=end_frame=30,`);
     expect(run.graph).toContain(`[3:v:0]setpts=PTS-${shift(400_000 + SELECT_TOLERANCE_US)}/TB,fps=fps=30:start_time=0:round=up,tpad=stop_mode=clone:stop=60,trim=end_frame=60,`);
-    expect(run.graph).toContain("[l0][l1]concat=n=2:v=1:a=0[t0]");
+    expect(run.graph).toContain("[l0][l1]concat=n=2:v=1:a=0,settb=1/30,setpts=N[t0]");
   });
 
   it("scales to the cover size and crops at the placement offsets", () => {
@@ -397,8 +398,27 @@ describe("video run", () => {
     expect(run.graph).toContain("color=c=black@0:s=360x640:r=30,format=yuva444p,trim=end_frame=10,setsar=1[g0_0]");
     expect(run.graph).toContain("trim=end_frame=20,setsar=1[g0_1]");
     expect(run.graph).toContain("trim=end_frame=20,setsar=1[g0_end]");
-    expect(run.graph).toContain("[g0_0][l0][g0_1][l1][g0_end]concat=n=5:v=1:a=0[t0]");
+    expect(run.graph).toContain("[g0_0][l0][g0_1][l1][g0_end]concat=n=5:v=1:a=0,settb=1/30,setpts=N[t0]");
     expect(run.graph).toContain("color=c=black:s=360x640:r=30,format=yuv444p,trim=end_frame=100,setsar=1[base]");
+  });
+
+  it("puts a joined track back on the frame grid, at the plan's rate, before compositing it", () => {
+    // concat stamps its output in microseconds, so a joined track ended just before the base's last frame
+    // and `eof_action=endall` cut the render one frame short.
+    const at25 = videoRun(
+      plan({ canvas: { ...canvas, fps: 25 }, durationFrames: 40, video: [layer({ durationFrames: 1 }), layer({ startFrame: 1, durationFrames: 39 })], inputs: [sdr] }),
+      INSTAGRAM_PROFILE,
+      videoFiles(sdr),
+      "/w/a.wav",
+      "/w/r.mp4"
+    );
+    expect(at25.graph).toContain("[l0][l1]concat=n=2:v=1:a=0,settb=1/25,setpts=N[t0];[base][t0]overlay=");
+    const gaps = videoRun(plan({ durationFrames: 40, video: [layer({ startFrame: 5, durationFrames: 30 })], inputs: [sdr] }), INSTAGRAM_PROFILE, videoFiles(sdr), "/w/a.wav", "/w/r.mp4");
+    expect(gaps.graph).toContain("[g0_0][l0][g0_end]concat=n=3:v=1:a=0,settb=1/30,setpts=N[t0]");
+    // A one-segment track is not joined and is already on the grid.
+    const single = videoRun(plan({ durationFrames: 30, video: [layer({})], inputs: [sdr] }), INSTAGRAM_PROFILE, videoFiles(sdr), "/w/a.wav", "/w/r.mp4");
+    expect(single.graph).toContain("[l0]null[t0];");
+    expect(single.graph).not.toContain("settb");
   });
 
   it("composites tracks bottom to top whatever the layer order", () => {

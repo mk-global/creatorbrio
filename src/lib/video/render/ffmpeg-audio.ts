@@ -6,7 +6,11 @@
  *
  * Audio, in timeline time (48 kHz stereo 32-bit float WAV throughout):
  * each `AudioSource` is its own input, seeked accurately to `sourceInUs`,
- * resampled to 48 kHz stereo (a mono source is copied to both channels),
+ * resampled to 48 kHz stereo (a mono source is copied to both channels)
+ * following its stream's timestamps, so its sound stays at file time as the
+ * picture does: a stream that starts after the file is preceded by silence,
+ * a gap of `TIMESTAMP_GAP_S` or more inside it becomes silence and an overlap
+ * that large is dropped (smaller irregularities are ignored),
  * trimmed to its clip and padded with silence when the source is shorter,
  * delayed by exactly `startFrame * 48000 / fps` samples, padded to the
  * render's length, then shaped by its envelope. The envelope is written as a
@@ -23,6 +27,14 @@ import type { AudioSource, GainPoint, RenderPlan } from "./plan";
 import type { ExportProfile } from "./profile";
 import { AUDIO_SAMPLE_RATE, audioEncoderArgs, BITEXACT, COMMON, GraphError, num, samplesFor, seconds, totalSamples, type FfmpegRun } from "./ffmpeg-graph";
 import { fileUrl } from "@/lib/video/media/tools";
+
+/**
+ * The smallest timestamp gap or overlap in a source's audio that the mix
+ * corrects (FFmpeg's default is 0.1 s): under one frame at every frame rate,
+ * and well above the rounding of millisecond time bases. A stream's late start
+ * is corrected from 1 ms.
+ */
+export const TIMESTAMP_GAP_S = 0.01;
 
 /** loudnorm's accepted integrated-loudness targets. */
 const LOUDNORM_TARGET = { min: -70, max: -5 };
@@ -127,7 +139,7 @@ export function mixRun(plan: RenderPlan, files: ReadonlyMap<string, AudioSourceF
     const shaped = shapesSound(source.envelope);
     chains.push(
       [
-        `[${index}:a:0]${file.channels === 1 ? "pan=stereo|c0=c0|c1=c0," : ""}aresample=${AUDIO_SAMPLE_RATE}`,
+        `[${index}:a:0]${file.channels === 1 ? "pan=stereo|c0=c0|c1=c0," : ""}aresample=${AUDIO_SAMPLE_RATE}:async=1:min_hard_comp=${TIMESTAMP_GAP_S}:first_pts=0`,
         `aformat=sample_fmts=flt:sample_rates=${AUDIO_SAMPLE_RATE}:channel_layouts=stereo`,
         "asetpts=N/SR/TB",
         `atrim=end_sample=${length}`,

@@ -347,6 +347,31 @@ describe.skipIf(MISSING)(`render executor (needs FFmpeg and Chromium${MISSING ? 
     expect(result.workers).toBe(4);
   }, 60_000);
 
+  // A track of more than one segment is joined with concat, which used to stamp it off the frame grid, so it
+  // ended a frame early and the render failed with internal_error ("the encoder wrote 39 frames ...").
+  it("renders a track with leading and trailing gaps to every frame, the clip at its frames", async () => {
+    const workDir = await scratch("gaps");
+    const progress: RenderProgress[] = [];
+    const result = await executeRender(options(workDir, plan(40, [layer("flash", 5, 30, 0)], []), overlayDoc("", "", []), { onProgress: (p) => progress.push(p) }));
+    expect(progress.filter((p) => p.stage === "video").at(-1)).toEqual({ stage: "video", done: 40, total: 40 });
+    const info = await probe(result.videoFile);
+    expect(info.streams.find((s) => s.codec_type === "video")).toMatchObject({ nb_read_frames: "40" });
+    expect((await avOffsets(result.videoFile)).flashes.map((t) => Math.round(t * FPS))).toEqual([5]);
+    expect(await pixel(result.videoFile, 2, W / 2, H / 2)).toEqual([0, 0, 0]);
+    expect(await pixel(result.videoFile, 38, W / 2, H / 2)).toEqual([0, 0, 0]);
+    expect(processesUsing(workDir)).toEqual([]);
+  }, 60_000);
+
+  it("renders two contiguous 20-frame clips to all 40 frames, the cut on its frame", async () => {
+    const workDir = await scratch("split");
+    const result = await executeRender(options(workDir, plan(40, [layer("flash", 0, 20, 0), layer("flash", 20, 20, 1_000_000)], []), overlayDoc("", "", [])));
+    const info = await probe(result.videoFile);
+    expect(info.streams.find((s) => s.codec_type === "video")).toMatchObject({ nb_read_frames: "40" });
+    // Each clip starts on a source second, so the flashes mark the first frame of each.
+    expect((await avOffsets(result.videoFile)).flashes.map((t) => Math.round(t * FPS))).toEqual([0, 20]);
+    expect(processesUsing(workDir)).toEqual([]);
+  }, 60_000);
+
   describe.skipIf(HDR_MISSING)(`HDR input${HDR_MISSING ? ` (${HDR_MISSING})` : ""}`, () => {
     it("converts an HLG original to upright BT.709 before compositing", async () => {
       const file = await makeMedia(path.join(root, "hdr"), "hdr-portrait");
