@@ -23,6 +23,8 @@ export interface Workspace {
   selectedClipId: string | null;
   select(clipId: string | null): void;
   media: MediaView[];
+  /** False until the media library has been read once, so a panel can tell loading from empty. */
+  mediaLoaded: boolean;
   /** Reads the media library again, e.g. after an import. */
   refreshMedia(): Promise<void>;
 }
@@ -43,12 +45,11 @@ export function useStudioApi(): StudioApi {
   return sharedApi;
 }
 
-/** One production session for `productionId`, loaded on mount and disposed on change. */
+/** One production session for `productionId`, loaded on mount. */
 export function useProductionSession(api: StudioApi, productionId: string): { session: ProductionSession; state: ProductionSessionState } {
   const session = useMemo(() => new ProductionSession(api, productionId), [api, productionId]);
   useEffect(() => {
     void session.load();
-    return () => session.dispose();
   }, [session]);
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   return { session, state };
@@ -58,7 +59,7 @@ export function useProductionSession(api: StudioApi, productionId: string): { se
 export function usePlayhead(fps: number, durationFrames: number): { playhead: Playhead; playheadState: PlayheadState } {
   const [playhead] = useState(() => new Playhead(fps, durationFrames, browserScheduler()));
   useEffect(() => playhead.setTimeline(fps, durationFrames), [playhead, fps, durationFrames]);
-  useEffect(() => () => playhead.dispose(), [playhead]);
+  useEffect(() => () => playhead.stop(), [playhead]);
   const playheadState = useSyncExternalStore(playhead.subscribe, playhead.getSnapshot, playhead.getSnapshot);
   return { playhead, playheadState };
 }
@@ -67,11 +68,13 @@ export function usePlayhead(fps: number, durationFrames: number): { playhead: Pl
 const MEDIA_POLL_MS = 1_500;
 
 /** The media library, read again while any derived-files job is unfinished. */
-export function useMediaLibrary(api: StudioApi): { media: MediaView[]; refreshMedia(): Promise<void> } {
+export function useMediaLibrary(api: StudioApi): { media: MediaView[]; mediaLoaded: boolean; refreshMedia(): Promise<void> } {
   const [media, setMedia] = useState<MediaView[]>([]);
+  const [mediaLoaded, setMediaLoaded] = useState(false);
   const refreshMedia = useCallback(async () => {
     try {
       setMedia(await api.listMedia());
+      setMediaLoaded(true);
     } catch {
       // Panels show their own errors; a failed refresh keeps the last list.
     }
@@ -79,8 +82,12 @@ export function useMediaLibrary(api: StudioApi): { media: MediaView[]; refreshMe
   useEffect(() => {
     let current = true;
     api.listMedia().then(
-      (list) => current && setMedia(list),
-      () => undefined
+      (list) => {
+        if (!current) return;
+        setMedia(list);
+        setMediaLoaded(true);
+      },
+      () => current && setMediaLoaded(true)
     );
     return () => {
       current = false;
@@ -92,5 +99,5 @@ export function useMediaLibrary(api: StudioApi): { media: MediaView[]; refreshMe
     const timer = setInterval(() => void refreshMedia(), MEDIA_POLL_MS);
     return () => clearInterval(timer);
   }, [unfinished, refreshMedia]);
-  return { media, refreshMedia };
+  return { media, mediaLoaded, refreshMedia };
 }

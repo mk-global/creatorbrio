@@ -30,7 +30,7 @@ function typing(target: EventTarget | null): boolean {
 export function StudioWorkspace({ productionId, onClose }: { productionId: string; onClose: () => void }) {
   const api = useStudioApi();
   const { session, state } = useProductionSession(api, productionId);
-  const { media, refreshMedia } = useMediaLibrary(api);
+  const { media, mediaLoaded, refreshMedia } = useMediaLibrary(api);
   const [chosenClipId, select] = useState<string | null>(null);
 
   const production = state.view?.production;
@@ -66,8 +66,8 @@ export function StudioWorkspace({ productionId, onClose }: { productionId: strin
 
   const workspace = useMemo<Workspace | null>(() => {
     if (!state.view || !state.preview) return null;
-    return { api, session, state: state as Workspace["state"], playhead, playheadState, selectedClipId, select, media, refreshMedia };
-  }, [api, session, state, playhead, playheadState, selectedClipId, media, refreshMedia]);
+    return { api, session, state: state as Workspace["state"], playhead, playheadState, selectedClipId, select, media, mediaLoaded, refreshMedia };
+  }, [api, session, state, playhead, playheadState, selectedClipId, media, mediaLoaded, refreshMedia]);
 
   if (!workspace) {
     return (
