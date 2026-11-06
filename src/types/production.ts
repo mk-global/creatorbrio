@@ -525,6 +525,12 @@ export const EASINGS = ["linear", "ease-in", "ease-out", "ease-in-out", "hold"] 
 export interface Keyframe<T> {
   frame: number;
   value: T;
+  /**
+   * How the value travels from the previous keyframe to this one; absent means
+   * `linear`. `hold` keeps the previous value until this frame, then steps.
+   * On the first keyframe it has no effect. Before the first keyframe and
+   * after the last the value is constant.
+   */
   ease?: (typeof EASINGS)[number];
 }
 

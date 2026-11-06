@@ -152,5 +152,5 @@ export interface LayerBox {
 
 /** The preview layout contract: where a layer's `<video>` or `<img>` sits on the canvas. */
 export function layerBox(placement: CoverPlacement): LayerBox {
-  return { left: -placement.offsetX, top: -placement.offsetY, width: placement.scaledWidth, height: placement.scaledHeight };
+  return { left: 0 - placement.offsetX, top: 0 - placement.offsetY, width: placement.scaledWidth, height: placement.scaledHeight };
 }
