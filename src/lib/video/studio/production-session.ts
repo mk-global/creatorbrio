@@ -11,7 +11,10 @@
  * second command while one is in flight is declined rather than queued.
  *
  * Framework-free, so its rules are unit-tested; React reads it through
- * `useSyncExternalStore`.
+ * `useSyncExternalStore`, whose unsubscribe detaches the page. It is never
+ * disposed: React's development mode mounts, unmounts and mounts again with
+ * the same instance, so a session that refused updates after an unmount
+ * would never show the production.
  */
 import { StudioApiError, type StudioApi } from "./api";
 import type { PreviewView, ProductionOp, ProductionView, RefusalIssue } from "./types";
@@ -44,7 +47,6 @@ type Listener = () => void;
 export class ProductionSession {
   private state: ProductionSessionState = { status: "loading", view: null, preview: null, busy: false, refusal: null, error: null };
   private readonly listeners = new Set<Listener>();
-  private disposed = false;
 
   constructor(
     private readonly api: StudioApi,
@@ -58,13 +60,7 @@ export class ProductionSession {
 
   getSnapshot = (): ProductionSessionState => this.state;
 
-  dispose(): void {
-    this.disposed = true;
-    this.listeners.clear();
-  }
-
   private set(patch: Partial<ProductionSessionState>): void {
-    if (this.disposed) return;
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) listener();
   }

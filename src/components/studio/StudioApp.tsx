@@ -64,16 +64,18 @@ export function StudioApp() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <TopBar title="Video Studio" showBack>
-        {pairing.status === "paired" && (
-          <div className="ml-auto">
+      <TopBar
+        title="Video Studio"
+        showBack
+        actions={
+          pairing.status === "paired" && (
             <Button variant="ghost" size="sm" onClick={() => void signOut()}>
               <LogOut className="h-3.5 w-3.5" aria-hidden />
               Sign out
             </Button>
-          </div>
-        )}
-      </TopBar>
+          )
+        }
+      />
       <main className="flex min-h-0 flex-1 flex-col">
         {pairing.status === "checking" && <p className="m-auto text-sm text-muted-foreground">Checking this browser&apos;s Studio session…</p>}
         {pairing.status === "unreachable" && (

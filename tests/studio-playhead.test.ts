@@ -97,6 +97,19 @@ describe("the playhead", () => {
     expect(p.getSnapshot().frame).toBe(119);
   });
 
+  it("stops on unmount and works again when the same instance is mounted again", () => {
+    const m = manual();
+    const p = new Playhead(30, 300, m.scheduler);
+    const seen: boolean[] = [];
+    p.subscribe(() => seen.push(p.getSnapshot().playing));
+    p.play();
+    p.stop();
+    expect(m.pending()).toBe(0);
+    p.play();
+    m.advance(100);
+    expect(seen).toEqual([true, false, true, true]);
+  });
+
   it("notifies on every change of frame or state", () => {
     const m = manual();
     const p = new Playhead(30, 300, m.scheduler);

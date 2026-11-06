@@ -13,6 +13,8 @@ interface TopBarProps {
   onSettingsClick?: () => void;
   /** Shown after the title, for read-only context such as the carousel's brand. */
   children?: React.ReactNode;
+  /** Controls at the right end of the bar. */
+  actions?: React.ReactNode;
 }
 
 export function TopBar({
@@ -22,6 +24,7 @@ export function TopBar({
   onTitleChange,
   onSettingsClick,
   children,
+  actions,
 }: TopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -84,6 +87,7 @@ export function TopBar({
       </div>
       {children}
       <div className="flex-1" />
+      {actions}
       {onSettingsClick && (
         <Button
           variant="ghost"
