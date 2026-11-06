@@ -436,6 +436,22 @@ describe("restarts and processes", () => {
     expect(await readdir(runner.renderDir(job.productionId, job.renderId))).not.toContain("job.lock");
   });
 
+  it("waits for its startup scan when idle, and a stopped runner's scan changes nothing", async () => {
+    const runner = jobs(fakePipeline());
+    const owner = { pid: 2 ** 22 + 12345, host: hostname(), instance: "gone" };
+    const job = await runningRecord(runner, owner);
+    const before = await readFile(path.join(runner.renderDir(job.productionId, job.renderId), "job.json"), "utf-8");
+    let scanned = false;
+    void runner.start().then(() => {
+      scanned = true;
+    });
+    runner.stop();
+    await runner.idle();
+    expect(scanned).toBe(true);
+    expect(await readFile(path.join(runner.renderDir(job.productionId, job.renderId), "job.json"), "utf-8")).toBe(before);
+    expect(await readdir(runner.renderDir(job.productionId, job.renderId))).not.toContain("job.lock");
+  });
+
   it("leaves a render a stopping server was running as running, and the next start finishes it", async () => {
     const started = deferred();
     const first = jobs(

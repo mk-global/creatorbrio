@@ -275,6 +275,7 @@ export class RenderJobs {
       }
       found.sort((a, b) => a.renderId.localeCompare(b.renderId));
       for (const job of found) {
+        if (this.stopped) return;
         if (job.state === "queued") {
           this.push(job.productionId, job.renderId);
         } else if (job.state === "running" && !this.ownerRunning(job)) {
@@ -284,7 +285,7 @@ export class RenderJobs {
           try {
             next = await this.transitions.runExclusive(async () => {
               const current = await this.read(job.productionId, job.renderId);
-              if (!current || current.state !== "running" || this.ownerRunning(current)) return null;
+              if (this.stopped || !current || current.state !== "running" || this.ownerRunning(current)) return null;
               delete current.owner;
               this.event(current, "interrupted", { attempt: current.attempts });
               if (current.attempts >= MAX_RENDER_ATTEMPTS) {
@@ -372,12 +373,16 @@ export class RenderJobs {
     });
   }
 
-  /** Resolves when nothing is queued or running in this process. */
+  /** Resolves when the startup scan has finished and nothing is queued or running in this process. */
   async idle(): Promise<void> {
+    await this.started?.catch(() => undefined);
     while (this.draining) await this.draining;
   }
 
-  /** Stops the running render; it stays `running` on disk and the next start queues it again. */
+  /**
+   * Stops the running render; it stays `running` on disk and the next start queues it again.
+   * A startup scan still in progress changes and queues nothing more.
+   */
   stop(): void {
     this.stopped = true;
     for (const controller of this.active.values()) controller.abort();

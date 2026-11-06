@@ -76,6 +76,7 @@ queued ──▶ running ──▶ succeeded
 - One job runs at a time in a process.
   `job.lock`, created exclusively, keeps a second process from running the same media; a lock whose process has stopped is taken over.
 - A job found `running` whose owner has stopped was interrupted, for example by a server restart, and is queued again.
+- Stopping the job runner also ends this startup recovery: it writes and queues nothing more, and waiting for the runner to be idle includes it.
 - Each attempt builds its files in a scratch folder under `tmp/`, and they are renamed into the media's folder only when all of them exist.
   A derived file is served only after its job succeeded.
 - Tool deadlines scale with the media's length: four times its duration for a video proxy, with a two-minute minimum.
