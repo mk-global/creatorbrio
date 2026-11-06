@@ -28,13 +28,19 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 import { checkApiRequest } from "@/lib/request-guard";
+import { MediaJobs } from "../../media/jobs";
+import { MediaRegistry } from "../../media/registry";
 import { ID_PATTERN } from "../primitives";
 import { ProductionStore, type MutationResult } from "../store";
-import { AuthorityRegistry, type Authority } from "./authority";
+import { AuthorityRegistry, type Authority, type ResolveOptions } from "./authority";
 import { confirmedGeneration, errorResponse, failureResponse, HttpFailure, okResponse, productionView, readJsonObject, selectFields } from "./http";
 
 export interface ApiContext {
   store: ProductionStore;
+  /** The media registry, which is also the store's asset ledger. */
+  media: MediaRegistry;
+  /** The one derived-files job runner for this data directory. */
+  jobs: MediaJobs;
   authority: AuthorityRegistry;
   now: () => string;
   newId: (prefix: string) => string;
@@ -44,14 +50,20 @@ const contexts: Map<string, ApiContext> = ((globalThis as { __creatorbrioProduct
 
 /**
  * One context per data directory, kept on `globalThis` so development reloads
- * reuse the same store instance and the same run tokens: an agent run belongs
- * to the store instance that began it.
+ * reuse the same store instance, run tokens and job runner: an agent run
+ * belongs to the store instance that began it, and media jobs run one at a time.
  */
 export function apiContext(dataDir = path.resolve(/*turbopackIgnore: true*/ process.cwd(), "data")): ApiContext {
   let context = contexts.get(dataDir);
   if (!context) {
+    const media = new MediaRegistry({ dataDir });
+    const jobs = new MediaJobs(media);
+    media.onPublished = (record) => void jobs.enqueue(record.mediaId).catch(() => undefined);
+    void jobs.start().catch((error) => console.error("[video media] job recovery failed", { name: (error as Error)?.name, code: (error as NodeJS.ErrnoException)?.code }));
     context = {
-      store: new ProductionStore({ root: path.join(/*turbopackIgnore: true*/ dataDir, "video") }),
+      store: new ProductionStore({ root: path.join(/*turbopackIgnore: true*/ dataDir, "video"), ledger: () => media.ledger() }),
+      media,
+      jobs,
       authority: new AuthorityRegistry(path.join(/*turbopackIgnore: true*/ dataDir, "video-studio.key"), path.join(/*turbopackIgnore: true*/ dataDir, "video-auth")),
       now: () => new Date().toISOString(),
       newId: (prefix) => `${prefix}-${randomBytes(8).toString("hex")}`,
@@ -61,7 +73,7 @@ export function apiContext(dataDir = path.resolve(/*turbopackIgnore: true*/ proc
   return context;
 }
 
-type Allowed = { human?: true; agent?: true };
+type Allowed = { human?: true; agent?: true } & ResolveOptions;
 
 interface Call {
   ctx: ApiContext;
@@ -70,14 +82,14 @@ interface Call {
 }
 
 /** The common checks before any handler body runs. */
-async function authorize(request: Request, productionId: string | null, allowed: Allowed): Promise<Call> {
+export async function authorize(request: Request, productionId: string | null, allowed: Allowed): Promise<Call> {
   const guard = checkApiRequest(request);
   if (guard !== "allow") throw new HttpFailure(errorResponse(403, { code: "request_refused", message: "Request refused" }));
   if (productionId !== null && !ID_PATTERN.test(productionId)) {
     throw new HttpFailure(errorResponse(400, { code: "invalid_id", message: "production ids are short identifiers" }));
   }
   const ctx = apiContext();
-  const resolved = await ctx.authority.resolve(request);
+  const resolved = await ctx.authority.resolve(request, { mediaRead: allowed.mediaRead });
   if (!resolved.ok) {
     const status = resolved.code === "session_request_refused" ? 403 : 401;
     throw new HttpFailure(errorResponse(status, { code: resolved.code, message: resolved.message }));
@@ -96,7 +108,7 @@ async function authorize(request: Request, productionId: string | null, allowed:
 
 const forbidden = (message: string) => new HttpFailure(errorResponse(403, { code: "forbidden", message }));
 
-async function run(work: () => Promise<Response>): Promise<Response> {
+export async function run(work: () => Promise<Response>): Promise<Response> {
   try {
     return await work();
   } catch (error) {

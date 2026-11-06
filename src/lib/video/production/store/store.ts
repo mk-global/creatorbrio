@@ -38,6 +38,7 @@ import { Mutex } from "async-mutex";
 
 import type { Production } from "@/types/production";
 import { admitProduction } from "../admit";
+import type { InvariantContext, LedgerMedia } from "../invariants";
 import {
   applyToHistory,
   beginRun,
@@ -52,6 +53,7 @@ import {
   type HistoryStep,
   type ProductionHistory,
 } from "../changes";
+import { ownerAlive } from "../../process-owner";
 import { ID_PATTERN } from "../primitives";
 import { errorCode, nodeFs, type StoreFs } from "./fs";
 import {
@@ -64,7 +66,6 @@ import {
   STORE_FORMAT_VERSION,
   type EventKind,
   type JournalRecord,
-  type RunOwner,
   type StoredStep,
 } from "./format";
 
@@ -132,6 +133,13 @@ export interface StoreOptions {
   /** Commit attempts before reporting `contended`. */
   maxCommitAttempts?: number;
   gc?: Partial<GcOptions>;
+  /**
+   * The asset ledger (the media registry). When given, every new or restored
+   * state is admitted against it, so it can only reference registered media
+   * within their durations. Stored states are read without it: a production
+   * whose media is missing stays readable but cannot change until it returns.
+   */
+  ledger?: () => Promise<ReadonlyMap<string, LedgerMedia>>;
 }
 
 export interface GcOptions {
@@ -163,16 +171,6 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function ownerAlive(owner: RunOwner): boolean | null {
-  if (owner.host !== hostname()) return null;
-  try {
-    process.kill(owner.pid, 0);
-    return true;
-  } catch (error) {
-    return errorCode(error) === "EPERM";
-  }
-}
-
 interface Loaded {
   generation: number;
   record: JournalRecord;
@@ -189,6 +187,7 @@ export class ProductionStore {
   private readonly now: () => string;
   private readonly maxAttempts: number;
   private readonly gc: GcOptions;
+  private readonly ledger: StoreOptions["ledger"];
   private readonly locks = new Map<string, Mutex>();
   /** Admitted documents by hash. Safe to share: they are immutable and named by content. */
   private readonly documents = new Map<string, Production>();
@@ -201,6 +200,17 @@ export class ProductionStore {
     this.now = options.now ?? (() => new Date().toISOString());
     this.maxAttempts = options.maxCommitAttempts ?? 8;
     this.gc = { ...DEFAULT_GC, ...options.gc };
+    this.ledger = options.ledger;
+  }
+
+  /** The admission context for a new state, read fresh for each attempt. */
+  private async context(productionId: string | null): Promise<InvariantContext> {
+    if (!this.ledger) return {};
+    try {
+      return { ledger: await this.ledger() };
+    } catch (error) {
+      throw this.ioFailure(productionId, "ledger", error);
+    }
   }
 
   // -- paths ---------------------------------------------------------------
@@ -219,7 +229,14 @@ export class ProductionStore {
 
   /** Admits a new production and stores it as generation 1. */
   async create(input: unknown): Promise<MutationResult> {
-    const created = createHistory(input);
+    let context: InvariantContext;
+    try {
+      context = await this.context(null);
+    } catch (error) {
+      if (error instanceof Abort) return error.failure;
+      throw error;
+    }
+    const created = createHistory(input, context);
     if (!created.ok) return { ...created.result, generation: 0 };
     const history = created.history;
     const productionId = history.current.id;
@@ -287,15 +304,15 @@ export class ProductionStore {
 
   apply(productionId: string, changeSet: unknown): Promise<MutationResult> {
     const csId = typeof (changeSet as { id?: unknown })?.id === "string" ? (changeSet as { id: string }).id : "change";
-    return this.mutate(productionId, "change", csId, (h) => applyToHistory(h, changeSet));
+    return this.mutate(productionId, "change", csId, (h, c) => applyToHistory(h, changeSet, c));
   }
 
   undo(productionId: string, args: RestoreArgs, pre: Precondition = {}): Promise<MutationResult> {
-    return this.mutate(productionId, "undo", args.changeSetId, (h) => undo(h, args), pre);
+    return this.mutate(productionId, "undo", args.changeSetId, (h, c) => undo(h, args, c), pre);
   }
 
   redo(productionId: string, args: RestoreArgs, pre: Precondition = {}): Promise<MutationResult> {
-    return this.mutate(productionId, "redo", args.changeSetId, (h) => redo(h, args), pre);
+    return this.mutate(productionId, "redo", args.changeSetId, (h, c) => redo(h, args, c), pre);
   }
 
   label(productionId: string, name: string, pre: Precondition = {}): Promise<MutationResult> {
@@ -303,7 +320,7 @@ export class ProductionStore {
   }
 
   restoreLabel(productionId: string, name: string, args: RestoreArgs, pre: Precondition = {}): Promise<MutationResult> {
-    return this.mutate(productionId, "restore_label", args.changeSetId, (h) => restoreLabel(h, name, args), pre);
+    return this.mutate(productionId, "restore_label", args.changeSetId, (h, c) => restoreLabel(h, name, args, c), pre);
   }
 
   /** Opens an agent run owned by this store instance. */
@@ -312,7 +329,7 @@ export class ProductionStore {
   }
 
   endRun(productionId: string, args: { runId: string; decision: "keep" | "discard"; changeSetId: string; at: string }, pre: Precondition = {}): Promise<MutationResult> {
-    return this.mutate(productionId, "end_run", args.runId, (h) => endRun(h, args), pre);
+    return this.mutate(productionId, "end_run", args.runId, (h, c) => endRun(h, args, c), pre);
   }
 
   /**
@@ -338,7 +355,7 @@ export class ProductionStore {
       });
     }
     const decision = args.decision;
-    return this.mutate(productionId, "end_run", args.runId, (h) => notThisRun(h) ?? endRun(h, { ...args, decision }), { ...pre, foreignRunAllowed: true });
+    return this.mutate(productionId, "end_run", args.runId, (h, c) => notThisRun(h) ?? endRun(h, { ...args, decision }, c), { ...pre, foreignRunAllowed: true });
   }
 
   /**
@@ -486,7 +503,7 @@ export class ProductionStore {
     productionId: string,
     kind: EventKind,
     eventId: string,
-    step: (history: ProductionHistory) => HistoryOutcome,
+    step: (history: ProductionHistory, context: InvariantContext) => HistoryOutcome,
     options: Precondition & { foreignRunAllowed?: boolean; takeRun?: boolean } = {}
   ): Promise<MutationResult> {
     if (!ID_PATTERN.test(productionId)) return { status: "invalid_request", productionId: null, message: "production ids are short identifiers" };
@@ -515,7 +532,7 @@ export class ProductionStore {
             return { status: "invalid_request", productionId, message: "there is no interrupted run to resolve; use the run's own owner" };
           }
 
-          const outcome = step(loaded.history);
+          const outcome = step(loaded.history, await this.context(productionId));
           if (outcome.result.status !== "applied" || outcome.history === loaded.history) {
             return { ...outcome.result, generation: loaded.generation };
           }

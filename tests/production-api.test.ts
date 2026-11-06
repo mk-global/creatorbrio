@@ -10,6 +10,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { proxy } from "@/proxy";
+import { registerFixtureMedia } from "./helpers/media-fixtures";
 import { footageProduction, hybridProduction, scriptProduction } from "./helpers/production-fixtures";
 
 type Handler = (request: Request, context: { params: Promise<Record<string, string>> }) => Promise<Response>;
@@ -55,6 +56,7 @@ function restart() {
 beforeEach(async () => {
   restart();
   await rm(path.join(workdir, "data", "video"), { recursive: true, force: true });
+  await registerFixtureMedia(path.join(workdir, "data"));
 });
 
 interface CallOptions {

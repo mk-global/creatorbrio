@@ -20,6 +20,14 @@
  *   send without a preflight this server never approves), must not be marked
  *   by the browser as anything but same-origin, and, when it changes state,
  *   must carry this app's exact `Origin`.
+ *   One narrow exception, for media elements, which cannot add a header: a
+ *   GET or HEAD of media bytes (proxy, poster, peaks; the routes opt in with
+ *   `mediaRead`) may omit `X-CreatorBrio-Request` when the browser itself
+ *   marks it `Sec-Fetch-Site: same-origin` and `Sec-Fetch-Dest` video, audio
+ *   or image. Here the fetch metadata is required, not merely "not foreign":
+ *   a page on another localhost port is same-site, so its `SameSite=Strict`
+ *   cookie would be sent, and only `same-origin` tells the two apart. Such a
+ *   request can only read preview bytes; it changes nothing.
  * - **Anonymous**: no credential. Refused everywhere.
  *
  * Any `by`, `actor`, `role`, `userId`, `runId` or approval field in a body is
@@ -54,6 +62,12 @@ export type AuthorityResult =
   | { ok: false; code: "session_request_refused"; message: string };
 
 const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const MEDIA_DESTINATIONS = new Set(["video", "audio", "image"]);
+
+export interface ResolveOptions {
+  /** The route serves media bytes and accepts the media-element exception described above. */
+  mediaRead?: boolean;
+}
 
 interface Grant {
   productionId: string;
@@ -116,14 +130,14 @@ export class AuthorityRegistry {
     }
   }
 
-  async resolve(request: Request): Promise<AuthorityResult> {
+  async resolve(request: Request, options: ResolveOptions = {}): Promise<AuthorityResult> {
     const humanHeader = request.headers.get(HUMAN_KEY_HEADER);
     const authorization = request.headers.get("authorization");
     const cookie = sessionTokenFrom(request);
     if ([humanHeader, authorization, cookie].filter((c) => c !== null).length > 1) {
       return { ok: false, code: "ambiguous_credential", message: "send one credential: the human key, a run token or a session" };
     }
-    if (cookie !== null) return this.resolveSession(request, cookie);
+    if (cookie !== null) return this.resolveSession(request, cookie, options);
     if (humanHeader !== null) {
       const key = await this.humanKey();
       return sameSecret(humanHeader.trim(), key) ? { ok: true, authority: { kind: "human" } } : invalid();
@@ -137,10 +151,12 @@ export class AuthorityRegistry {
   }
 
   /** A paired browser's session, accepted only from this app's own pages. */
-  private async resolveSession(request: Request, cookie: string): Promise<AuthorityResult> {
+  private async resolveSession(request: Request, cookie: string, options: ResolveOptions): Promise<AuthorityResult> {
     const refused = (message: string): AuthorityResult => ({ ok: false, code: "session_request_refused", message });
-    if (request.headers.get(STUDIO_REQUEST_HEADER) !== "studio") return refused("session requests must carry X-CreatorBrio-Request: studio");
     const fetchSite = request.headers.get("sec-fetch-site");
+    if (request.headers.get(STUDIO_REQUEST_HEADER) !== "studio" && !isMediaElementRead(request, options)) {
+      return refused("session requests must carry X-CreatorBrio-Request: studio");
+    }
     if (fetchSite !== null && fetchSite !== "same-origin") return refused("session requests must come from this app's own pages");
     if (STATE_CHANGING.has(request.method.toUpperCase()) && request.headers.get("origin") !== resolveAppOrigin(request)) {
       return refused("session requests that change state must carry this app's Origin");
@@ -149,6 +165,17 @@ export class AuthorityRegistry {
     const verified = await this.sessions.verify(cookie);
     return verified.ok ? { ok: true, authority: { kind: "human" } } : invalid();
   }
+}
+
+/** A media element on this app's own page reading media bytes. */
+function isMediaElementRead(request: Request, options: ResolveOptions): boolean {
+  const method = request.method.toUpperCase();
+  return (
+    options.mediaRead === true &&
+    (method === "GET" || method === "HEAD") &&
+    request.headers.get("sec-fetch-site") === "same-origin" &&
+    MEDIA_DESTINATIONS.has(request.headers.get("sec-fetch-dest") ?? "")
+  );
 }
 
 function invalid(): AuthorityResult {

@@ -1,9 +1,9 @@
 # Video Studio Production API
 
-[← Architecture](README.md) · Store: [video-production-store.md](video-production-store.md)
+[← Architecture](README.md) · Store: [video-production-store.md](video-production-store.md) · Media: [video-media-registry.md](video-media-registry.md)
 
-The local HTTP API over the [production store](video-production-store.md) (WS1 #120).
-It lives in `src/lib/video/production/api/`, with thin route files under `src/app/api/video/productions/`.
+The local HTTP API over the [production store](video-production-store.md) (WS1 #120) and the [media registry](video-media-registry.md) (#140).
+It lives in `src/lib/video/production/api/`, with thin route files under `src/app/api/video/productions/` and `src/app/api/video/media/`.
 No UI uses it yet.
 
 ## One mutation path
@@ -11,6 +11,10 @@ No UI uses it yet.
 Every handler makes exactly one `ProductionStore` call.
 The store decides each change through the change-set engine (#115), which admits every new document with `admitProduction()` (#113), and commits it with its cross-process compare-and-swap (#119).
 Handlers parse, authorise and map results; they never edit a production.
+
+The store admits every new or restored state against the media registry, its asset ledger: a production may reference only registered media, with the kind each role needs, and every source range must end within its media's duration.
+That covers create, change sets, undo, redo, label restores and run decisions.
+Stored states are read without the ledger, so a production stays readable even if its media is missing, but it cannot change until the media is registered again.
 
 ## Who is calling
 
@@ -79,6 +83,12 @@ A cookie is sent automatically, so a request that relies on the session cookie m
 
 Otherwise it is refused with 403, before the session is even looked up.
 
+**Media elements.** `<video>`, `<audio>` and `<img>` cannot add a header, so the [derived-file route](#media) makes one narrow exception.
+A `GET` or `HEAD` there may omit `X-CreatorBrio-Request` when the browser itself sends both `Sec-Fetch-Site: same-origin` and `Sec-Fetch-Dest` of `video`, `audio` or `image`.
+Here the fetch metadata is required, not merely "not foreign": a page on another localhost port is same-site, so its `SameSite=Strict` cookie would be sent, and only `same-origin` tells the two apart.
+A navigation (`document`), a script read (`empty`, which must send the header as usual), a missing header and every other route keep the normal rules.
+Such a request can only read preview bytes; originals are never served.
+
 DNS rebinding is stopped by the loopback Host check. In addition, a rebound domain's requests never carry this host's cookie.
 
 ### Limits
@@ -108,6 +118,26 @@ Each body may carry only the fields listed for its endpoint.
 
 Each route exports only the methods listed, so Next.js answers any other method with 405.
 
+### Media
+
+| Method and path | Who | Body | Success |
+|---|---|---|---|
+| `GET /api/video/media` | human | none | 200 `{ media }`: every record with its facts, provenance and `derived` state |
+| `POST /api/video/media` | human | `{ path }`: the absolute path of a local file | 201 `{ status: "created", media }`, or 200 `{ status: "existing", media }` for bytes already registered |
+| `GET /api/video/media/:mediaId` | human | none | 200: the record and its `derived` state (`queued`, `running`, `succeeded`, `failed` with `failure`) |
+| `POST /api/video/media/:mediaId/proxy` | human | none | 202: a failed derived-files job is queued again |
+| `GET`, `HEAD /api/video/media/:mediaId/files/:name` | human, also a paired browser's media element (see [cookie requests](#cookie-requests)) | none | 200 or 206: `proxy.mp4`, `proxy.m4a`, `proxy.png`, `poster.jpg` or `peaks.json`, once the job succeeded |
+
+Imports read a file on this computer, so they are a person's action only; agents get 403 on every media route.
+The submitted path is never logged, stored or returned; the record keeps only the file's name.
+An import runs within the request: it probes the file, clones or copies it and hashes the copy, so a very large file on a filesystem without copy-on-write holds the request for as long as the copy takes.
+Moving it into a job is [#141](https://github.com/mk-global/creatorbrio/issues/141).
+
+Derived files support a single `Range: bytes=` range (206 with `Content-Range`), answer 416 with `Content-Range: bytes */size` past the end, and are served whole for anything else.
+They are sent with `Accept-Ranges: bytes`, `X-Content-Type-Options: nosniff`, a sandboxing `Content-Security-Policy` and `Cache-Control: no-store`.
+They are never cached: a browser's HTTP cache is shared by every port of the same host, so a cached copy would let a page on another port, or a plain navigation, read the bytes without passing these checks.
+A real browser showed exactly that before this was changed.
+
 ### Confirmation
 
 Commands that replace content or end a run need `expectedGeneration`: the `generation` from the caller's latest read, or from the `production_corrupt` error for recovery.
@@ -125,9 +155,14 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 | 400 | `invalid_json`, `invalid_body`, `invalid_id`, `invalid_field`, `missing_field`, `unknown_field`, `server_owned_field`, `invalid_request` | The request is malformed, or names a field the server owns |
 | 401 | `authority_required`, `invalid_credential`, `ambiguous_credential`, `invalid_pairing_code`, `not_paired` | No valid credential |
 | 403 | `request_refused` | Non-loopback Host, or a cross-site Origin on a write; for pairing, any check in [Pairing a browser](#pairing-a-browser) |
-| 403 | `session_request_refused` | A session cookie on a request without the Studio header, with cross-site fetch metadata, or without this app's Origin on a write |
+| 403 | `session_request_refused` | A session cookie on a request without the Studio header (outside the media-element exception), with cross-site fetch metadata, or without this app's Origin on a write |
 | 403 | `forbidden` | The authority may not do this, or the token is for another production |
-| 404 | `not_found`, `run_not_found` | No such production, or no such open run |
+| 400 | `invalid_path`, `not_a_file`, `inside_data_directory` | An import path that is not absolute, names a folder, link or device, or lies inside CreatorBrio's data folder |
+| 404 | `not_found`, `run_not_found`, `media_not_found`, `file_not_found` | No such production, open run, media, file to import, or derived file name |
+| 409 | `job_not_failed`, `not_ready` (with `derived`) | Only a failed job can be retried; a derived file is not available yet |
+| 413 | `too_large` | The file to import is over the import limit (32 GiB) |
+| 415 | `unsupported_media` | The file to import is not video, audio or a still image that ffprobe can read |
+| 503 | `tool_missing` | ffprobe is not installed |
 | 409 | `stale_revision` (with `expectedRevision`, `actualRevision`), `run_in_progress`, `no_open_run`, `already_exists`, `generation_mismatch` (with both generations), `run_not_interrupted`, `unsupported_version` | Conflicts with the current state |
 | 413 | `body_too_large` | The body exceeds 2 MiB |
 | 415 | `unsupported_media_type` | The body is not JSON |
@@ -141,5 +176,7 @@ Every error is `{ "error": { "code", "message", …details } }`, sent with `Cach
 ## Not built yet
 
 - **The Studio page itself**, which will call `/api/video/session` and send the Studio header.
-- **Stage-exit approvals** and **media-ledger checks** when edits are applied.
+- **Stage-exit approvals** when edits are applied.
+- **Browser upload** of media: Next.js keeps only the first 10 MB of a request body that passes `src/proxy.ts`, so uploads need their own route design ([#141](https://github.com/mk-global/creatorbrio/issues/141)).
+  Import is by path.
 - **Bundle export and import.**
