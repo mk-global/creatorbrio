@@ -15,6 +15,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { clearedSessionCookie, sessionCookie, sha256, StudioSessions } from "@/lib/video/production/api/sessions";
 import { registerFixtureMedia } from "./helpers/media-fixtures";
 import { footageProduction } from "./helpers/production-fixtures";
+import { restartApi } from "./helpers/api-contexts";
 
 const run = promisify(execFile);
 const ORIGIN = "http://127.0.0.1:3000";
@@ -46,17 +47,16 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await restartApi();
   process.chdir(originalCwd);
   await rm(workdir, { recursive: true, force: true });
 });
 
-/** A server restart: new in-memory state (rate limits, run tokens, store instance), same files. */
-function restart() {
-  (globalThis as { __creatorbrioProductionApi?: Map<string, unknown> }).__creatorbrioProductionApi?.clear();
-}
+/** A server restart over the same files; see `restartApi`. */
+const restart = restartApi;
 
 beforeEach(async () => {
-  restart();
+  await restart();
   await rm(path.join(dataDir, "video-auth"), { recursive: true, force: true });
   await rm(path.join(dataDir, "video"), { recursive: true, force: true });
   await registerFixtureMedia(dataDir);
@@ -321,7 +321,7 @@ describe("sessions end on sign-out, revocation and expiry, and survive a restart
   it("keeps sessions and unused codes across a restart; rate limits start afresh", async () => {
     const cookie = await pairedCookie();
     const code = await mintCode();
-    restart();
+    await restart();
     expect((await send(session.GET, "/api/video/session", withSession(cookie))).status).toBe(200);
     expect((await pair(code)).status).toBe(201);
     expect((await pair(code)).status).toBe(401);

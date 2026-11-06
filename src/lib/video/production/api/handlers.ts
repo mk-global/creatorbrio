@@ -28,8 +28,11 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 import { checkApiRequest } from "@/lib/request-guard";
+import { DEFAULT_CATALOG } from "../../capabilities/catalog";
 import { MediaJobs } from "../../media/jobs";
 import { MediaRegistry } from "../../media/registry";
+import { RenderJobs } from "../../render/jobs";
+import type { RenderPipeline } from "../../render/render-record";
 import { ID_PATTERN } from "../primitives";
 import { ProductionStore, type MutationResult } from "../store";
 import { AuthorityRegistry, type Authority, type ResolveOptions } from "./authority";
@@ -41,6 +44,8 @@ export interface ApiContext {
   media: MediaRegistry;
   /** The one derived-files job runner for this data directory. */
   jobs: MediaJobs;
+  /** The one render job runner for this data directory, in its own lane beside `jobs`. */
+  renders: RenderJobs;
   authority: AuthorityRegistry;
   now: () => string;
   newId: (prefix: string) => string;
@@ -60,10 +65,15 @@ export function apiContext(dataDir = path.resolve(/*turbopackIgnore: true*/ proc
     const jobs = new MediaJobs(media);
     media.onPublished = (record) => void jobs.enqueue(record.mediaId).catch(() => undefined);
     void jobs.start().catch((error) => console.error("[video media] job recovery failed", { name: (error as Error)?.name, code: (error as NodeJS.ErrnoException)?.code }));
+    // Loaded on the first render, so the browser and FFmpeg code stays out of every other route's module graph.
+    const pipeline: RenderPipeline = { run: async (input) => (await import("../../render/pipeline")).createRenderPipeline({ media }).run(input) };
+    const renders = new RenderJobs({ root: path.join(/*turbopackIgnore: true*/ dataDir, "video-renders"), pipeline });
+    void renders.start().catch((error) => console.error("[video render] render recovery failed", { name: (error as Error)?.name, code: (error as NodeJS.ErrnoException)?.code }));
     context = {
-      store: new ProductionStore({ root: path.join(/*turbopackIgnore: true*/ dataDir, "video"), ledger: () => media.ledger() }),
+      store: new ProductionStore({ root: path.join(/*turbopackIgnore: true*/ dataDir, "video"), ledger: () => media.ledger(), capabilities: DEFAULT_CATALOG }),
       media,
       jobs,
+      renders,
       authority: new AuthorityRegistry(path.join(/*turbopackIgnore: true*/ dataDir, "video-studio.key"), path.join(/*turbopackIgnore: true*/ dataDir, "video-auth")),
       now: () => new Date().toISOString(),
       newId: (prefix) => `${prefix}-${randomBytes(8).toString("hex")}`,

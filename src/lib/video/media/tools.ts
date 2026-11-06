@@ -15,6 +15,7 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
+import type { Writable } from "node:stream";
 import crossSpawn from "cross-spawn";
 
 export type Tool = "ffmpeg" | "ffprobe";
@@ -50,15 +51,32 @@ export function toolPath(tool: Tool): string | null {
  */
 export const MIN_FFMPEG = { major: 6, minor: 0 };
 
+/** The first line of `ffmpeg -version`, or "" when FFmpeg is not installed (cached). */
+let banner: string | undefined;
+function ffmpegBanner(): string {
+  if (banner !== undefined) return banner;
+  const ffmpeg = toolPath("ffmpeg");
+  banner = ffmpeg ? String(crossSpawn.sync(ffmpeg, ["-version"], { encoding: "utf-8", timeout: 5000 }).stdout ?? "") : "";
+  return banner;
+}
+
 /** The installed FFmpeg's release, or null for an unnumbered (development) build or none. */
 let version: { major: number; minor: number } | null | undefined;
 export function ffmpegVersion(): { major: number; minor: number } | null {
   if (version !== undefined) return version;
-  const ffmpeg = toolPath("ffmpeg");
-  const banner = ffmpeg ? crossSpawn.sync(ffmpeg, ["-version"], { encoding: "utf-8", timeout: 5000 }).stdout ?? "" : "";
-  const match = /^ffmpeg version n?(\d+)\.(\d+)/m.exec(String(banner));
+  const match = /^ffmpeg version n?(\d+)\.(\d+)/m.exec(ffmpegBanner());
   version = match ? { major: Number(match[1]), minor: Number(match[2]) } : null;
   return version;
+}
+
+/**
+ * The installed FFmpeg's version as its banner states it, e.g. "9.0.2" or a
+ * development build's "N-118000-g1234abcd", for manifests; null when FFmpeg is
+ * not installed or the banner is not recognised.
+ */
+export function ffmpegRelease(): string | null {
+  const match = /^ffmpeg version (\S{1,64})/m.exec(ffmpegBanner());
+  return match ? match[1] : null;
 }
 
 /** False only for a numbered release older than MIN_FFMPEG. */
@@ -106,22 +124,40 @@ export interface RunOptions {
   timeoutMs: number;
   /** Bytes of stdout kept; more is an error. stderr keeps only its tail. */
   maxStdout?: number;
+  /** Characters of stderr kept, from the end (default 2000). */
+  stderrTailBytes?: number;
   signal?: AbortSignal;
   /** Receives stdout as it arrives instead of keeping it; `maxStdout` still bounds the total. */
   onStdout?: (chunk: Buffer) => void;
+  /**
+   * Gives the tool a stdin pipe and hands it over as soon as the tool starts,
+   * for streaming input (e.g. `-i pipe:0`). Write errors on it (the tool has
+   * exited) are swallowed here; the tool's own outcome is the result.
+   */
+  stdin?: (input: Writable) => void;
 }
 
-/** Runs a tool to completion. Resolves with stdout and the tail of stderr; rejects with a ToolError. */
+/** How long a killed tool may take to exit before the rejection is delivered anyway. */
+const KILL_WAIT_MS = 5000;
+
+/**
+ * Runs a tool to completion. Resolves with stdout and the tail of stderr;
+ * rejects with a ToolError. On a timeout, an abort or a failure the tool is
+ * killed, and the rejection is delivered once it has exited, so no tool
+ * outlives the call that ran it.
+ */
 export function runTool(tool: Tool, args: string[], options: RunOptions): Promise<{ stdout: string; stderrTail: string }> {
   const executable = toolPath(tool);
   if (!executable) return Promise.reject(new ToolError("missing", `${tool} is not installed`));
   const maxStdout = options.maxStdout ?? 1024 * 1024;
+  const tailLength = options.stderrTailBytes ?? 2000;
   return new Promise((resolve, reject) => {
-    const child = crossSpawn(executable, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = crossSpawn(executable, args, { stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
     const out: Buffer[] = [];
     let outBytes = 0;
     let errTail = "";
     let settled = false;
+    let closed = false;
     const finish = (error: ToolError | null) => {
       if (settled) return;
       settled = true;
@@ -129,7 +165,12 @@ export function runTool(tool: Tool, args: string[], options: RunOptions): Promis
       options.signal?.removeEventListener("abort", onAbort);
       if (error) {
         child.kill("SIGKILL");
-        reject(error);
+        if (closed) return reject(error);
+        const fallback = setTimeout(() => reject(error), KILL_WAIT_MS);
+        child.once("close", () => {
+          clearTimeout(fallback);
+          reject(error);
+        });
       } else {
         resolve({ stdout: Buffer.concat(out).toString("utf-8"), stderrTail: errTail });
       }
@@ -145,10 +186,15 @@ export function runTool(tool: Tool, args: string[], options: RunOptions): Promis
       else out.push(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      errTail = (errTail + chunk.toString("utf-8")).slice(-2000);
+      errTail = (errTail + chunk.toString("utf-8")).slice(-tailLength);
     });
+    if (options.stdin && child.stdin) {
+      child.stdin.on("error", () => undefined);
+      options.stdin(child.stdin);
+    }
     child.on("error", () => finish(new ToolError("failed", `${tool} could not be started`)));
     child.on("close", (code) => {
+      closed = true;
       if (code === 0) finish(null);
       else finish(new ToolError("failed", `${tool} exited with code ${code}`, code));
     });

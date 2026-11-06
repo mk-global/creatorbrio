@@ -1,0 +1,26 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the overlay document > is deterministic and hashes its own bytes 1`] = `
+"<!doctype html>
+<html><head><meta charset="utf-8"><style>
+:root{--t:0s}
+html, body { margin: 0; padding: 0; width: 1080px; height: 1920px; overflow: hidden; background: transparent }
+body { position: relative; font-family: "CreatorBrio Inter" }
+@font-face { font-family: "CreatorBrio Inter"; font-style: normal; font-weight: 400; font-display: block; src: url(/fonts/inter-latin-400-normal.woff2) format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD }
+@font-face { font-family: "CreatorBrio Inter"; font-style: normal; font-weight: 700; font-display: block; src: url(/fonts/inter-latin-700-normal.woff2) format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD }
+@font-face { font-family: "CreatorBrio Inter"; font-style: normal; font-weight: 800; font-display: block; src: url(/fonts/inter-latin-800-normal.woff2) format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD }
+@font-face { font-family: "CreatorBrio Inter"; font-style: normal; font-weight: 400; font-display: block; src: url(/fonts/inter-latin-ext-400-normal.woff2) format("woff2"); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF }
+@font-face { font-family: "CreatorBrio Inter"; font-style: normal; font-weight: 700; font-display: block; src: url(/fonts/inter-latin-ext-700-normal.woff2) format("woff2"); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF }
+@font-face { font-family: "CreatorBrio Inter"; font-style: normal; font-weight: 800; font-display: block; src: url(/fonts/inter-latin-ext-800-normal.woff2) format("woff2"); unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF }
+@keyframes c0-show { from { visibility: visible } to { visibility: visible } }
+@keyframes c0-in { from { transform: translateX(-100%); opacity: 0 } to { transform: translateX(0); opacity: 1 } }
+@keyframes c0-out { from { transform: translateX(0); opacity: 1 } to { transform: translateX(-100%); opacity: 0 } }
+.c0 { position: absolute; left: 60px; bottom: 998px; max-width: 810px; overflow: hidden; visibility: hidden; animation: c0-show 1.000000s linear calc(1.000000s - var(--t, 0s)) 1 normal none }
+.c0-p { display: flex; background: rgba(12, 12, 16, 0.82); border-radius: 10px; overflow: hidden; animation: c0-in 0.333333s cubic-bezier(0.2, 0.8, 0.2, 1) calc(1.000000s - var(--t, 0s)) 1 normal both, c0-out 0.266667s cubic-bezier(0.4, 0, 1, 1) calc(1.733333s - var(--t, 0s)) 1 normal forwards }
+.c0-b { flex: 0 0 12px; background: #ffd23f }
+.c0-x { padding: 18px 28px; min-width: 0; font-family: "CreatorBrio Inter"; color: #ffffff; overflow-wrap: anywhere }
+.c0-t { font-weight: 700; font-size: 54px; line-height: 63px; max-height: 126px; overflow: hidden }
+.c0-s { margin-top: 4px; font-weight: 400; font-size: 36px; line-height: 45px; max-height: 90px; overflow: hidden; color: rgba(255, 255, 255, 0.86) }
+</style></head><body><div class="c0"><div class="c0-p"><div class="c0-b"></div><div class="c0-x"><div class="c0-t">Ada</div></div></div></div></body></html>
+"
+`;

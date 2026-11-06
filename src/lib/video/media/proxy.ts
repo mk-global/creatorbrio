@@ -44,6 +44,13 @@ export interface DerivedOutput {
 }
 
 const PEAKS_SAMPLE_RATE = 8000;
+/**
+ * Gaps in an audio stream's timestamps of this many seconds or more become
+ * silence, and a stream that starts after the file does is preceded by
+ * silence, so peak i is at file time i / peaksPerSecond, where the export
+ * plays that sound (`ffmpeg-audio.ts` uses the same rule).
+ */
+const TIMESTAMP_GAP_S = 0.01;
 const MAX_PEAKS = 100_000;
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
@@ -80,6 +87,39 @@ function uprightFilter(rotation: number): string | null {
   return null;
 }
 
+/** Whether this FFmpeg can convert HLG and PQ video to BT.709 SDR (VideoToolbox `scale_vt`, G2 #98). */
+export function hdrConversionAvailable(): boolean {
+  return ffmpegHas("filters", "scale_vt") && ffmpegHas("filters", "hwdownload");
+}
+
+/**
+ * The input options and filter chain that decode HLG or PQ video on
+ * VideoToolbox and turn it into upright 8-bit BT.709 SDR (yuv420p, tagged tv
+ * range) at `size`, the upright output size. Shared by the preview proxy and
+ * the export (#144), which must convert HDR originals the same way before
+ * compositing. Callers check `hdrConversionAvailable()` first.
+ *
+ * FFmpeg's automatic rotation is dropped on this hardware path, so the
+ * source's rotation is ignored on input and the converted frames are turned
+ * upright in software.
+ */
+export function hdrToSdr(size: { w: number; h: number }, rotation: number): { input: string[]; filter: string } {
+  const coded = rotation === 90 || rotation === 270 ? { w: size.h, h: size.w } : size;
+  return {
+    input: ["-display_rotation", "0", "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"],
+    filter: [
+      `scale_vt=w=${coded.w}:h=${coded.h}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709`,
+      "hwdownload",
+      "format=p010le",
+      uprightFilter(rotation),
+      "format=yuv420p",
+      SDR_FRAMES,
+    ]
+      .filter(Boolean)
+      .join(","),
+  };
+}
+
 async function videoProxy(record: MediaRecord, original: string, out: string, signal: AbortSignal): Promise<"sdr" | "hdr-converted"> {
   const video = record.facts.video!;
   const size = fitSize(video.width, video.height, video.rotation, { w: 540, h: 960 });
@@ -87,23 +127,10 @@ async function videoProxy(record: MediaRecord, original: string, out: string, si
   let input: string[];
   let filter: string;
   if (hdr) {
-    if (!ffmpegHas("filters", "scale_vt") || !ffmpegHas("filters", "hwdownload")) {
+    if (!hdrConversionAvailable()) {
       throw new ProxyFailure("configuration", "hdr_conversion_unavailable", "HDR footage needs FFmpeg with VideoToolbox (scale_vt) to make a preview on this computer");
     }
-    // FFmpeg's automatic rotation is dropped on this hardware path, so the source's rotation is
-    // ignored on input and the converted frames are turned upright in software.
-    const coded = video.rotation === 90 || video.rotation === 270 ? { w: size.h, h: size.w } : size;
-    input = ["-display_rotation", "0", "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"];
-    filter = [
-      `scale_vt=w=${coded.w}:h=${coded.h}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709`,
-      "hwdownload",
-      "format=p010le",
-      uprightFilter(video.rotation),
-      "format=yuv420p",
-      SDR_FRAMES,
-    ]
-      .filter(Boolean)
-      .join(",");
+    ({ input, filter } = hdrToSdr(size, video.rotation));
   } else {
     // Software decoding: FFmpeg turns the picture upright itself and writes no rotation flag.
     input = [];
@@ -181,7 +208,7 @@ async function peaks(record: MediaRecord, original: string, out: string, signal:
   const expectedBytes = Math.ceil((durationUs / 1_000_000 + 5) * PEAKS_SAMPLE_RATE * 2 * 1.1);
   await runTool(
     "ffmpeg",
-    ["-nostdin", "-hide_banner", "-v", "error", "-i", fileUrl(original), "-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(PEAKS_SAMPLE_RATE), "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1"],
+    ["-nostdin", "-hide_banner", "-v", "error", "-i", fileUrl(original), "-map", "0:a:0", "-vn", "-ac", "1", "-af", `aresample=${PEAKS_SAMPLE_RATE}:async=1:min_hard_comp=${TIMESTAMP_GAP_S}:first_pts=0`, "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1"],
     {
       timeoutMs: deadline(record, 0.5, 60_000),
       signal,

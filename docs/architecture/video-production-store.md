@@ -26,6 +26,8 @@ Media bytes are never stored here: documents refer to media by hash only.
 The store adds no editing logic.
 Every change is decided by the change-set engine from #115 (`applyToHistory`, `undo`, `redo`, `labelRevision`, `restoreLabel`, `beginRun`, `endRun`), which admits each new document through `admitProduction()`.
 When the store is given a `ledger` (the [media registry](video-media-registry.md), as `apiContext()` does), every state it creates, changes, undoes, redoes, restores from a label or decides for an agent run is admitted against it.
+When it is also given a capability catalog (`capabilities`, as `apiContext()` does), the parameters of every graphics clip whose capability the catalog knows must pass that capability's own check; unknown capabilities stay admissible and are refused only at [export](video-rendering.md#capabilities).
+States already stored are read without this check; every state committed after them must pass it, so a stored state with invalid parameters can only be followed by a change that makes them valid or removes the clip.
 Stored states are read without it, and explicit recovery recommits an earlier stored state as it was.
 The store only loads the current state and persists what the engine returns.
 Every document is admitted again when it is read, and its content must match its hash.

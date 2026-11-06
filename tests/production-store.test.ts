@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { DEFAULT_CATALOG } from "@/lib/video/capabilities/catalog";
 import { admitProduction } from "@/lib/video/production";
 import type { ProductionHistory } from "@/lib/video/production/changes";
 import { generationFile, nodeFs, ProductionStore, type LoadedProduction, type MutationResult, type StoreFs } from "@/lib/video/production/store";
@@ -624,5 +625,55 @@ describe("admission against the asset ledger", () => {
     expect(result).toMatchObject({ status: "io_error", operation: "ledger", code: "EIO" });
     expect(await store.create({ ...footageProduction(), id: "prod-other" })).toMatchObject({ status: "io_error", operation: "ledger" });
     expect((await loaded(store)).generation).toBe(1);
+  });
+});
+
+describe("admission against the capability catalog", () => {
+  const CAPTIONS = "clip-captions";
+  const cues = (end: number) => ({ preset: "sentence", position: "lower", cues: [{ start: 0, end, text: "Hello there" }] });
+  function withTimedCaptions(params: unknown) {
+    const doc = footageProduction();
+    for (const track of doc.timeline.tracks) {
+      for (const clip of track.clips) if (clip.id === CAPTIONS && clip.kind === "graphics") clip.capability = { id: "captions.timed", version: "1.0.0", params: params as never };
+    }
+    return doc;
+  }
+  const setParams = (base: number, params: unknown) => ({ ...rename(base, "unused"), summary: "Edit captions", ops: [{ op: "setGraphicParams", clipId: CAPTIONS, params }] });
+  const issues = (result: MutationResult) => (result.status === "rejected" ? result.issues.map((i) => [i.code, i.path]) : [result.status]);
+
+  it("refuses a commit with invalid captions parameters and accepts valid ones, with or without a ledger", async () => {
+    const store = open({ capabilities: DEFAULT_CATALOG });
+    const base = ok(await store.create(withTimedCaptions(cues(30)))).revision;
+    const refused = await store.apply(ID, setParams(base, cues(106)));
+    expect(refused.status).toBe("rejected");
+    expect(JSON.stringify(issues(refused))).toContain('"invalid_value","timeline.tracks[3].clips[0].capability.params.cues[0].end"');
+    expect((await loaded(store)).generation).toBe(1);
+    const applied = ok(await store.apply(ID, setParams(base, cues(105))));
+    expect(applied.generation).toBe(2);
+
+    // Both checks apply when the store has both.
+    const HOUR = 3_600_000_000;
+    const ledger = new Map<string, LedgerMedia>([
+      [MEDIA.aRoll, { kind: "video", durationUs: HOUR }],
+      [MEDIA.bRoll, { kind: "video", durationUs: HOUR }],
+      [MEDIA.music, { kind: "audio", durationUs: HOUR }],
+      [MEDIA.logo, { kind: "image" }],
+    ]);
+    const both = open({ capabilities: DEFAULT_CATALOG, ledger: async () => ledger, root: path.join(root, "both") });
+    expect(issues(await both.create(withTimedCaptions(cues(200))))).toContainEqual(["invalid_value", "timeline.tracks[3].clips[0].capability.params.cues[0].end"]);
+    expect(ok(await both.create(withTimedCaptions(cues(30)))).generation).toBe(1);
+  });
+
+  it("still admits a capability the catalog does not know", async () => {
+    expect(ok(await open({ capabilities: DEFAULT_CATALOG }).create(footageProduction())).generation).toBe(1);
+  });
+
+  it("reads a stored state without the catalog, and refuses to commit on top of invalid parameters", async () => {
+    ok(await open().create(withTimedCaptions({ preset: "kinetic" })));
+    const store = open({ capabilities: DEFAULT_CATALOG });
+    const state = await loaded(store);
+    expect(state.generation).toBe(1);
+    expect(issues(await store.apply(ID, rename(state.history.current.revision, "Renamed")))).toContainEqual(["invalid_value", "timeline.tracks[3].clips[0].capability.params.position"]);
+    ok(await store.apply(ID, setParams(state.history.current.revision, cues(30))));
   });
 });
