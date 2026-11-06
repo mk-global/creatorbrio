@@ -213,3 +213,26 @@ describe("admission with the catalog", () => {
     expect(admitProduction(doc, { capabilities: DEFAULT_CATALOG }).ok).toBe(true);
   });
 });
+
+describe("kinetic caption words", () => {
+  const emitKinetic = (cue: { start: number; end: number; text: string }) => {
+    const d = def("captions.timed");
+    const params = value(d.parse(captions([cue]) as JsonValue, CLIP));
+    return d.emit(params, { ...CLIP, prefix: "c1", startFrame: 0, safeZone: safeZoneFor(CLIP.canvas), fontFamily: '"CreatorBrio Inter"' }).css;
+  };
+  const popSeconds = (css: string) => [...css.matchAll(/\.c1-q0w(\d+) \{ animation: c1-pop ([\d.]+)s /g)].map((m) => [Number(m[1]), Number(m[2])]);
+
+  it("grow from their left edge, so a popping word never covers the word before it", () => {
+    expect(emitKinetic({ start: 0, end: 30, text: "the voice" })).toMatch(/\.c1-w \{ display: inline-block; transform-origin: 0% 60% \}/);
+  });
+
+  it("finish popping before the next word appears, even when words come faster than a pop", () => {
+    // Ten words in 20 frames: a new word every 2 frames, while a pop takes 6.
+    const pops = popSeconds(emitKinetic({ start: 0, end: 20, text: "one two three four five six seven eight nine ten" }));
+    expect(pops).toHaveLength(10);
+    for (const [, seconds] of pops) expect(seconds).toBeLessThanOrEqual(2 / 30 + 1e-6);
+    // A slow cue keeps the full pop.
+    const slow = popSeconds(emitKinetic({ start: 0, end: 60, text: "slow words" }));
+    expect(slow.map(([, s]) => s)).toEqual([0.2, 0.2]);
+  });
+});

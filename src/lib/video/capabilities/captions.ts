@@ -108,7 +108,8 @@ function emit(params: TimedCaptions, ctx: EmitContext): Emitted {
     css.push(
       `@keyframes ${c}-pop { 0% { opacity: 0; transform: scale(0.6) } 60% { opacity: 1; transform: scale(1.08) } 100% { opacity: 1; transform: scale(1) } }`,
       `@keyframes ${c}-lit { from { color: ${params.accent} } to { color: ${params.accent} } }`,
-      `.${c}-w { display: inline-block }`
+      // A popping word is always the rightmost one shown, so it grows to the right, into space no word occupies yet, never over the word before it.
+      `.${c}-w { display: inline-block; transform-origin: 0% 60% }`
     );
   } else {
     css.push(`@keyframes ${c}-fade { from { opacity: 0 } to { opacity: 1 } }`);
@@ -134,7 +135,7 @@ function emit(params: TimedCaptions, ctx: EmitContext): Emitted {
       const w = `${q}w${k}`;
       const current = (k + 1 < words.length ? reveal[k + 1] : at + length) - reveal[k];
       const lit = current > 0 ? `, ${animation(`${c}-lit`, reveal[k], current, fps, "linear", "none")}` : "";
-      css.push(`.${w} { animation: ${animation(`${c}-pop`, reveal[k], Math.min(pop, length), fps, "cubic-bezier(0.2, 1.4, 0.4, 1)", "both")}${lit} }`);
+      css.push(`.${w} { animation: ${animation(`${c}-pop`, reveal[k], Math.max(1, Math.min(pop, current)), fps, "cubic-bezier(0.2, 1.4, 0.4, 1)", "both")}${lit} }`);
       return `<span class="${c}-w ${w}">${escapeHtml(word)}</span>`;
     });
     html.push(`<div class="${c}-q ${q}"><div class="${c}-l">${spans.join(" ")}</div></div>`);

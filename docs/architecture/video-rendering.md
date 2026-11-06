@@ -70,7 +70,7 @@ A capability validates its parameters strictly and emits the CSS and markup of o
 
 | Capability | Parameters | Drawing |
 |---|---|---|
-| `captions.timed@1.0.0` | `preset` (`kinetic` or `sentence`), `position` (`lower` or `center`), `accent?` (`#rrggbb`), `cues`: up to 500, each `{ start, end, text }` in whole clip frames, sorted, not overlapping, text 1 to 120 characters, at most 1,500 words per clip | Kinetic pops each word in over about 0.2 s and highlights the newest; sentence fades each cue in. Text is sized per clip so the longest cue fits three lines |
+| `captions.timed@1.0.0` | `preset` (`kinetic` or `sentence`), `position` (`lower` or `center`), `accent?` (`#rrggbb`), `cues`: up to 500, each `{ start, end, text }` in whole clip frames, sorted, not overlapping, text 1 to 120 characters, at most 1,500 words per clip | Kinetic pops each word in over about 0.2 s, or until the next word if that is sooner, growing from its left edge so it never covers the word before it, and highlights the newest; sentence fades each cue in. Text is sized per clip so the longest cue fits three lines |
 | `graphics.lower-third@1.0.0` | `title` (1 to 60), `subtitle?` (up to 80), `accent?` | Slides in over 10 frames and out over the last 8, bottom left, above the caption band |
 | `graphics.title-card@1.0.0` | `title` (1 to 80), `subtitle?` (up to 120), `align` (`center` or `top`), `scrim` | Fades and scales in over 12 frames and out over the last 8; the scrim is a dark card inside the safe zone |
 
@@ -117,6 +117,9 @@ The pause was needed because Chromium otherwise advanced animations while a docu
 **Picture and sound.** One FFmpeg graph cuts, rotates, scales and crops the originals, converts HLG and PQ to BT.709, composites at 4:4:4 with the overlay converted explicitly to BT.709, and subsamples once to 4:2:0.
 It encodes with libx264 at the profile's settings, bitexact flags and fixed threads, so the same plan encodes identically.
 The final pass must deliver exactly the plan's frame count.
+
+**Mix.** Each sound is trimmed, delayed and padded in samples, and its gain envelope is written as a gain signal, one 32-bit float gain per sample of the render equal to the envelope at that sample, which FFmpeg multiplies into the sound.
+An envelope's complexity therefore never changes the graph or the cost per sample; an earlier design that wrote the envelope as one FFmpeg expression failed to parse at a few hundred points, which a fade over a ducked music bed reaches.
 
 **Loudness.** The mix is normalised with two-pass `loudnorm` to `Timeline.audio.masterLufs` with a true-peak ceiling 0.5 dB under the profile's, then encoded with the profile's AAC settings and measured again.
 If the encoded result is more than 0.2 LU from the target or its true peak is above the ceiling, a static gain and an oversampled limiter correct it, in at most four passes.
