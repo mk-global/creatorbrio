@@ -16,6 +16,11 @@ export const RENDER_DOWNLOADS: readonly { name: RenderFileName; label: string }[
   { name: "manifest.json", label: "Manifest" },
 ];
 
+/** The name a render file is saved under, as the server's `Content-Disposition` names it. */
+export function renderFileName(productionId: string, renderId: string, name: RenderFileName): string {
+  return `${productionId}-${renderId}-${name}`;
+}
+
 /** How often the panel reads the renders again while one is queued or running. */
 export const RENDER_POLL_MS = 1_000;
 

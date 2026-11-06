@@ -6,13 +6,14 @@
  * or Retry, and for a succeeded render its MP4 inline and its downloads.
  */
 import { useState } from "react";
-import { CircleCheck, CircleX, Download, RotateCcw, X } from "lucide-react";
+import { CircleCheck, CircleX, RotateCcw, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { renderFileUrl } from "@/lib/video/studio/api";
-import { RENDER_DOWNLOADS, renderStatus, type RenderTone } from "@/lib/video/studio/render-status";
+import { renderStatus, type RenderTone } from "@/lib/video/studio/render-status";
 import type { RenderView } from "@/lib/video/studio/types";
 import { cn } from "@/lib/utils";
+import { ExportDownloads } from "./ExportDownloads";
 
 const TONES: Record<RenderTone, string> = {
   neutral: "bg-muted text-muted-foreground",
@@ -100,23 +101,7 @@ export function ExportRenderCard({ render, currentRevision, showVideo, act }: Pr
         </div>
       )}
 
-      {status.files.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-[11px] text-muted-foreground">Download</span>
-          {RENDER_DOWNLOADS.filter((d) => status.files.includes(d.name)).map((d) => (
-            <a
-              key={d.name}
-              href={renderFileUrl(render.productionId, render.renderId, d.name)}
-              download
-              className="inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label={`Download ${d.label}, revision ${render.revision}`}
-            >
-              <Download className="h-3 w-3" aria-hidden />
-              {d.label}
-            </a>
-          ))}
-        </div>
-      )}
+      {status.files.length > 0 && <ExportDownloads render={render} files={status.files} />}
 
       {problem && (
         <p role="alert" className="mt-2 text-xs text-destructive">
