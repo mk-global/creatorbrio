@@ -92,3 +92,26 @@ export function createErrorMessage(error: ApiErrorLike): string {
 export function readErrorMessage(error: ApiErrorLike, what: string): string {
   return error.code === "network_error" ? UNREACHABLE : `${what} could not be read: ${error.message}`;
 }
+
+/**
+ * Why an edit, undo or redo was not applied, for the workspace banner. The
+ * engine's own refusals keep its message (their issues are listed under it);
+ * conflicts say what happened in the person's terms and what to do next.
+ */
+export function editRefusalMessage(error: Pick<ApiErrorLike, "code" | "message">): string {
+  switch (error.code) {
+    case "stale_revision":
+    case "generation_mismatch":
+      return "the production changed somewhere else while you were editing. Nothing was changed; the Studio now shows the latest version, so try again.";
+    case "run_in_progress":
+      return "an agent is editing this production right now. Try again when it has finished.";
+    case "recovery_required":
+      return "an agent's edit was interrupted and needs a decision before anyone can edit this production.";
+    case "contended":
+      return "other edits kept being saved first. Try again in a moment.";
+    case "network_error":
+      return UNREACHABLE;
+    default:
+      return error.message;
+  }
+}

@@ -10,7 +10,7 @@ import { generateCode, normaliseCode } from "@/lib/video/production/api/sessions
 import { historyActions } from "@/lib/video/studio/history-labels";
 import { mediaDetail, previewState, thumbnailFile } from "@/lib/video/studio/media-library";
 import { readPairingInput } from "@/lib/video/studio/pairing-code";
-import { createErrorMessage, importErrorMessage, pairingErrorMessage, retryErrorMessage, waitPhrase } from "@/lib/video/studio/studio-messages";
+import { createErrorMessage, editRefusalMessage, importErrorMessage, pairingErrorMessage, retryErrorMessage, waitPhrase } from "@/lib/video/studio/studio-messages";
 import type { MediaView, ProductionView } from "@/lib/video/studio/types";
 
 const err = (code: string, details: Record<string, unknown> = {}, message = `server says ${code}`) => ({ code, message, details });
@@ -139,5 +139,18 @@ describe("Undo and Redo", () => {
     const { undo, redo } = historyActions(view(["Add title"], ["Trim clip"]), true);
     expect(undo).toMatchObject({ enabled: false, title: expect.stringMatching(/^Undo Add title \(wait/) });
     expect(redo.enabled).toBe(false);
+  });
+});
+
+describe("why an edit was not applied", () => {
+  it("explains conflicts in the person's terms and keeps the engine's own refusals", () => {
+    const stale = editRefusalMessage({ code: "stale_revision", message: "the change was made against revision 9, but the production is at revision 10" });
+    expect(stale).toMatch(/changed somewhere else/);
+    expect(stale).not.toMatch(/revision 9/);
+    expect(editRefusalMessage({ code: "generation_mismatch", message: "x" })).toBe(stale);
+    expect(editRefusalMessage({ code: "run_in_progress", message: "x" })).toMatch(/agent is editing/);
+    expect(editRefusalMessage({ code: "contended", message: "x" })).toMatch(/Try again in a moment/);
+    expect(editRefusalMessage({ code: "network_error", message: "x" })).toMatch(/did not answer/);
+    expect(editRefusalMessage({ code: "rejected", message: "Clips on a track may not overlap" })).toBe("Clips on a track may not overlap");
   });
 });

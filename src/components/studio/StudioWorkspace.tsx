@@ -12,6 +12,7 @@ import { ArrowLeft, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { timelineEndFrame } from "@/lib/video/studio/frames";
+import { editRefusalMessage } from "@/lib/video/studio/studio-messages";
 import { ExportPanel } from "./ExportPanel";
 import { HistoryControls } from "./HistoryControls";
 import { Inspector } from "./Inspector";
@@ -107,7 +108,7 @@ export function StudioWorkspace({ productionId, onClose }: { productionId: strin
         {refusal && (
           <div role="alert" className="flex shrink-0 items-start gap-3 border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm">
             <div className="min-w-0 flex-1">
-              <p className="font-medium text-foreground">{refusal.summary} was not applied: {refusal.message}</p>
+              <p className="font-medium text-foreground">{refusal.summary} was not applied: {editRefusalMessage(refusal)}</p>
               {refusal.issues.length > 0 && (
                 <ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">
                   {refusal.issues.slice(0, 5).map((issue, i) => (
