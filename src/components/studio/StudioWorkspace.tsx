@@ -92,9 +92,11 @@ export function StudioWorkspace({ productionId, onClose }: { productionId: strin
     <WorkspaceProvider value={workspace}>
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-surface px-3">
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="All productions">
+          <Button variant="ghost" size="sm" onClick={onClose} className="gap-1.5 text-muted-foreground">
             <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+            Productions
           </Button>
+          <span className="h-4 w-px bg-border" aria-hidden />
           <h1 className="truncate text-sm font-semibold">{view.production.name}</h1>
           <span className="text-xs text-muted-foreground tabular-nums">Revision {view.revision}</span>
           <div className="ml-auto flex items-center gap-2">
