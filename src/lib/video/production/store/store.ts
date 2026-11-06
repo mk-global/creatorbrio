@@ -38,6 +38,7 @@ import { Mutex } from "async-mutex";
 
 import type { Production } from "@/types/production";
 import { admitProduction } from "../admit";
+import type { CapabilityCatalog } from "@/lib/video/capabilities/types";
 import type { InvariantContext, LedgerMedia } from "../invariants";
 import {
   applyToHistory,
@@ -140,6 +141,13 @@ export interface StoreOptions {
    * whose media is missing stays readable but cannot change until it returns.
    */
   ledger?: () => Promise<ReadonlyMap<string, LedgerMedia>>;
+  /**
+   * The native capabilities (#144). When given, every new or restored state
+   * is admitted against it, so a graphics clip of a known capability can only
+   * be committed with parameters that capability accepts. Like the ledger, it
+   * is not applied when reading stored states.
+   */
+  capabilities?: CapabilityCatalog;
 }
 
 export interface GcOptions {
@@ -188,6 +196,7 @@ export class ProductionStore {
   private readonly maxAttempts: number;
   private readonly gc: GcOptions;
   private readonly ledger: StoreOptions["ledger"];
+  private readonly capabilities: StoreOptions["capabilities"];
   private readonly locks = new Map<string, Mutex>();
   /** Admitted documents by hash. Safe to share: they are immutable and named by content. */
   private readonly documents = new Map<string, Production>();
@@ -201,16 +210,21 @@ export class ProductionStore {
     this.maxAttempts = options.maxCommitAttempts ?? 8;
     this.gc = { ...DEFAULT_GC, ...options.gc };
     this.ledger = options.ledger;
+    this.capabilities = options.capabilities;
   }
 
   /** The admission context for a new state, read fresh for each attempt. */
   private async context(productionId: string | null): Promise<InvariantContext> {
-    if (!this.ledger) return {};
-    try {
-      return { ledger: await this.ledger() };
-    } catch (error) {
-      throw this.ioFailure(productionId, "ledger", error);
+    const context: InvariantContext = {};
+    if (this.capabilities) context.capabilities = this.capabilities;
+    if (this.ledger) {
+      try {
+        context.ledger = await this.ledger();
+      } catch (error) {
+        throw this.ioFailure(productionId, "ledger", error);
+      }
     }
+    return context;
   }
 
   // -- paths ---------------------------------------------------------------

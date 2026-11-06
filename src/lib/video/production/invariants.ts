@@ -16,6 +16,7 @@ import type {
   SceneStatus,
   Workflow,
 } from "@/types/production";
+import type { CapabilityCatalog } from "@/lib/video/capabilities/types";
 import { at, type Issues } from "./primitives";
 import { durationMatchesSourceSpan, maxTimelineFrames } from "./time";
 
@@ -33,6 +34,14 @@ export interface InvariantContext {
    * source range must lie within the media's duration.
    */
   ledger?: ReadonlyMap<string, LedgerMedia>;
+  /**
+   * The native capabilities (#144). When provided, every graphics clip whose
+   * capability id and version the catalog knows must have parameters that
+   * capability accepts for the clip's length and the production's format.
+   * Capabilities the catalog does not know stay admissible; the compiler
+   * refuses them at export.
+   */
+  capabilities?: CapabilityCatalog;
 }
 
 export const MEDIA_ROLE_KIND: Record<MediaRole, MediaKind> = {
@@ -89,6 +98,7 @@ export function checkInvariants(issues: Issues, doc: Production, context: Invari
   checkScript(issues, doc, media, claims);
   checkStoryboard(issues, doc, { lines, claims, media, comments, clips });
   checkTimeline(issues, doc, media, scenes, context);
+  if (context.capabilities) checkCapabilities(issues, doc, context.capabilities);
   checkReview(issues, doc, { lines, scenes, clips, media });
 
   doc.brief.assetRelationships.forEach((r, i) => {
@@ -383,6 +393,38 @@ function checkClipMedia(
   if (known?.durationUs !== undefined && outUs > known.durationUs) {
     issues.add(at(at(path, "source"), "outUs"), "out_of_range", "the source range ends after the media does");
   }
+}
+
+/**
+ * Graphics clips' capability parameters, against the catalog. Each problem the
+ * capability reports becomes an `invalid_value` issue at the clip's
+ * `capability.params` path followed by the problem's own path inside the
+ * parameters (its JSON pointer written in this notation, e.g.
+ * `timeline.tracks[3].clips[0].capability.params.cues[2].text`).
+ */
+function checkCapabilities(issues: Issues, doc: Production, catalog: CapabilityCatalog): void {
+  const canvas = { width: doc.format.width, height: doc.format.height };
+  doc.timeline.tracks.forEach((track, i) => {
+    track.clips.forEach((clip, j) => {
+      if (clip.kind !== "graphics") return;
+      const def = catalog.get(clip.capability.id, clip.capability.version);
+      if (!def) return;
+      const parsed = def.parse(clip.capability.params, { durationFrames: clip.duration, fps: doc.format.fps, canvas });
+      if (parsed.ok) return;
+      const base = at(at(at(at("timeline.tracks", i), "clips"), j), "capability.params");
+      for (const issue of parsed.issues) issues.add(paramsPath(base, issue.path), "invalid_value", issue.message);
+    });
+  });
+}
+
+/** Appends a JSON pointer inside capability parameters to an issue path. */
+function paramsPath(base: string, pointer: string): string {
+  if (pointer === "") return base;
+  return pointer
+    .slice(1)
+    .split("/")
+    .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))
+    .reduce<string>((path, part) => at(path, /^(0|[1-9][0-9]*)$/.test(part) ? Number(part) : part), base);
 }
 
 interface ReviewRefs {
