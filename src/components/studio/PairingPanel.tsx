@@ -56,7 +56,8 @@ export function PairingPanel({ onPaired }: { onPaired: () => void }) {
           <li className="flex gap-2.5">
             <TerminalSquare className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
             <span>
-              In a terminal in the CreatorBrio folder, run <code className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 font-mono text-xs">npm run studio:pair</code>
+              In a terminal in the CreatorBrio folder, run
+              <code className="mt-1 block w-fit rounded bg-muted px-1.5 py-0.5 font-mono text-xs">npm run studio:pair</code>
             </span>
           </li>
           <li className="flex gap-2.5">
