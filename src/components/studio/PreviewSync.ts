@@ -74,6 +74,7 @@ export function usePreviewSync(playhead: Playhead, elements: readonly PreviewEle
           active,
           playing,
           elementPaused: el.paused,
+          elementRate: el.playbackRate,
           startsSoon: startsWithin(element, seconds, fps, lead),
           startLeadSeconds: lead,
           settling,

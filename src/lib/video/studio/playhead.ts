@@ -150,19 +150,30 @@ export interface SlaveAction {
 
 /** Drift beyond this many seconds is closed by seeking; below it, by nudging the rate. */
 export const HARD_SYNC_S = 0.25;
-/** Drift below this is left alone. */
-export const SOFT_SYNC_S = 1 / 120;
+/**
+ * Drift within this is left alone. Element clocks do not wander on their own,
+ * and every change of `playbackRate` briefly stalls the element's clock while
+ * the browser restarts its time-stretching, by about a frame; correcting a
+ * small offset by rate costs more than the offset. Three quarters of a frame
+ * at 30 fps.
+ */
+export const SOFT_SYNC_S = 0.025;
+/** A nudge under way continues until the drift is back within this, so the rate never flips at the edge of the dead band. */
+export const SETTLED_SYNC_S = 1 / 120;
 
 /**
  * How to bring a playing media element back to where the playhead says it
  * should be: a seek for a large drift (a stall or a jump), a gentle rate
- * change for a small one (seeks are audible), nothing within a quarter frame
- * at 30 fps.
+ * change for a drift beyond the dead band (seeks are audible), nothing within
+ * it. `currentRate` is the element's rate now: a nudge already under way is
+ * held until the drift has settled, so each correction changes the rate twice
+ * at most, never back and forth.
  */
-export function slaveCorrection(elementSeconds: number, targetSeconds: number): SlaveAction {
+export function slaveCorrection(elementSeconds: number, targetSeconds: number, currentRate = 1): SlaveAction {
   const drift = elementSeconds - targetSeconds;
   if (Math.abs(drift) > HARD_SYNC_S) return { seekTo: targetSeconds, rate: 1 };
-  if (Math.abs(drift) <= SOFT_SYNC_S) return { seekTo: null, rate: 1 };
-  // Behind: speed up a little; ahead: slow down a little. 5% closes a 100 ms drift in about 2 s.
+  const band = currentRate === 1 ? SOFT_SYNC_S : SETTLED_SYNC_S;
+  if (Math.abs(drift) <= band) return { seekTo: null, rate: 1 };
+  // Behind: speed up a little; ahead: slow down a little. 5% closes a 25 ms drift in about half a second.
   return { seekTo: null, rate: drift < 0 ? 1.05 : 0.95 };
 }

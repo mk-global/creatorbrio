@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { HARD_SYNC_S, Playhead, slaveCorrection, type Scheduler } from "@/lib/video/studio/playhead";
+import { HARD_SYNC_S, Playhead, SETTLED_SYNC_S, slaveCorrection, SOFT_SYNC_S, type Scheduler } from "@/lib/video/studio/playhead";
 
 /** A scheduler whose time and animation frames the test advances by hand. */
 function manual() {
@@ -123,11 +123,40 @@ describe("the playhead", () => {
 });
 
 describe("media element correction", () => {
-  it("leaves a quarter frame alone, nudges the rate for small drift and seeks for large", () => {
+  it("leaves drift within three quarters of a frame alone, nudges the rate beyond it and seeks for large", () => {
     expect(slaveCorrection(10.004, 10)).toEqual({ seekTo: null, rate: 1 });
+    expect(slaveCorrection(10 - (SOFT_SYNC_S - 0.001), 10)).toEqual({ seekTo: null, rate: 1 });
     expect(slaveCorrection(9.95, 10)).toEqual({ seekTo: null, rate: 1.05 });
     expect(slaveCorrection(10.05, 10)).toEqual({ seekTo: null, rate: 0.95 });
     expect(slaveCorrection(10 + HARD_SYNC_S + 0.01, 10)).toEqual({ seekTo: 10, rate: 1 });
     expect(slaveCorrection(3, 10)).toEqual({ seekTo: 10, rate: 1 });
+  });
+
+  it("holds a nudge under way until the drift has settled, so the rate never flips at the band's edge", () => {
+    // A drift just outside the band starts a nudge; the jitter that brings it back inside does not stop it.
+    expect(slaveCorrection(10 - (SOFT_SYNC_S + 0.001), 10, 1)).toEqual({ seekTo: null, rate: 1.05 });
+    expect(slaveCorrection(10 - (SOFT_SYNC_S - 0.001), 10, 1.05)).toEqual({ seekTo: null, rate: 1.05 });
+    // Only once it is within the settled band does the rate return to normal.
+    expect(slaveCorrection(10 - (SETTLED_SYNC_S - 0.001), 10, 1.05)).toEqual({ seekTo: null, rate: 1 });
+    // An overshoot past the settled band reverses the nudge; a stall beyond the hard limit still seeks.
+    expect(slaveCorrection(10 + 0.012, 10, 1.05)).toEqual({ seekTo: null, rate: 0.95 });
+    expect(slaveCorrection(9.5, 10, 1.05)).toEqual({ seekTo: 10, rate: 1 });
+  });
+
+  it("changes the rate twice for one drift that closes, never back and forth", () => {
+    // An element 40 ms behind, closing at the nudge, with ±2 ms jitter in each reading.
+    let rate = 1;
+    let drift = -0.04;
+    let changes = 0;
+    for (let tick = 0; tick < 120; tick++) {
+      const jitter = (tick % 2 === 0 ? 1 : -1) * 0.002;
+      const next = slaveCorrection(10 + drift + jitter, 10, rate).rate;
+      if (next !== rate) changes++;
+      rate = next;
+      drift += (rate - 1) / 60;
+    }
+    expect(changes).toBe(2);
+    expect(rate).toBe(1);
+    expect(Math.abs(drift)).toBeLessThan(SOFT_SYNC_S);
   });
 });

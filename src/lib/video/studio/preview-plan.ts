@@ -159,6 +159,8 @@ export interface SyncInput {
   playing: boolean;
   /** The element is itself paused. */
   elementPaused: boolean;
+  /** The element's playback rate now, so a correction under way is held rather than flipped. */
+  elementRate: number;
   /** Not active yet, but the playhead reaches the clip's first frame within the start lead. */
   startsSoon: boolean;
   /** How long a paused element takes to start playing once asked (`nextStartLead`). */
@@ -183,7 +185,7 @@ export interface SyncInput {
  *   settling time measures the start itself (`nextStartLead`).
  */
 export function syncAction(input: SyncInput): SyncAction {
-  const { elementSeconds, targetSeconds, active, playing, elementPaused, startsSoon, startLeadSeconds, settling } = input;
+  const { elementSeconds, targetSeconds, active, playing, elementPaused, elementRate, startsSoon, startLeadSeconds, settling } = input;
   const off = (target: number) => (Math.abs(elementSeconds - target) > PAUSED_TOLERANCE_S ? target : null);
   if (playing && !active && startsSoon) {
     if (!elementPaused) return { seekTo: null, rate: 1, play: false, pause: false };
@@ -191,7 +193,7 @@ export function syncAction(input: SyncInput): SyncAction {
   }
   if (!active || !playing) return { seekTo: off(targetSeconds), rate: 1, play: false, pause: !elementPaused };
   if (elementPaused) return { seekTo: off(targetSeconds + startLeadSeconds), rate: 1, play: true, pause: false };
-  const correction = slaveCorrection(elementSeconds, targetSeconds);
+  const correction = slaveCorrection(elementSeconds, targetSeconds, elementRate);
   return { seekTo: correction.seekTo, rate: settling && correction.seekTo === null ? 1 : correction.rate, play: false, pause: false };
 }
 

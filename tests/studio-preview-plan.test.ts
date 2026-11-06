@@ -155,7 +155,7 @@ describe("volumeAt", () => {
 });
 
 describe("syncAction", () => {
-  const base: SyncInput = { elementSeconds: 1, targetSeconds: 1, active: true, playing: true, elementPaused: false, startsSoon: false, startLeadSeconds: 0.05, settling: false };
+  const base: SyncInput = { elementSeconds: 1, targetSeconds: 1, active: true, playing: true, elementPaused: false, elementRate: 1, startsSoon: false, startLeadSeconds: 0.05, settling: false };
 
   it("pauses an element whose clip is not on the playhead and holds it at its first frame", () => {
     expect(syncAction({ ...base, active: false, targetSeconds: 0.5 })).toEqual({ seekTo: 0.5, rate: 1, play: false, pause: true });
@@ -184,6 +184,9 @@ describe("syncAction", () => {
   it("closes small drift by rate and large drift by seeking, using the shared correction", () => {
     expect(syncAction({ ...base, elementSeconds: 0.96 })).toEqual({ seekTo: null, rate: 1.05, play: false, pause: false });
     expect(syncAction({ ...base, elementSeconds: 1.04 })).toEqual({ seekTo: null, rate: 0.95, play: false, pause: false });
+    // 15 ms behind is left alone, unless a nudge is already closing it.
+    expect(syncAction({ ...base, elementSeconds: 0.985 })).toEqual({ seekTo: null, rate: 1, play: false, pause: false });
+    expect(syncAction({ ...base, elementRate: 1.05, elementSeconds: 0.985 })).toEqual({ seekTo: null, rate: 1.05, play: false, pause: false });
     expect(syncAction({ ...base, elementSeconds: 1.004 })).toEqual({ seekTo: null, rate: 1, play: false, pause: false });
     expect(syncAction({ ...base, elementSeconds: 1 + HARD_SYNC_S + 0.01 })).toEqual({ seekTo: 1, rate: 1, play: false, pause: false });
   });
