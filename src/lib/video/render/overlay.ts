@@ -19,30 +19,16 @@ import { safeZoneFor } from "@/lib/video/capabilities/safe-zone";
 import type { FontAsset, OverlayDocument } from "./execute-types";
 import { RenderFailure } from "./execute-types";
 import { bundledFace, BUNDLED_FACES, OVERLAY_FONT_CSS, OVERLAY_FONT_FAMILY } from "./fonts";
+import { PREVIEW_META, TIME_RULE } from "./overlay-time";
 import type { GraphicPlacement, RenderPlan } from "./plan";
+
+export { overlayTimeSeconds, PREVIEW_OVERLAY_CSP, previewOverlayAt } from "./overlay-time";
 
 /** The synthetic origin the export browser loads the document from; nothing is ever fetched from the network. */
 export const OVERLAY_ORIGIN = "https://overlay.creatorbrio.invalid";
 export const OVERLAY_PATH = "/overlay.html";
 /** The Content-Security-Policy header the export renderer sends with the document: inline styles and same-origin fonts only. */
 export const EXPORT_OVERLAY_CSP = "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'";
-/** The preview document's meta CSP: inline styles and `data:` fonts only. */
-export const PREVIEW_OVERLAY_CSP = "default-src 'none'; style-src 'unsafe-inline'; font-src data:";
-
-/** Overlays are sampled at frame centres, so a visibility boundary (on a frame edge) never coincides with a sample. */
-export function overlayTimeSeconds(frame: number, fps: number): number {
-  return (frame + 0.5) / fps;
-}
-
-/** The only `--t` declaration in a document; `previewOverlayAt` replaces it. */
-const TIME_RULE = ":root{--t:0s}";
-/**
- * Where the time rule sits: first in the one `<style>`. User text can contain
- * the rule's characters, but never `<style` (it is escaped), so this anchor
- * occurs exactly once.
- */
-const TIME_ANCHOR = `<style>\n${TIME_RULE}`;
-const PREVIEW_META = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_OVERLAY_CSP}">`;
 
 export interface OverlayOptions {
   catalog: CapabilityCatalog;
@@ -133,21 +119,6 @@ export function activeRanges(graphics: readonly Pick<GraphicPlacement, "startFra
     else merged.push({ ...r });
   }
   return merged;
-}
-
-/**
- * The preview document showing `frame`: `--t` set to the frame's centre and
- * every animation paused, for an `<iframe sandbox="">` `srcdoc`. Rebuilt per
- * seek. Only a preview-target document can be shown this way, because only
- * it carries its fonts and its CSP inside.
- */
-export function previewOverlayAt(doc: OverlayDocument, frame: number, fps: number): string {
-  if (!doc.html.includes(PREVIEW_META)) throw internal("only a preview overlay document can be shown in the preview");
-  const first = doc.html.indexOf(TIME_ANCHOR);
-  if (first < 0 || doc.html.indexOf(TIME_ANCHOR, first + 1) >= 0) throw internal("the overlay document's time rule is missing or repeated");
-  const t = overlayTimeSeconds(frame, fps).toFixed(6);
-  const anchor = `<style>\n:root{--t:${t}s} *,*::before,*::after{animation-play-state:paused !important}`;
-  return doc.html.slice(0, first) + anchor + doc.html.slice(first + TIME_ANCHOR.length);
 }
 
 // -- post-emission checks ------------------------------------------------------
