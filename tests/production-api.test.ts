@@ -12,6 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { proxy } from "@/proxy";
 import { registerFixtureMedia } from "./helpers/media-fixtures";
 import { footageProduction, hybridProduction, scriptProduction } from "./helpers/production-fixtures";
+import { restartApi } from "./helpers/api-contexts";
 
 type Handler = (request: Request, context: { params: Promise<Record<string, string>> }) => Promise<Response>;
 type Routes = Record<string, Record<string, Handler | undefined>>;
@@ -44,17 +45,16 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await restartApi();
   process.chdir(originalCwd);
   await rm(workdir, { recursive: true, force: true });
 });
 
-/** A server restart: a new store instance and an empty run-token registry, over the same files. */
-function restart() {
-  (globalThis as { __creatorbrioProductionApi?: Map<string, unknown> }).__creatorbrioProductionApi?.clear();
-}
+/** A server restart over the same files; see `restartApi`. */
+const restart = restartApi;
 
 beforeEach(async () => {
-  restart();
+  await restart();
   await rm(path.join(workdir, "data", "video"), { recursive: true, force: true });
   await registerFixtureMedia(path.join(workdir, "data"));
 });
@@ -316,7 +316,7 @@ describe("agent runs across a server restart", () => {
   it("after a restart: the old token is dead, the run is interrupted, and only a person decides", async () => {
     const { token, runId } = (await human("runs", { ...id(), body: {} })).body;
     await call("changes", { ...id(), token, body: rename(7, "Half-finished agent edit") });
-    restart();
+    await restart();
 
     expect((await call("changes", { ...id(), token, body: rename(8, "x") })).body.error.code).toBe("invalid_credential");
     const state = (await read()).body;
@@ -373,15 +373,15 @@ describe("end to end for every workflow, across a restart", () => {
       expect((await human("changes", { ...p, body: rename(doc.revision, "Draft two") })).status).toBe(200);
       expect((await human("labels", { ...p, body: { name: "draft-two" } })).status).toBe(200);
       expect((await human("changes", { ...p, body: rename(doc.revision + 1, "Draft three") })).status).toBe(200);
-      restart();
+      await restart();
       let g = await generation(doc.id);
       expect((await human("undo", { ...p, body: { expectedGeneration: g } })).status).toBe(200);
-      restart();
+      await restart();
       expect((await human("redo", { ...p, body: { expectedGeneration: g + 1 } })).status).toBe(200);
-      restart();
+      await restart();
       g = await generation(doc.id);
       expect((await human("restore", { params: { id: doc.id, name: "draft-two" }, body: { expectedGeneration: g } })).status).toBe(200);
-      restart();
+      await restart();
       const final = (await read(doc.id)).body;
       expect(final.production.name).toBe("Draft two");
       expect(final.history.undo.map((s: { label: string }) => s.label)).toEqual(["Rename to Draft two", "Rename to Draft three", "Restore draft-two"]);

@@ -15,6 +15,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { parseRange } from "@/lib/video/production/api/media-handlers";
 import { FFMPEG_MISSING, makeMedia, registerMedia } from "./helpers/media-fixtures";
 import { footageProduction, MEDIA } from "./helpers/production-fixtures";
+import { restartApi } from "./helpers/api-contexts";
 
 const run = promisify(execFile);
 const ORIGIN = "http://127.0.0.1:3000";
@@ -45,18 +46,16 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await restartApi();
   process.chdir(originalCwd);
   await rm(workdir, { recursive: true, force: true });
 });
 
-function restart() {
-  const contexts = (globalThis as { __creatorbrioProductionApi?: Map<string, { jobs: { stop(): void } }> }).__creatorbrioProductionApi;
-  for (const ctx of contexts?.values() ?? []) ctx.jobs.stop();
-  contexts?.clear();
-}
+/** A server restart over the same files; see `restartApi`. */
+const restart = restartApi;
 
 beforeEach(async () => {
-  restart();
+  await restart();
   for (const dir of ["video", "video-media", "video-auth"]) await rm(path.join(dataDir, dir), { recursive: true, force: true });
 });
 

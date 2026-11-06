@@ -22,6 +22,7 @@ import { FFMPEG_MISSING, makeMedia, registerFixtureMedia } from "./helpers/media
 import { chromiumPath } from "./helpers/native-pdf";
 import { footageProduction, MEDIA } from "./helpers/production-fixtures";
 import { deferred, FAILING, fakePipeline, untilAborted } from "./helpers/render-fixtures";
+import { restartApi } from "./helpers/api-contexts";
 
 const run = promisify(execFile);
 const ORIGIN = "http://127.0.0.1:3000";
@@ -60,16 +61,8 @@ afterAll(async () => {
   await rm(workdir, { recursive: true, force: true });
 });
 
-/** Stops every runner and waits for it, so nothing writes into a folder the next test removes. */
-async function restart() {
-  const contexts = (globalThis as { __creatorbrioProductionApi?: Map<string, ApiContext> }).__creatorbrioProductionApi;
-  for (const ctx of contexts?.values() ?? []) {
-    ctx.jobs.stop();
-    ctx.renders.stop();
-    await Promise.all([ctx.jobs.idle(), ctx.renders.idle()]);
-  }
-  contexts?.clear();
-}
+/** A server restart over the same files; see `restartApi`. */
+const restart = restartApi;
 
 /** A fresh context whose render runner uses `pipeline`. */
 function usePipeline(pipeline: RenderPipeline, backoffMs = 1): ApiContext {
