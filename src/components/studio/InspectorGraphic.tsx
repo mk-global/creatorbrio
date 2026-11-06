@@ -6,7 +6,7 @@
  * draft as one `setGraphicParams` change set; a refusal keeps the draft and
  * shows each issue at its field; Revert discards the draft.
  */
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Save, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -53,6 +53,17 @@ export interface FieldsProps<D extends GraphicDraft> {
 export function InspectorGraphic({ clip, info, entry, update }: Props) {
   const { session, state } = useWorkspace();
   const formRef = useRef<HTMLFormElement>(null);
+  // Set by a refused Save; once its issues are on screen, the first field they name is focused.
+  const focusIssue = useRef(false);
+  const shownIssues = entry?.issues ?? null;
+  useEffect(() => {
+    if (!focusIssue.current || !shownIssues) return;
+    focusIssue.current = false;
+    const field = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
+    field?.focus({ preventScroll: true });
+    // Centred, so the sticky Save bar never covers it.
+    field?.scrollIntoView({ block: "center" });
+  }, [shownIssues]);
   const stored = clip.capability.params;
   const storedJson = JSON.stringify(stored);
   const draft = entry?.draft ?? draftFromParams(info.kind, stored);
@@ -83,14 +94,8 @@ export function InspectorGraphic({ clip, info, entry, update }: Props) {
     const refusal = snapshot.refusal;
     const sorted = refusal && snapshot.view ? formIssues(refusal.issues, snapshot.view.production, clip.id) : { fields: {}, general: [] };
     if (Object.keys(sorted.fields).length === 0 && sorted.general.length === 0) sorted.general.push(refusal?.message ?? "The change was not saved.");
+    focusIssue.current = true;
     update((previous) => (previous ? { ...previous, issues: sorted, refusal } : null));
-    // Take the person to the first field the refusal names, which may be scrolled out of view.
-    requestAnimationFrame(() => {
-      const field = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
-      field?.focus({ preventScroll: true });
-      // Centred, so the sticky Save bar never covers it.
-      field?.scrollIntoView({ block: "center" });
-    });
   };
 
   const revert = () => {
