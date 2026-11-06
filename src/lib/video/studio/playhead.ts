@@ -101,10 +101,12 @@ export class Playhead {
     if (clamped !== this.state.frame) this.set({ frame: clamped });
   }
 
-  dispose(): void {
-    if (this.handle !== null) this.scheduler.cancel(this.handle);
-    this.handle = null;
-    this.listeners.clear();
+  /**
+   * Stops playing, on unmount. Listeners stay: they are detached by their own
+   * unsubscribe, and React's development mode mounts the same instance again.
+   */
+  stop(): void {
+    this.pause();
   }
 
   private tick = (): void => {
