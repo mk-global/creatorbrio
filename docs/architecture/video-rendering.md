@@ -178,6 +178,7 @@ failed, cancelled ──retry──▶ queued
 - An attempt builds into `work/`, which the next attempt clears.
   The outputs are renamed into the render folder only when all of them exist, and `job.json` saying `succeeded` is the commit point for serving them.
 - When the API starts, renders still queued are run, and renders left `running` by an owner confirmed stopped are `interrupted`: the attempt counts, and the render is queued again, or fails as transient `interrupted` if that was its third attempt.
+- Stopping the render runner also ends this startup recovery: it changes and queues nothing more, and waiting for the runner to be idle includes it.
 - If a render's record cannot be written after it started, it is failed as transient `io_error` on a best-effort basis and not retried automatically; a person retries it.
 - Requesting a render while one is queued or running for the same document (the snapshot's SHA-256, not the revision number, which recovery can reuse) and profile returns that render (200, `existing`).
 - Cancelling a queued render, or one waiting between attempts, cancels it at once.

@@ -136,7 +136,9 @@ export class MediaJobs {
   start(): Promise<void> {
     this.started ??= (async () => {
       for (const record of await this.registry.list()) {
+        if (this.controller.signal.aborted) return;
         const job = await this.read(record.mediaId);
+        if (this.controller.signal.aborted) return;
         if (!job) {
           await this.queueNew(record.mediaId);
         } else if (job.state === "queued") {
@@ -181,12 +183,16 @@ export class MediaJobs {
     return { ok: true, job: next };
   }
 
-  /** Resolves when nothing is queued or running in this process. */
+  /** Resolves when the startup scan has finished and nothing is queued or running in this process. */
   async idle(): Promise<void> {
+    await this.started?.catch(() => undefined);
     while (this.draining) await this.draining;
   }
 
-  /** Stops the running job; it stays `running` on disk and the next start queues it again. */
+  /**
+   * Stops the running job; it stays `running` on disk and the next start queues it again.
+   * A startup scan still in progress writes and queues nothing more.
+   */
   stop(): void {
     this.controller.abort();
   }

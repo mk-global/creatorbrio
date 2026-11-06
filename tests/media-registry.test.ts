@@ -281,6 +281,19 @@ describe("job lifecycle", () => {
     expect(await readFile(registry.derivedPath(mediaId, "proxy.png"), "utf-8")).toBe("preview");
   });
 
+  it("waits for its startup scan when idle, and a stopped runner's scan writes nothing", async () => {
+    const { registry, mediaId } = await oneMedia();
+    const jobs = new MediaJobs(registry, { builder: succeedWith, log: quiet });
+    let scanned = false;
+    void jobs.start().then(() => {
+      scanned = true;
+    });
+    jobs.stop();
+    await jobs.idle();
+    expect(scanned).toBe(true);
+    expect(await readdir(registry.objectDir(mediaId))).toEqual(["original.png", "record.json"]);
+  });
+
   it("retries a transient failure and then succeeds", async () => {
     const { registry, mediaId } = await oneMedia();
     let calls = 0;
