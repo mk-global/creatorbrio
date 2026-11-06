@@ -44,6 +44,13 @@ export interface DerivedOutput {
 }
 
 const PEAKS_SAMPLE_RATE = 8000;
+/**
+ * Gaps in an audio stream's timestamps of this many seconds or more become
+ * silence, and a stream that starts after the file does is preceded by
+ * silence, so peak i is at file time i / peaksPerSecond, where the export
+ * plays that sound (`ffmpeg-audio.ts` uses the same rule).
+ */
+const TIMESTAMP_GAP_S = 0.01;
 const MAX_PEAKS = 100_000;
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
@@ -201,7 +208,7 @@ async function peaks(record: MediaRecord, original: string, out: string, signal:
   const expectedBytes = Math.ceil((durationUs / 1_000_000 + 5) * PEAKS_SAMPLE_RATE * 2 * 1.1);
   await runTool(
     "ffmpeg",
-    ["-nostdin", "-hide_banner", "-v", "error", "-i", fileUrl(original), "-map", "0:a:0", "-vn", "-ac", "1", "-ar", String(PEAKS_SAMPLE_RATE), "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1"],
+    ["-nostdin", "-hide_banner", "-v", "error", "-i", fileUrl(original), "-map", "0:a:0", "-vn", "-ac", "1", "-af", `aresample=${PEAKS_SAMPLE_RATE}:async=1:min_hard_comp=${TIMESTAMP_GAP_S}:first_pts=0`, "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1"],
     {
       timeoutMs: deadline(record, 0.5, 60_000),
       signal,

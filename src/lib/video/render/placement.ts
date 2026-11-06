@@ -14,7 +14,8 @@ export interface Size {
 /**
  * The upright size a player shows: the coded size, with width and height
  * swapped for a quarter turn. Still images carry the same picture facts as
- * video (`facts.ts`), so this serves both.
+ * video (`facts.ts`), their rotation read from the decoded frame's EXIF
+ * orientation, so this serves both.
  */
 export function displaySize(picture: Pick<VideoFacts, "width" | "height" | "rotation">): Size {
   const quarterTurn = picture.rotation === 90 || picture.rotation === 270;

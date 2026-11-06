@@ -3,6 +3,15 @@
  * describes whatever file a person pointed at, so it is treated as untrusted
  * input: only a known shape is accepted, numbers are bounded, and anything
  * that is not clearly video, audio or a still image is refused.
+ *
+ * A still image's orientation (EXIF Orientation in JPEG and PNG) is not in
+ * the stream's data: FFmpeg's decoder attaches it to the decoded frame as a
+ * display matrix, and FFmpeg's autorotation turns the picture upright from
+ * it. So for images the first decoded frame is probed as well
+ * (`parseImageOrientation`), and its quarter turn becomes `rotation`; the
+ * export, the image proxy and the placement then all see the same upright
+ * size. Mirrored orientations (EXIF 2, 4, 5 and 7) are refused, since
+ * `rotation` cannot describe them.
  */
 import type { MediaKind } from "@/types/production";
 import { fileUrl, runTool, ToolError } from "./tools";
@@ -14,7 +23,11 @@ export interface VideoFacts {
   /** Coded size, before rotation. */
   width: number;
   height: number;
-  /** Clockwise rotation a player applies: 0, 90, 180 or 270. */
+  /**
+   * Clockwise rotation a player applies: 0, 90, 180 or 270. For video, from
+   * the stream's display matrix; for a still image, from its decoded first
+   * frame's (EXIF orientation).
+   */
   rotation: 0 | 90 | 180 | 270;
   /** Frame rate as a rational, from the stream's nominal rate. */
   frameRate: { num: number; den: number } | null;
@@ -167,6 +180,61 @@ function audioFacts(stream: Json): AudioFacts | undefined {
   return { codec, sampleRate, channels };
 }
 
+const QUARTER_TURN = 1 << 16;
+
+/** The nine 16.16 and 2.30 fixed-point entries of ffprobe's printed display matrix, or null when it is not in that form. */
+function matrixEntries(printed: unknown): number[] | null {
+  if (typeof printed !== "string" || printed.length > 400) return null;
+  const rows = printed.split("\n").filter((line) => line.trim() !== "");
+  if (rows.length !== 3) return null;
+  const entries: number[] = [];
+  for (const row of rows) {
+    const m = /^[0-9a-f]{8}:\s+(-?\d{1,10})\s+(-?\d{1,10})\s+(-?\d{1,10})$/.exec(row.trim());
+    if (!m) return null;
+    entries.push(Number(m[1]), Number(m[2]), Number(m[3]));
+  }
+  return entries;
+}
+
+/**
+ * The clockwise quarter turn a still image's decoded frame asks for, from
+ * ffprobe's `-show_frames` JSON of its first frame; null when the frame has
+ * no display matrix (no orientation, or an FFmpeg that does not read it,
+ * which then also does not turn the picture). Exported for tests.
+ *
+ * The matrix is read rather than ffprobe's `rotation`, which reports a
+ * mirrored orientation as a rotation (EXIF 2 as 180, 5 as 90). Only the four
+ * unscaled quarter turns are accepted; a mirror (negative determinant) or any
+ * other matrix is refused, because `rotation` cannot describe it and a wrong
+ * upright size would distort the export.
+ */
+export function parseImageOrientation(text: string): VideoFacts["rotation"] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new UnsupportedMedia("the image could not be decoded");
+  }
+  const frames = isObject(parsed) && Array.isArray(parsed.frames) ? parsed.frames.filter(isObject) : [];
+  if (frames.length === 0) throw new UnsupportedMedia("the image could not be decoded");
+  const sideData = Array.isArray(frames[0].side_data_list) ? frames[0].side_data_list.filter(isObject) : [];
+  const display = sideData.filter((entry) => "displaymatrix" in entry);
+  if (display.length === 0) return null;
+  if (display.length > 1) throw new UnsupportedMedia("the image has more than one orientation");
+  const m = matrixEntries(display[0].displaymatrix);
+  if (!m) throw new UnsupportedMedia("the image's orientation could not be read");
+  // The 2x2 part [a b; c d], applied to a row vector (x, y) as FFmpeg's display matrix is.
+  const [a, b, , c, d] = m;
+  const unit = (v: number) => v === 0 || Math.abs(v) === QUARTER_TURN;
+  const quarter = [a, b, c, d].every(unit) && (a === 0) === (d === 0) && (b === 0) === (c === 0) && (a === 0) !== (b === 0);
+  if (!quarter) throw new UnsupportedMedia("the image's orientation is not a quarter turn");
+  if (a * d - b * c < 0) throw new UnsupportedMedia("mirrored images (EXIF orientation 2, 4, 5 or 7) are not supported");
+  if (a > 0) return 0;
+  if (a < 0) return 180;
+  // A clockwise quarter turn on screen is [0 1; -1 0] here (EXIF 6), the other way [0 -1; 1 0] (EXIF 8).
+  return b > 0 ? 90 : 270;
+}
+
 /** Probes a file. Rejects with UnsupportedMedia for anything that is not usable media. */
 export async function probeFile(file: string, signal?: AbortSignal): Promise<MediaFacts> {
   try {
@@ -175,7 +243,16 @@ export async function probeFile(file: string, signal?: AbortSignal): Promise<Med
       maxStdout: 4 * 1024 * 1024,
       signal,
     });
-    return parseProbe(stdout);
+    const facts = parseProbe(stdout);
+    if (facts.kind !== "image" || !facts.video) return facts;
+    // The orientation is only on the decoded frame, so the first one is decoded.
+    const frame = await runTool("ffprobe", ["-v", "error", "-print_format", "json", "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_frames", fileUrl(file)], {
+      timeoutMs: 30_000,
+      maxStdout: 256 * 1024,
+      signal,
+    });
+    const rotation = parseImageOrientation(frame.stdout);
+    return rotation === null ? facts : { ...facts, video: { ...facts.video, rotation } };
   } catch (error) {
     if (error instanceof ToolError && error.reason === "failed") throw new UnsupportedMedia("the file could not be read as media");
     throw error;

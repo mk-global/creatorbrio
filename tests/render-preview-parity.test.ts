@@ -42,6 +42,7 @@ import { buildOverlay } from "@/lib/video/render/overlay";
 import { layerBox, type CoverPlacement, type RenderPlan, type VideoLayer } from "@/lib/video/render/plan";
 import { INSTAGRAM_PROFILE } from "@/lib/video/render/profile";
 import type { MediaRole, Production, StillClip, VideoClip } from "@/types/production";
+import { jpegWithOrientation } from "./helpers/exif-orientation";
 import { FFMPEG_MISSING } from "./helpers/media-fixtures";
 import { footageProduction } from "./helpers/production-fixtures";
 
@@ -159,6 +160,19 @@ const STILL_UNSCALED: Design = {
   markers: [m48("red", 201, 80), m48("green", 1101, 200), m48("blue", 331, 900), m48("yellow", 801, 620), m48("magenta", 561, 380), m48("cyan", 41, 500), m48("white", 1271, 700)],
 };
 
+/**
+ * A portrait photo, upright 1080x1440, stored landscape (1440x1080) with EXIF
+ * Orientation 6 or 8 as a phone stores it. On 1080x1920: scale 4/3 to
+ * 1440x1920, offsetX 180, so upright x in [135, 945) is shown. Cyan is
+ * cropped on the left, white on the right. Read as landscape, the placement
+ * would be 2560x1920 at offsetX 740 instead, showing only x in about [312, 768).
+ */
+const PHOTO: Design = {
+  width: 1080,
+  height: 1440,
+  markers: [m48("red", 200, 120), m48("green", 760, 300), m48("blue", 300, 1200), m48("yellow", 820, 980), m48("magenta", 520, 640), m48("cyan", 40, 700), m48("white", 1000, 400)],
+};
+
 // ---------------------------------------------------------------------------
 // Tools
 
@@ -224,6 +238,21 @@ async function designVideo(design: Design, name: string, rotation: 0 | 90 | 270)
   if (rotation === 0) return coded;
   const file = path.join(sources, `${name}.mp4`);
   await ffmpeg(["-display_rotation", String(360 - rotation), "-i", coded, "-c", "copy", file]);
+  return file;
+}
+
+/**
+ * A JPEG of the design stored the way a phone stores it: for EXIF Orientation
+ * 6 (a viewer turns it 90 degrees clockwise) the pixels are the design turned
+ * counter-clockwise, for 8 clockwise. Encoded 4:4:4 at high quality so chroma
+ * does not blur the markers.
+ */
+async function designJpeg(design: Design, name: string, orientation: 6 | 8): Promise<string> {
+  const png = await designPng(design, path.join(sources, `${name}.png`));
+  const coded = path.join(sources, `${name}-coded.jpg`);
+  await ffmpeg(["-i", png, "-vf", orientation === 6 ? "transpose=cclock" : "transpose=clock", "-frames:v", "1", "-pix_fmt", "yuvj444p", "-q:v", "2", "-update", "1", coded]);
+  const file = path.join(sources, `${name}.jpg`);
+  await writeFile(file, jpegWithOrientation(await readFile(coded), orientation));
   return file;
 }
 
@@ -453,6 +482,10 @@ async function checkParity(doc: Production, name: string, samples: Sample[]): Pr
       const layer = layerAt(plan, sample.frame);
       const exported = measure(await exportFrame(video, plan, sample.frame), width, height);
       const previewed = measure(await previewFrame(browser, plan, layer, await proxyPicture(layer, sample.frame, `${name}-${sample.frame}`), `${name}-${sample.frame}`), width, height);
+      // One scale for both sides of the upright design: a placement built from the wrong upright size (a quarter turn the facts missed) stretches it.
+      const { scaledWidth: sw, scaledHeight: sh } = layer.placement;
+      const stretch = Math.abs(sw * sample.design.height - sh * sample.design.width) / Math.max(sample.design.width, sample.design.height);
+      expect(stretch, `${sample.label}: placement ${JSON.stringify(layer.placement)} keeps the shape of the upright ${sample.design.width}x${sample.design.height} picture`).toBeLessThanOrEqual(1);
       const expected = predict(sample.design, layer.placement, plan.canvas);
       measured.set(sample.label, { exported, previewed, expected });
       const detail = JSON.stringify({ placement: layer.placement, exported: Object.fromEntries(exported), previewed: Object.fromEntries(previewed), expected: Object.fromEntries(expected) });
@@ -584,6 +617,26 @@ describe.skipIf(MISSING)(`preview and export place footage on the same canvas pi
     const leftRule = moved(expected, (s) => ({ x: s.x - 1, y: s.y }));
     expect(maxError(exported, leftRule)).toBeGreaterThan(STILL_UNSCALED_BOUND_PX);
     expect(maxError(previewed, leftRule)).toBeGreaterThan(STILL_UNSCALED_BOUND_PX);
+    expect(processesUsing(root)).toEqual([]);
+  });
+
+  it("portrait photos stored landscape with EXIF Orientation 6 and 8, cropped left and right on 1080x1920", { timeout: 240_000 }, async () => {
+    const o6 = await importMedia(await designJpeg(PHOTO, "photo-6", 6));
+    const o8 = await importMedia(await designJpeg(PHOTO, "photo-8", 8));
+    await checkUpright(o6, PHOTO);
+    await checkUpright(o8, PHOTO);
+    const doc = production({ width: 1080, height: 1920 }, [{ record: o6, role: "image" }, { record: o8, role: "image" }], "b-roll");
+    const { plan } = await checkParity(doc, "photos", [
+      { label: "photo orientation 6", frame: MID, design: PHOTO, bound: STILL_SCALED_BOUND_PX },
+      { label: "photo orientation 8", frame: CLIP_FRAMES + MID, design: PHOTO, bound: STILL_SCALED_BOUND_PX },
+    ]);
+    // Stored 1440x1080; the orientation is read from the decoded frame, so the upright size is portrait.
+    expect(o6.facts.video).toMatchObject({ codec: "mjpeg", width: 1440, height: 1080, rotation: 90 });
+    expect(o8.facts.video).toMatchObject({ codec: "mjpeg", width: 1440, height: 1080, rotation: 270 });
+    expect(plan.video.map((l) => l.placement)).toEqual([
+      { scaledWidth: 1440, scaledHeight: 1920, offsetX: 180, offsetY: 0 },
+      { scaledWidth: 1440, scaledHeight: 1920, offsetX: 180, offsetY: 0 },
+    ]);
     expect(processesUsing(root)).toEqual([]);
   });
 });
