@@ -29,6 +29,7 @@
     "@fontsource/inter": "5.3.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.4",
+    "@xzdarcy/react-timeline-editor": "1.0.0",
     "archiver": "^7.0.1",
     "async-mutex": "^0.5.0",
     "class-variance-authority": "^0.7.1",
