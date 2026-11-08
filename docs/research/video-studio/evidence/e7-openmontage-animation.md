@@ -8,7 +8,7 @@ Examined 2026-11-04. Clones are read-only (`--filter=blob:none` or `--filter=tre
 "90d" = commits since 2026-08-05 from `git rev-list --count --since=2026-08-05 HEAD`.
 **Network limits:** huggingface.co and mocap.cs.cmu.edu are blocked in this session (proxy 403 / DNS refusal), and the `gh api` repo endpoints are refused for repositories not attached to the session. Model-card licences were therefore checked from GitHub repository files and READMEs where they exist. Items marked *(unverified)* come from a secondary source or memory.
 
-Verdicts use the vocabulary in `02-ecosystem-inventory.md` (Adopt / Integrate / Adapt / Learn / Skill / Exclude). Not covered here because earlier research already covers them: HyperFrames, GSAP, lottie-web, dotLottie, rive-wasm, Motion Canvas, Mermaid, Excalidraw-animate, Kokoro, ACE-Step, BiRefNet ([E4](/home/user/creatorbrio/docs/research/video-studio/evidence/e4-creative-and-audio-tools.md), [E5](/home/user/creatorbrio/docs/research/video-studio/evidence/e5-building-blocks.md)).
+Verdicts use the vocabulary in `02-ecosystem-inventory.md` (Adopt / Integrate / Adapt / Learn / Skill / Exclude). Not covered here because earlier research already covers them: HyperFrames, GSAP, lottie-web, dotLottie, rive-wasm, Motion Canvas, Mermaid, Excalidraw-animate, Kokoro, ACE-Step, BiRefNet ([E4](e4-creative-and-audio-tools.md), [E5](e5-building-blocks.md)).
 
 ---
 

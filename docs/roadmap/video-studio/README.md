@@ -1,6 +1,41 @@
 # CreatorBrio Video Studio | product roadmap and implementation program
 
-**Status:** architecture approved as a direction; execution tracked by [program #68](https://github.com/mk-global/creatorbrio/issues/68). **Source contract:** merged [PR #67](https://github.com/mk-global/creatorbrio/pull/67), [113 product requirements](../../research/video-studio/spec/01-product-requirements.md), [31 acceptance tests](../../research/video-studio/spec/10-acceptance-tests.md), [WS0–WS19](../../research/video-studio/spec/11-implementation-program.md). **Decision:** [architecture ADR](../../architecture/adr-creatorbrio-video-studio.md).
+**Status:** architecture approved; the program plan merged in [PR #110](https://github.com/mk-global/creatorbrio/pull/110), which closed [program #68](https://github.com/mk-global/creatorbrio/issues/68). Work now runs in campaigns: [Campaign A #135](https://github.com/mk-global/creatorbrio/issues/135) (the first Edit Studio slice), [#136](https://github.com/mk-global/creatorbrio/issues/136) and [#137](https://github.com/mk-global/creatorbrio/issues/137). See [Current status](#current-status) for what has merged. **Source contract:** merged [PR #67](https://github.com/mk-global/creatorbrio/pull/67), [113 product requirements](../../research/video-studio/spec/01-product-requirements.md), [31 acceptance tests](../../research/video-studio/spec/10-acceptance-tests.md), [WS0–WS19](../../research/video-studio/spec/11-implementation-program.md). **Decision:** [architecture ADR](../../architecture/adr-creatorbrio-video-studio.md).
+
+## Current status
+
+Status as of 2026-11-08, from merged pull requests and open issues.
+A workstream is delivered only when its issue's acceptance criteria are met; every workstream and gate issue below is still open.
+
+**What a person can do today:** edit an Instagram Reel by hand on the Studio page (`/studio`): pair a browser, import media by path, preview with sound, move, trim, split and delete clips, add titles, lower thirds and typed captions, undo and redo, and export an MP4 checked against the Instagram Reel profile.
+It has been verified with synthetic media only; creative acceptance on real footage is pending.
+No AI-assisted video editing exists yet: the Production API has an authority for agent runs, but nothing uses it.
+
+| Item | Merged so far | Remaining |
+|---|---|---|
+| WS1 [#78](https://github.com/mk-global/creatorbrio/issues/78) production data and atomic operations | Schema and admission (PR [#113](https://github.com/mk-global/creatorbrio/pull/113)), change sets with undo, redo and agent runs ([#115](https://github.com/mk-global/creatorbrio/pull/115)), durable store ([#119](https://github.com/mk-global/creatorbrio/pull/119)), Production API ([#121](https://github.com/mk-global/creatorbrio/pull/121)), browser pairing ([#123](https://github.com/mk-global/creatorbrio/pull/123)), media admission ledger ([#143](https://github.com/mk-global/creatorbrio/pull/143)) | Stage-exit approvals; the issue's acceptance review |
+| WS2 [#79](https://github.com/mk-global/creatorbrio/issues/79) media ingest | Import by path, read-only originals, probing, preview copies, waveform peaks, HDR tone mapping ([#143](https://github.com/mk-global/creatorbrio/pull/143)) | Browser upload and imports as jobs ([#141](https://github.com/mk-global/creatorbrio/issues/141)); real iPhone HDR (G2) |
+| WS3 [#80](https://github.com/mk-global/creatorbrio/issues/80) rights and provenance | Imports recorded as user-supplied ([#143](https://github.com/mk-global/creatorbrio/pull/143)) | Licences, consent, credits and a rights check at export |
+| WS4 [#81](https://github.com/mk-global/creatorbrio/issues/81) renderer, preview and compiler | Compiler, script-free overlay renderer, FFmpeg export, manifest ([#149](https://github.com/mk-global/creatorbrio/pull/149)) | Storyboard scenes, range renders, transitions, speed, effects; [#147](https://github.com/mk-global/creatorbrio/issues/147), [#152](https://github.com/mk-global/creatorbrio/issues/152) |
+| WS5 [#82](https://github.com/mk-global/creatorbrio/issues/82) jobs and workers | File-backed media and render jobs with recovery ([#143](https://github.com/mk-global/creatorbrio/pull/143), [#149](https://github.com/mk-global/creatorbrio/pull/149)) | Model workers and registry; [#148](https://github.com/mk-global/creatorbrio/issues/148) |
+| WS12 [#89](https://github.com/mk-global/creatorbrio/issues/89) / [#107](https://github.com/mk-global/creatorbrio/issues/107) graphics | Captions, lower third and title card ([#149](https://github.com/mk-global/creatorbrio/pull/149)) | The remaining Edit Studio graphics |
+| WS13 [#90](https://github.com/mk-global/creatorbrio/issues/90) audio | Two-pass loudness normalisation ([#149](https://github.com/mk-global/creatorbrio/pull/149)) | Music, effects, denoise; muting a clip's own sound ([#146](https://github.com/mk-global/creatorbrio/issues/146)) |
+| WS14 [#91](https://github.com/mk-global/creatorbrio/issues/91) Studio UI | The Studio page ([#153](https://github.com/mk-global/creatorbrio/pull/153)) | One-frame preview sync over a whole play ([#151](https://github.com/mk-global/creatorbrio/issues/151)); transcript editing, storyboard |
+| WS16 [#93](https://github.com/mk-global/creatorbrio/issues/93) QA | Export conformance verifier ([#149](https://github.com/mk-global/creatorbrio/pull/149)) | Creative, claims and rights QA |
+| WS17 [#94](https://github.com/mk-global/creatorbrio/issues/94) deliverables | Instagram profile, SRT and WebVTT captions, manifest ([#149](https://github.com/mk-global/creatorbrio/pull/149)) | Other profiles, credit sheets, edit bundles |
+| WS0, WS6–WS11, WS15, WS18, WS19 | Architecture decision for WS0 ([#110](https://github.com/mk-global/creatorbrio/pull/110), amended in [#139](https://github.com/mk-global/creatorbrio/pull/139)); nothing else merged | All |
+
+| Gate | Result | Open conditions |
+|---|---|---|
+| G0 [#66](https://github.com/mk-global/creatorbrio/issues/66), [#68](https://github.com/mk-global/creatorbrio/issues/68) | Contract and program accepted (both closed) | None |
+| G1 [#97](https://github.com/mk-global/creatorbrio/issues/97) renderer | HyperFrames failed (GSAP licence); OpenFilm kept as a fallback; CreatorBrio's own script-free overlay renderer with FFmpeg chosen ([record](gates/g1-renderer.md)) | Creator visual review |
+| G2 [#98](https://github.com/mk-global/creatorbrio/issues/98) HDR and proxies | Conditional: synthetic HDR only ([record](gates/g2-hdr-proxies.md)) | Real iPhone HDR, Dolby Vision, variable frame rate |
+| G7 [#103](https://github.com/mk-global/creatorbrio/issues/103) timeline | Conditional pass for `@xzdarcy/react-timeline-editor` ([record](gates/g7-timeline.md)); the conditions were met in [#153](https://github.com/mk-global/creatorbrio/pull/153) | The issue's closing review |
+| G9 [#105](https://github.com/mk-global/creatorbrio/issues/105) licences | Renderer and timeline licences recorded ([#139](https://github.com/mk-global/creatorbrio/pull/139)); the rest not done | The full licence and terms review |
+| G3–G6, G8 | Not started | All |
+
+**Sequencing note.** The critical path in section 9 puts the storyboard ([#87](https://github.com/mk-global/creatorbrio/issues/87)) before the editing UI ([#91](https://github.com/mk-global/creatorbrio/issues/91)); Campaign A built a first editing UI slice first, and no storyboard work has started.
+Whether to keep that order is an open decision for the maintainer.
 
 ## 1. What ships
 
@@ -43,7 +78,7 @@ flowchart TD
     C --> H[Optional hosted paid tier, later]
 ```
 
-**Phase 0: architecture, governance and qualification.** Approved contract (PR #67), ADR, model/dependency license scan, ticket admission. Run G1 render, G7 timeline, G9 licenses in parallel with independent shared-schema work. No application-wide Node upgrade until necessary. Prepare real footage, style references and fixture recordings.
+**Phase 0: architecture, governance and qualification.** Approved contract (PR #67), ADR, model/dependency license scan, ticket admission. G1 and G7 are recorded and G9 is in progress; see [Current status](#current-status). No application-wide Node upgrade until necessary. Prepare real footage, style references and fixture recordings.
 
 **Phase 1: Shared Core.** Production v2 schema and immutable changes, media ingest and proxy pipeline, rights/provenance, file-backed job system, AI provider gateway, renderer adapter and preview, research and script, scene-based storyboard, professional media/graphics capability and image-provider contracts. This foundation supports footage, script and hybrid without requiring every specialized creative engine to exist yet.
 
@@ -131,6 +166,8 @@ Each gate must record PASS / CONDITIONAL / FAIL, reproducible evidence, actual h
 - Aim for a 60-second 1080×1920 render in under five minutes on the M5 Max, conditional up to ten minutes with excellent quality; confirm in G1.
 
 ## 9. Execution rules and immediate order
+
+Steps 1 and 3 are done (PR #110; the G1 and G7 records in PR #139 and the WS1 pull requests); the rules in steps 2, 4 and 5 still apply.
 
 1. PR #67 merged; create/merge this roadmap PR under issue #68 and standard protected-branch gates. No implementation PR may cite a closed issue: linked execution tickets must be open.
 2. Validate workstream and gate ticket bodies with the **canonical installed** EngineeringToolsMK `tools/github-policy/validate.py` (ticket/linked-ticket/pr). Do not copy the validator into this repository.

@@ -1,5 +1,10 @@
 # CreatorBrio Video Studio: product specification
 
+> **Historical record, 2026-11-08.** The specification was accepted (gate G0) and remains the product contract; its status line below is kept as written.
+> Since then the renderer decision changed: HyperFrames failed gate G1, and CreatorBrio uses its own script-free overlay renderer with FFmpeg (see the [amended ADR](../../../architecture/adr-creatorbrio-video-studio.md)).
+> A first Studio slice has also merged.
+> For current status, see the [roadmap](../../../roadmap/video-studio/README.md#current-status).
+
 **Status:** proposed for founder approval (gate G0). Once approved, this specification is the authoritative product contract for Video Studio.
 **Ticket:** [mk-global/creatorbrio#66](https://github.com/mk-global/creatorbrio/issues/66) · **Date:** 2026-11-04
 **Builds on:** the merged architecture research ([index](../README.md), [mk-global/creatorbrio#64](https://github.com/mk-global/creatorbrio/pull/64)). Where they differ, this specification governs; every difference is listed in [09](09-differences-from-pr64.md).
