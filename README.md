@@ -50,21 +50,21 @@ The same idea is being extended to video: one production that you can edit by ha
 
 ## What you can do today
 
-| What | Status | Notes |
-|---|---|---|
-| Design a carousel by chatting | Works | Needs Claude Code. A Visual Director plans the message, the slide count and the imagery; the design agent then writes the slides. A request that cannot be done as planned stops before any slide changes and says why. |
-| Keep the intent across requests | Works | The plan's intent is saved as the carousel's Creative Brief, so "make it more dramatic" keeps the same subject and constraints. |
-| Brands | Works | Several brands, each with five colours, heading and body fonts from a curated Google Fonts list, a logo and style keywords. A carousel keeps the brand it was created in. Brands cannot be deleted yet. |
-| Formats | Works | 1:1 (1080×1080), 4:5 (1080×1350, the default) and 9:16 (1080×1920). Changing the format does not reflow existing slides. |
-| Reference images and links | Works | Attach PNG, JPG or WebP images to show on a slide or to follow as a style; paste up to three public links to use as sources. |
-| Generated and edited images | Optional | With a separate local image service, which is not part of this repository, a plan can generate images or replace the background of your photo, up to five per message. Without it, everything else works. |
-| Review and arrange | Works | Live preview in a sandboxed frame, an Instagram safe-zone overlay, full-window preview, drag to reorder, five undo steps per slide, delete, rename and duplicate. |
-| Recover an unfinished design | Works | If a design stops, the slides it saved are kept, Export waits for you to accept them, and **Continue** makes only the missing ones. |
-| Templates | Works | Save a carousel as a template and start new carousels from it. |
-| Captions and hashtags | Works | The agent writes them on request; the editor shows them with copy buttons but does not edit them. |
-| Export | Works | **Instagram · PNG ZIP** at exact pixel sizes (or one PNG for a one-slide carousel) and **LinkedIn · PDF**, printed natively so its text can be selected and searched. A slide the PDF cannot print faithfully is refused with the reason, not flattened into a picture. |
-| Edit a Reel by hand (Video Studio) | Early | Import by file path, preview with sound, move, trim, split and delete clips, add titles, lower thirds and typed captions, undo and redo, and export an MP4 checked against Instagram's Reel requirements. Verified with synthetic media only. |
-| AI-assisted video editing | Not built | The video API already gives agents a separate, scoped authority, but nothing uses it yet. See [What we're building now](#what-were-building-now). |
+| What you can do | Status and notes |
+|---|---|
+| Design a carousel by chatting | **Works.** Needs Claude Code. A Visual Director plans the message, the slide count and the imagery; the design agent then writes the slides. A request that cannot be done as planned stops before any slide changes and says why. |
+| Keep the intent across requests | **Works.** The plan's intent is saved as the carousel's Creative Brief, so "make it more dramatic" keeps the same subject and constraints. |
+| Brands | **Works.** Several brands, each with five colours, heading and body fonts from a curated Google Fonts list, a logo and style keywords. A carousel keeps the brand it was created in. Brands cannot be deleted yet. |
+| Formats | **Works.** 1:1 (1080×1080), 4:5 (1080×1350, the default) and 9:16 (1080×1920). Changing the format does not reflow existing slides. |
+| Reference images and links | **Works.** Attach PNG, JPG or WebP images to show on a slide or to follow as a style; paste up to three public links to use as sources. |
+| Generated and edited images | **Optional.** With a separate local image service, which is not part of this repository, a plan can generate images or replace the background of your photo, up to five per message. Without it, everything else works. |
+| Review and arrange | **Works.** Live preview in a sandboxed frame, an Instagram safe-zone overlay, full-window preview, drag to reorder, five undo steps per slide, delete, rename and duplicate. |
+| Recover an unfinished design | **Works.** If a design stops, the slides it saved are kept, Export waits for you to accept them, and **Continue** makes only the missing ones. |
+| Templates | **Works.** Save a carousel as a template and start new carousels from it. |
+| Captions and hashtags | **Works.** The agent writes them on request; the editor shows them with copy buttons but does not edit them. |
+| Export | **Works.** **Instagram · PNG ZIP** at exact pixel sizes (or one PNG for a one-slide carousel) and **LinkedIn · PDF**, printed natively so its text can be selected and searched. A slide the PDF cannot print faithfully is refused with the reason, not flattened into a picture. |
+| Edit a Reel by hand (Video Studio) | **Early.** Import by file path, preview with sound, move, trim, split and delete clips, add titles, lower thirds and typed captions, undo and redo, and export an MP4 checked against Instagram's Reel requirements. Verified with synthetic media only. |
+| AI-assisted video editing | **Not built.** The video API already gives agents a separate, scoped authority, but nothing uses it yet. See [What we're building now](#what-were-building-now). |
 
 <table>
 <tr>
@@ -81,14 +81,15 @@ The same idea is being extended to video: one production that you can edit by ha
 
 ### Requirements
 
-| | Needed for | |
-|---|---|---|
-| Node.js 20.9 or later, with npm | Everything | Next.js 16 refuses to start on older versions. |
-| Git | Getting the code | |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code), installed and signed in | Designing slides | CreatorBrio runs the `claude` command on your machine, so it uses your Claude Code account and its usage limits. Without it the app opens, but it cannot create slide content. |
-| About 300 MB of disk | Export | For the Chromium build that PNG and PDF export use, downloaded during setup. |
-| FFmpeg 6.0 or later, with ffprobe | Video Studio only | For example `brew install ffmpeg` on macOS. |
-| A local image service | Generated images only | Optional, separate from this repository; reached at `http://127.0.0.1:8791` unless `IMAGE_SERVICE_URL` says otherwise. |
+- **Node.js 20.9 or later, with npm.** Next.js 16 refuses to start on older versions.
+- **Git**, to get the code.
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code), installed and signed in**, to design slides.
+  CreatorBrio runs the `claude` command on your machine, so it uses your Claude Code account and its usage limits.
+  Without it the app opens, but it cannot create slide content.
+- **About 300 MB of disk** for the Chromium build that PNG and PDF export use, downloaded during setup.
+- **FFmpeg 6.0 or later, with ffprobe**, for the Video Studio only (for example `brew install ffmpeg` on macOS).
+- **A local image service**, optional, for generated images only.
+  It is separate from this repository and is reached at `http://127.0.0.1:8791` unless `IMAGE_SERVICE_URL` says otherwise.
 
 CreatorBrio is developed on macOS, and CI runs on Linux.
 Windows has code paths for starting the app but is not tested, and `/stop` does not work there.
