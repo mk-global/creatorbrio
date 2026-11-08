@@ -1,5 +1,10 @@
 # 00 · Executive decision: CreatorBrio Video Studio
 
+> **Historical record, 2026-11-08.** This document is kept as written.
+> Since then the renderer decision changed: HyperFrames failed gate G1, and CreatorBrio uses its own script-free overlay renderer with FFmpeg (see the [amended ADR](../../architecture/adr-creatorbrio-video-studio.md)).
+> A first Studio slice has also merged.
+> For current status, see the [roadmap](../../roadmap/video-studio/README.md#current-status).
+
 [← Research index](README.md)
 
 > **Superseded in part.** The product specification in [`spec/`](spec/README.md) extends this document for both production workflows. See [spec/09](spec/09-differences-from-pr64.md) for exactly what changed.

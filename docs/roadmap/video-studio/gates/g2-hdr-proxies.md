@@ -27,7 +27,9 @@ Tone-mapping quality, Dolby Vision metadata and variable frame rate need real iP
 
 ## Consequences for the slice
 
-These are requirements on work not yet built:
+These were requirements on work not yet built when this gate was measured.
+**Status, 2026-11-08:** all three are built: proxies in [PR #143](https://github.com/mk-global/creatorbrio/pull/143) ([media library](../../../architecture/video-media-registry.md)), the export's conversion in [PR #149](https://github.com/mk-global/creatorbrio/pull/149) ([rendering](../../../architecture/video-rendering.md)), and the `hdr-converted` mark on a media's preview job. The gate stays conditional until real iPhone footage is qualified.
+
 
 - Media import (WS2 [#79](https://github.com/mk-global/creatorbrio/issues/79)) is to probe transfer and primaries, and make SDR BT.709 proxies of HLG and PQ sources through `scale_vt`, of everything else through the software scaler.
 - The final render (WS4 [#81](https://github.com/mk-global/creatorbrio/issues/81)) is to convert HDR originals the same way before compositing, so preview and export agree.

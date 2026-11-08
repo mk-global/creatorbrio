@@ -15,7 +15,7 @@ Framewoven does not claim authorship of the original implementation.
 |---|---|---|
 | Original project | https://github.com/Hainrixz/open-carrusel | Source of the original implementation |
 | Maintained fork | https://github.com/manishkumarglobal/open-carrusel | Reliability and correctness fixes, releases `v0.1.1` and `v0.1.2` |
-| Framewoven | https://github.com/manishkumarglobal/framewoven | Canonical repository from 2026-10-27 onward |
+| Framewoven | https://github.com/manishkumarglobal/framewoven | Canonical repository from 2026-10-27 until the move to `mk-global/creatorbrio` on 2026-10-31 |
 
 ## Source baseline
 

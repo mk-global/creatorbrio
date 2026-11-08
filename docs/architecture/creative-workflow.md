@@ -207,7 +207,7 @@ Update routes never accept `assets` from a request body.
 | Serving uploads and attached images written after the app was built | `src/lib/upload-files.ts` and the `/uploads/[...path]` route |
 
 Everything uses the existing local storage: JSON files written through `src/lib/data.ts` (one lock per file, a temporary file, then a rename) and plain files.
-There is no database, queue or scheduler.
+The carousel workflow has no database, queue or scheduler; the Video Studio's durable jobs are described in [video-rendering.md](video-rendering.md#render-jobs).
 
 A production server (`npm start`) serves only the files that were in `public/` when the app was built.
 Uploaded and generated images are written while the app runs, so a route serves them, and only in the shapes the app writes: `<uuid>.png` in `public/uploads/` and `<uuid>.woff2` or `<uuid>.ttf` in `public/uploads/fonts/`, as regular files that are not links.

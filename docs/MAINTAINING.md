@@ -160,5 +160,6 @@ Record anything adopted this way in the pull request that adopts it, which carri
 ## Roadmap
 
 CreatorBrio owns its roadmap.
-Planned capabilities are listed in the README and get a tracked Issue when work on them is scheduled.
+The README gives an overview of current work and planned direction; the Video Studio plan, its workstreams, gates and current status live in [roadmap/video-studio/](roadmap/video-studio/README.md).
+Planned capabilities get a tracked Issue when work on them is scheduled.
 They are described as shipped only after they are released.

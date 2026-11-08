@@ -1,5 +1,10 @@
 # CreatorBrio Video Studio: architecture research
 
+> **Historical record, 2026-11-08.** This document is kept as written.
+> Since then the renderer decision changed: HyperFrames failed gate G1, and CreatorBrio uses its own script-free overlay renderer with FFmpeg (see the [amended ADR](../../architecture/adr-creatorbrio-video-studio.md)).
+> A first Studio slice has also merged.
+> For current status, see the [roadmap](../../roadmap/video-studio/README.md#current-status).
+
 Research package for [#63](https://github.com/mk-global/creatorbrio/issues/63), dated **2026-11-03**.
 It recommends how to build a professional, AI-assisted Video Studio for short-form reels inside CreatorBrio.
 The recommendation is based on source-code study of the open-source ecosystem and a small rendering experiment.

@@ -8,12 +8,12 @@ Derived from the MIT-licensed Open Carrusel project and now independently mainta
 
 ## Architecture
 
-- **Frontend**: React app (localhost:3000 by default; `/start [port]` and `PORT` override it) with chat panel (left), carousel preview (center), slide filmstrip (bottom)
+- **Frontend**: React app (localhost:3000 by default; `/start [port]` and `PORT` override it) with chat panel (left), carousel preview (center), slide filmstrip (bottom); the Video Studio editor is at `/studio`
 - **Network**: `npm run dev` and `npm start` listen on 127.0.0.1 only. `src/proxy.ts` refuses `/api/*` requests whose `Host` is not loopback, and state-changing requests carrying another site's `Origin`; requests without `Origin` (the agent's curl) are allowed
 - **AI Agent**: Claude CLI spawned as subprocess via `/api/chat`, communicates through SSE streaming
 - **Storage**: JSON files in `/data/` with async-mutex locking and atomic writes
 - **Brands**: `src/lib/brand.ts` owns `data/brands.json`, created once from the original `brand.json`, which the app never writes again (setup only seeds it when missing). The migrated default brand's id is the fixed `"default"`. A carousel's `brandId` is set at creation and never changes; carousels and templates without one belong to the default brand. `/api/chat` passes the carousel's brand to `buildSystemPrompt` unchanged
-- **Export**: Puppeteer screenshots HTML slides to PNG at exact Instagram dimensions
+- **Export**: Puppeteer screenshots HTML slides to PNG at exact Instagram dimensions and prints them natively to a text-searchable LinkedIn PDF (`docs/architecture/carousel-export.md`)
 - **Slides**: Full HTML documents rendered in sandboxed iframes. `wrapSlideHtml()` in `src/lib/slide-html.ts` is the shared rendering contract between preview and export.
 
 ## Key Files

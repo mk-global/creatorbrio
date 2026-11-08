@@ -86,6 +86,7 @@ Runs, briefs and asset records use the existing JSON files with a per-file lock 
 Why: CreatorBrio is a single-user local app.
 The data is small, and plain files are easy to back up, inspect and repair.
 A database, queue or workflow engine would add installation and operational weight with no benefit at this scale.
+The Video Studio's media preparation and rendering do run as durable jobs, but in the app's own process and recorded as files, not through an external queue.
 
 Cost: the JSON writes rename without flushing, so an operating-system crash or power loss can lose the latest writes.
 Writing files before the records that name them, and checking hashes before reuse, contains that loss.

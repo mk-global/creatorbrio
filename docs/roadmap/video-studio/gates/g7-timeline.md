@@ -29,6 +29,8 @@ The spike page (`scripts/gates/g7/timeline-spike.page.tsx.example`) renders six 
 
 ## What CreatorBrio must supply
 
+**Status, 2026-11-08:** the Studio page ([PR #153](https://github.com/mk-global/creatorbrio/pull/153), [design](../../../architecture/video-studio-page.md)) supplies all four: focusable, named clips with keyboard select, move and trim; whole-frame positions; drags stopped flush against a neighbour with the server's refusals shown; and snapping to the same lane's edges and the playhead.
+
 - Keyboard access: no timeline item could receive focus; the only roles came from the virtualized grid. Each item needs a focusable control and keyboard commands for select, move and trim.
 - Frame snapping: the widget works in seconds; positions are rounded to whole frames before a change set is sent.
 - Overlap prevention: the widget let a clip be dropped over another on the same lane; the drag must be constrained, and the server's rejection shown.
@@ -37,8 +39,8 @@ The spike page (`scripts/gates/g7/timeline-spike.page.tsx.example`) renders six 
 ## Not measured
 
 - Ripple and keyframe editing: these are CreatorBrio operations, not widget features, and are tested with the change engine.
-- A production build's per-edit cost.
-- Screen-reader behaviour of the focusable controls, which do not exist yet.
+- A production build's per-edit cost (since measured in [PR #153](https://github.com/mk-global/creatorbrio/pull/153): 40 ms from key press to the redrawn clip at the median).
+- Screen-reader behaviour of the focusable controls, which now exist but have not been tried with a screen reader.
 
 ## Reproduce
 

@@ -2,161 +2,100 @@
 
 # CreatorBrio
 
-### An AI-powered creative studio for branded social content.
+### A local-first creative studio for branded social content.
 
-**Chat with Claude. Design on-brand Instagram carousels. Export pixel-exact PNGs.**
+**Describe a post. Get on-brand slides. Export for Instagram or LinkedIn.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-1a1a2e.svg?style=flat-square)](./LICENSE)
 [![CI](https://github.com/mk-global/creatorbrio/actions/workflows/ci.yml/badge.svg)](https://github.com/mk-global/creatorbrio/actions/workflows/ci.yml)
-[![Next.js 16](https://img.shields.io/badge/Next.js-16-000.svg?style=flat-square)](https://nextjs.org)
-[![React 19](https://img.shields.io/badge/React-19-149eca.svg?style=flat-square)](https://react.dev)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg?style=flat-square)](https://www.typescriptlang.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-1a1a2e.svg?style=flat-square)](./LICENSE)
 
-![CreatorBrio dashboard](./docs/screenshots/dashboard.png)
+![The CreatorBrio editor: a chat request on the left, the first slide of a five-slide carousel in the centre, and the caption and hashtags the agent saved below it](./docs/screenshots/editor.png)
 
 </div>
 
----
+CreatorBrio designs carousels for Instagram and LinkedIn from a conversation.
+You describe a post in the chat panel; a planning step decides what the post should say and which slides need imagery, and a Claude design agent writes each slide as HTML and CSS in your brand's colours and fonts.
+The slides render live in the editor, and you export them as Instagram PNGs or as a LinkedIn PDF whose text stays real, selectable text.
 
-## What is CreatorBrio?
+An early **Video Studio** edits short Instagram Reels by hand: import footage and music, trim and arrange clips, add titles and captions, and export a verified MP4.
+It is the foundation for AI-assisted video editing, which is the main work in progress and is not built yet.
 
-CreatorBrio is a local-first, AI-assisted tool for creating branded carousel content.
-You describe what you want in a chat panel, and a Claude design agent writes each slide as HTML and CSS using your brand's colors, fonts, and style.
-Slides render live in the editor and export as PNGs at Instagram's exact pixel dimensions.
+CreatorBrio runs on your computer and keeps your work in plain files, with no accounts and no cloud storage.
+It is not offline: designing slides sends your request and brand details to Anthropic through your own Claude Code account (see [What leaves your machine](#what-leaves-your-machine)).
 
-The app runs on your own machine.
-Your carousels, brand settings, and uploads are plain files in the project folder, with no app accounts and no cloud storage.
-The design agent is Claude, so each chat request sends your message, brand settings, the open carousel's details, and any reference images the agent opens to Anthropic through your Claude Code account.
-The agent can also read this app's local data through its API, and it may fetch web pages while it researches a topic.
+## Contents
 
-## Table of contents
-
+- [Why CreatorBrio exists](#why-creatorbrio-exists)
 - [What you can do today](#what-you-can-do-today)
-- [Requirements](#requirements)
-- [Install and run](#install-and-run)
+- [Quick start](#quick-start)
+- [What leaves your machine](#what-leaves-your-machine)
+- [How it works](#how-it-works)
+- [What we're building now](#what-were-building-now)
+- [Roadmap](#roadmap)
+- [How it is built](#how-it-is-built)
+- [Known limitations](#known-limitations)
 - [Your data](#your-data)
-- [How a request is planned and designed](#how-a-request-is-planned-and-designed)
-- [How the design agent works](#how-the-design-agent-works)
-- [Slash commands and scripts](#slash-commands-and-scripts)
-- [Architecture](#architecture)
-  - [Architecture and design philosophy](#architecture-and-design-philosophy)
-- [Project structure](#project-structure)
+- [Commands and scripts](#commands-and-scripts)
 - [Troubleshooting](#troubleshooting)
-- [Planned capabilities](#planned-capabilities)
+- [Project structure](#project-structure)
 - [Contributing](#contributing)
 - [Origin and license](#origin-and-license)
 
----
+## Why CreatorBrio exists
+
+Making a branded post usually takes several tools: a design app, an AI chat in another tab, a folder of brand assets, and an exporter, with the brand explained again each time.
+CreatorBrio keeps the brand, the conversation, the slides and the exports together, so a request like "make slide 3 more minimal" changes that slide, in your fonts and colours, and the result is ready to post.
+
+The same idea is being extended to video: one production that you can edit by hand today and, later, with AI help, without moving between apps.
 
 ## What you can do today
 
-![CreatorBrio editor](./docs/screenshots/editor.png)
+| What | Status | Notes |
+|---|---|---|
+| Design a carousel by chatting | Works | Needs Claude Code. A Visual Director plans the message, the slide count and the imagery; the design agent then writes the slides. A request that cannot be done as planned stops before any slide changes and says why. |
+| Keep the intent across requests | Works | The plan's intent is saved as the carousel's Creative Brief, so "make it more dramatic" keeps the same subject and constraints. |
+| Brands | Works | Several brands, each with five colours, heading and body fonts from a curated Google Fonts list, a logo and style keywords. A carousel keeps the brand it was created in. Brands cannot be deleted yet. |
+| Formats | Works | 1:1 (1080×1080), 4:5 (1080×1350, the default) and 9:16 (1080×1920). Changing the format does not reflow existing slides. |
+| Reference images and links | Works | Attach PNG, JPG or WebP images to show on a slide or to follow as a style; paste up to three public links to use as sources. |
+| Generated and edited images | Optional | With a separate local image service, which is not part of this repository, a plan can generate images or replace the background of your photo, up to five per message. Without it, everything else works. |
+| Review and arrange | Works | Live preview in a sandboxed frame, an Instagram safe-zone overlay, full-window preview, drag to reorder, five undo steps per slide, delete, rename and duplicate. |
+| Recover an unfinished design | Works | If a design stops, the slides it saved are kept, Export waits for you to accept them, and **Continue** makes only the missing ones. |
+| Templates | Works | Save a carousel as a template and start new carousels from it. |
+| Captions and hashtags | Works | The agent writes them on request; the editor shows them with copy buttons but does not edit them. |
+| Export | Works | **Instagram · PNG ZIP** at exact pixel sizes (or one PNG for a one-slide carousel) and **LinkedIn · PDF**, printed natively so its text can be selected and searched. A slide the PDF cannot print faithfully is refused with the reason, not flattened into a picture. |
+| Edit a Reel by hand (Video Studio) | Early | Import by file path, preview with sound, move, trim, split and delete clips, add titles, lower thirds and typed captions, undo and redo, and export an MP4 checked against Instagram's Reel requirements. Verified with synthetic media only. |
+| AI-assisted video editing | Not built | The video API already gives agents a separate, scoped authority, but nothing uses it yet. See [What we're building now](#what-were-building-now). |
 
-- **Design slides by chatting.**
-  The editor's chat panel sends your request to a Claude design agent, which creates, rewrites, or deletes slides in the open carousel.
-  Ask for a whole carousel, or name a slide to change ("make slide 3 more minimal").
-  Replies arrive one complete message at a time, and new slides appear in the filmstrip as the agent saves them.
-- **Visual planning before design.**
-  Before the design agent starts, a Visual Director works out what the request is for, who it is for and the central message, then decides which slides need imagery and of what kind: type alone, designed visuals, your own images, or a newly generated image.
-  The chat shows each stage ("Planning visuals", "Preparing images", "Creating the design"), and the carousel remembers the intent behind it, so a later "make it more dramatic" keeps the same subject and constraints.
-  If a request cannot be carried out as planned, it stops before any slide changes and says why, with a **Retry** button when retrying can help.
-  When the finished slides differ from the plan, the chat says **Done, with differences from the visual plan** and lists them.
-- **Generated images (optional).**
-  With a separate local image service set up on your machine, the plan can include up to five generated images per message, placed on the slides the plan names.
-  The image service is not part of this repository; without it, everything else works and plans use no generated images.
-- **Links as sources.**
-  Paste up to three public links in a message, and their text is read and used for planning; a page that cannot be read stops the request with a suggestion to paste its text instead.
-- **HTML and CSS slides.**
-  Each slide is real HTML and CSS, rendered in a sandboxed iframe for preview and screenshotted by the same rendering code for export, so the preview matches the PNG.
-- **Brand configuration.**
-  A setup dialog saves your brand name, five colors, heading and body fonts from a curated list of Google Fonts, an optional logo, and style keywords.
-  Once a brand name is set, every chat request gives these to the design agent.
-- **Multiple brands.**
-  One installation can hold several brands.
-  The dashboard's brand selector shows one brand's carousels and templates at a time, and **Add brand** and the pencil button create and edit brands.
-  Each carousel belongs to the brand it was created in, shown in the editor's top bar, and the design agent always works with that brand, whichever brand the dashboard is showing.
-  A carousel's brand cannot be changed later, and brands cannot be deleted yet.
-- **Brand fonts in preview and export.**
-  Preview loads fonts from Google Fonts, and export embeds them into each slide so the PNGs use the real typefaces.
-- **Three Instagram formats.**
-  Each carousel is 1:1 (1080x1080), 4:5 (1080x1350, the default), or 9:16 (1080x1920).
-  You choose the format when creating a carousel and can change it from the editor toolbar.
-  Changing it does not reflow slides that were designed for the previous format.
-- **Reference images.**
-  Attach PNG, JPG, or WebP images in the chat panel.
-  The Visual Director decides, slide by slide, whether each one is shown as content (for example your own photograph on a cover) or followed as a style to match, and the design agent can open them.
-- **Reorder and undo.**
-  Drag slides in the filmstrip to reorder them.
-  Each slide keeps its last five versions, and its Undo button steps back one version at a time.
-- **Templates.**
-  Save a carousel as a template from the editor toolbar, then start new carousels from it in the dashboard's Templates tab.
-- **Duplicate carousels** from the dashboard.
-- **Safe-zone overlay** on the editor preview, showing where Instagram's profile-grid crop and on-screen controls cover the slide.
-- **Full-window preview** that steps through slides with the arrow keys.
-- **Captions and hashtags.**
-  Ask the design agent for a caption, and it saves the caption and hashtags to the carousel, where the editor shows them with copy buttons.
-- **Export for Instagram or LinkedIn.**
-  The Export menu renders every slide in headless Chromium at the carousel's exact dimensions and offers these downloads:
-  - **Instagram · PNG ZIP**: one PNG per slide, in a ZIP.
-    A carousel with a single slide, such as a reel cover, can also be downloaded as that one PNG with **Instagram · PNG**, no ZIP to extract.
-  - **LinkedIn · PDF**: one PDF for a LinkedIn document post, with one page per slide in carousel order.
-    Chromium prints each slide natively, so its text is real PDF text that can be selected, copied and searched, set in embedded subsets of the slide's fonts and sharp at any zoom.
-    CSS and SVG shapes stay vector graphics and photographs stay images, on a page with the carousel's own aspect ratio.
-    4:5 portrait is the recommended LinkedIn format; 1:1 exports as square pages, and 9:16 exports as-is with a note that 4:5 generally displays better in LinkedIn's feed.
-    A PDF larger than LinkedIn's 100 MB limit is refused with a message saying what to change.
-    A slide whose text or effects cannot be printed faithfully is refused with a message naming the slide, rather than exported as a picture or drawn wrongly; see [Native PDF limits](#native-pdf-limits).
+<table>
+<tr>
+<td width="50%"><img src="./docs/screenshots/dashboard.png" alt="The dashboard: a brand selector and three carousels"></td>
+<td width="50%"><img src="./docs/screenshots/studio.png" alt="The Video Studio: a media library, a vertical preview with a title and a caption, the caption Inspector and a five-track timeline"></td>
+</tr>
+<tr>
+<td>The dashboard: carousels and templates, one brand at a time.</td>
+<td>The Video Studio with synthetic footage and music, a title card and a caption.</td>
+</tr>
+</table>
 
-  While the design agent is still creating or changing slides, the Export button reads **Waiting for slides…** and is unavailable, so a download never captures a half-finished carousel.
-  Every open editor tab notices within a couple of seconds, including one left open before the generation started.
-  When the agent finishes, Export opens as usual.
-  When it was stopped (the Stop button, a page reload, a closed tab), failed or timed out after changing slides, every slide it saved is kept, but the Export button reads **Incomplete**: export the slides only after confirming them with **Use these slides**, or ask the agent to continue and export once it finishes.
-  Only the slides themselves count as changes: their content and their order.
-  Attaching a reference image or editing a slide's notes, the caption, the hashtags or the carousel's name never makes a generation incomplete.
-  If the server stops while the agent is working, the carousel reads **Incomplete** only when its slides changed.
-  A carousel runs one generation at a time: a message sent from another tab while one is running is refused with a message saying so.
+## Quick start
 
-  If an export fails, the editor tells you what went wrong.
-- **Video Studio (early).**
-  Open `/studio` to edit an Instagram Reel by hand: 1080 × 1920 at 30 frames per second, up to 90 seconds.
-  The first time, the page asks for a pairing code: run `npm run studio:pair` in the CreatorBrio folder and type the code it prints.
-  The pairing lasts 12 hours, also across restarts.
-  - **Import** video, sound and still images by their full path on your computer; CreatorBrio copies each into its library and never changes the original.
-    Uploading from the browser is not available yet.
-  - **Preview** the production with its sound, music, captions and graphics, drawn by the same code that renders the export.
-  - **Edit** on the timeline with the mouse or the keyboard: move, trim, split, swap and delete clips.
-    Add a title card, a lower third or timed captions and edit them in the Inspector.
-    Every edit can be undone and redone, and nothing is lost when the server restarts.
-  - **Export** an MP4 that is checked against Instagram's Reel requirements before you can download it, with SRT and WebVTT captions.
+### Requirements
 
-  The Video Studio needs FFmpeg (see [Requirements](#requirements)) and does not use the Claude CLI.
-  How it works is described in [docs/architecture/video-studio-page.md](docs/architecture/video-studio-page.md).
+| | Needed for | |
+|---|---|---|
+| Node.js 20.9 or later, with npm | Everything | Next.js 16 refuses to start on older versions. |
+| Git | Getting the code | |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code), installed and signed in | Designing slides | CreatorBrio runs the `claude` command on your machine, so it uses your Claude Code account and its usage limits. Without it the app opens, but it cannot create slide content. |
+| About 300 MB of disk | Export | For the Chromium build that PNG and PDF export use, downloaded during setup. |
+| FFmpeg 6.0 or later, with ffprobe | Video Studio only | For example `brew install ffmpeg` on macOS. |
+| A local image service | Generated images only | Optional, separate from this repository; reached at `http://127.0.0.1:8791` unless `IMAGE_SERVICE_URL` says otherwise. |
 
-## Requirements
+CreatorBrio is developed on macOS, and CI runs on Linux.
+Windows has code paths for starting the app but is not tested, and `/stop` does not work there.
 
-- **Node.js 20.9 or later**, with npm. Next.js 16 refuses to start on older versions.
-- **Git**, to clone the repository.
-- **Claude Code**, installed and signed in, for the design agent.
-  CreatorBrio runs the `claude` command-line tool on your machine, so the agent uses your existing Claude Code account and its usage limits.
-  Install it from the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code), then run `claude` once to sign in.
-  The design step has a 15-minute time limit (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600) and no spending cap unless you set `DESIGN_AGENT_MAX_BUDGET_USD` in `.env.local`.
-  Planning has a 120-second time limit and no spending cap unless you set `DIRECTOR_MAX_BUDGET_USD`.
-  Your Claude account's own usage limits always apply; the costs CreatorBrio logs are the CLI's list-price estimates, not invoiced charges.
-  If a design stops before it finishes, the slides it saved are kept and **Continue** in the chat makes only the missing ones.
-- **About 300 MB of disk space** for the Chromium build that PNG export uses, downloaded during setup.
-- **FFmpeg 6.0 or later, with ffprobe**, for the Video Studio only (for example `brew install ffmpeg` on macOS).
-  Everything else works without it.
+### Install and start
 
-CreatorBrio runs on macOS, Linux, and Windows.
-
-Without Claude Code, the app still opens and you can set up your brand, manage carousels and templates, reorder and undo slides, and export existing slides.
-You cannot create new slide content, because slides are written by the design agent.
-
-## Install and run
-
-The first setup takes a minute or two while dependencies and Chromium download.
-Later launches take seconds.
-
-### With Claude Code (recommended)
+With Claude Code:
 
 ```bash
 git clone https://github.com/mk-global/creatorbrio.git
@@ -164,17 +103,11 @@ cd creatorbrio
 claude
 ```
 
-Then, at the Claude Code prompt:
+Then type `/start` at the Claude Code prompt.
+It installs dependencies, downloads Chromium, seeds empty data files, starts the server in the background and opens http://localhost:3000.
+`/start 3001` uses another port, and `/stop` stops this checkout's server.
 
-```
-/start
-```
-
-`/start` installs dependencies, seeds empty data files, launches the dev server in the background, and opens http://localhost:3000.
-Pass a port to use a different one, for example `/start 3001`.
-Stop the server with `/stop`, which finds this checkout's server on whatever port it runs.
-
-### Without Claude Code's slash commands
+Without Claude Code's slash commands:
 
 ```bash
 git clone https://github.com/mk-global/creatorbrio.git
@@ -182,18 +115,144 @@ cd creatorbrio
 npm run setup
 ```
 
-`npm run setup` installs dependencies, downloads Chromium, seeds empty data files, looks for the Claude CLI, and then starts the dev server at http://localhost:3000 in the foreground.
-Press Ctrl+C to stop it, and run `npm run dev` to start it again later.
-To use another port, run `PORT=3001 npm run dev` on macOS or Linux, or `$env:PORT=3001; npm run dev` in Windows PowerShell.
-The server listens on this machine only (127.0.0.1), so it is not reachable from other devices on your network, and its API refuses requests sent by other websites.
+Setup does the same and then runs the server in the foreground; press Ctrl+C to stop it and `npm run dev` to start it again.
+To use another port, run `PORT=3001 npm run setup` or `PORT=3001 npm run dev` (in Windows PowerShell, `$env:PORT=3001; npm run dev`).
+Setup always prints port 3000 in its last message ([#160](https://github.com/mk-global/creatorbrio/issues/160)); the server uses the port you set.
+If setup cannot find the Claude CLI, set `CLAUDE_CLI_PATH` in `.env.local` to the full path of `claude` and restart.
 
-If setup cannot find the Claude CLI, it prints a warning and the app runs without the design agent.
-Set `CLAUDE_CLI_PATH` in `.env.local` to the full path of your `claude` executable, then restart the dev server.
+### Make your first carousel
+
+1. On first launch the dashboard asks for your brand: a name, colours, fonts and a few style keywords.
+2. Click **New Carousel**, give it a name and pick a format.
+3. In the chat panel, describe the post, for example: *"Create a 5-slide carousel about three small habits for a calmer morning. End with a gentle invitation to save the post."*
+4. The chat shows each stage (planning, preparing images, creating the design), and slides appear in the filmstrip as they are saved. A five-slide request takes a few minutes.
+5. Ask for changes in the same chat, such as *"make slide 3 more minimal"* or *"write the caption and hashtags"*.
+6. Open **Export** and choose **Instagram · PNG ZIP** or **LinkedIn · PDF**.
+
+The design step has a 15-minute time limit (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600) and no spending cap unless you set `DESIGN_AGENT_MAX_BUDGET_USD` in `.env.local`.
+Planning has a 120-second time limit and no spending cap unless you set `DIRECTOR_MAX_BUDGET_USD`.
+Your Claude account's own usage limits always apply; the costs CreatorBrio logs are the CLI's list-price estimates, not invoiced charges.
+
+### Try the Video Studio
+
+1. Install FFmpeg 6.0 or later.
+2. Open http://localhost:3000/studio and, when it asks for a pairing code, run `npm run studio:pair` in the CreatorBrio folder and type the code it prints. A pairing lasts 12 hours, also across restarts.
+3. Create a production, import a video and a sound file by their full paths, and add them to the timeline.
+4. Add a title card or captions from the Inspector, then **Export** an Instagram Reel and download the MP4 once it passes the checks.
+
+How the page works is described in [docs/architecture/video-studio-page.md](docs/architecture/video-studio-page.md).
+
+## What leaves your machine
+
+- **Designing slides.** Each chat request sends your message, the brand's settings, the open carousel's details and any reference images the agent opens to Anthropic, through Claude Code.
+  The design agent runs under your Claude Code configuration, so your own Claude Code settings and instructions, and this repository's `CLAUDE.md`, also apply to it ([#156](https://github.com/mk-global/creatorbrio/issues/156)).
+  The planning step is isolated from them.
+- **Research.** Links you paste are fetched to read their text, and the design agent may fetch web pages while it researches a topic.
+- **Fonts.** The preview and the export load typefaces from Google Fonts.
+- **Generated images** go only to the image service on this machine; any other address is refused.
+- **The Video Studio** sends nothing out: it uses FFmpeg and Chromium locally, with bundled fonts.
+
+The server listens on this machine only (127.0.0.1), and its API refuses requests from other websites.
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph Carousels
+    C["Chat panel"] -->|"message"| R["Chat route"]
+    R --> D["Visual Director<br/>plans, read-only"]
+    D -->|"validated plan"| R
+    R -.->|"optional"| I["Local image service"]
+    R --> A["Design agent<br/>Claude CLI"]
+    A -->|"saves slides via the API"| S[("Carousels<br/>JSON files")]
+    S --> P["Sandboxed preview"]
+    S --> X["Export: PNG ZIP or PDF<br/>headless Chromium"]
+  end
+  subgraph Studio["Video Studio"]
+    V["Studio page"] -->|"change sets"| API["Production API"]
+    API --> ST[("Production store<br/>journal and history")]
+    API --> M[("Media library")]
+    API --> RD["Renderer: FFmpeg and<br/>script-free overlay"]
+  end
+```
+
+**Carousels.**
+The **Visual Director** is a separate Claude CLI call that can only read copies of the carousel's own images; it returns a plan the server validates in full (slide count, each slide's treatment, which images go where, and any to generate).
+The plan's intent is stored on the carousel as its **Creative Brief**.
+The **design agent** then receives your message and the plan; the chat route runs it with `--allowedTools Bash WebFetch Read`, and it saves each slide by calling the app's own API.
+After it finishes, the server compares the slides with the plan and reports any differences without changing them.
+Slides are body-level HTML; one function, `wrapSlideHtml()`, turns them into full documents for both the preview and the export, so what you see is what you download.
+
+**Video Studio.**
+A production is a typed document saved through an append-only journal, so every edit is one change set that can be undone, and nothing is lost on restart.
+The Studio page owns no state: it sends each edit to the Production API and redraws from what the store holds.
+The preview and the export are compiled from the same timeline by the same compiler, and the export is checked against the Instagram Reel profile before it can be downloaded.
+
+More detail:
+
+- [docs/architecture/README.md](docs/architecture/README.md): goals, components and boundaries.
+- [docs/architecture/creative-workflow.md](docs/architecture/creative-workflow.md) and [visual-director.md](docs/architecture/visual-director.md): planning, the Creative Brief, retries, limits and the image lifecycle.
+- [docs/architecture/design-agent.md](docs/architecture/design-agent.md): how the design agent runs and reaches the app.
+- [docs/architecture/carousel-export.md](docs/architecture/carousel-export.md): export formats, how slides are printed, and the effects the native PDF refuses.
+- [docs/architecture/design-decisions.md](docs/architecture/design-decisions.md): why it is built this way.
+- The Video Studio: [architecture decision](docs/architecture/adr-creatorbrio-video-studio.md), [production store](docs/architecture/video-production-store.md), [Production API](docs/architecture/video-production-api.md), [media library](docs/architecture/video-media-registry.md), [rendering](docs/architecture/video-rendering.md) and [the Studio page](docs/architecture/video-studio-page.md).
+
+## What we're building now
+
+The current work is the **Edit Studio**: taking a creator's raw footage to a finished, editable short video, with AI doing the tedious parts and every AI change reversible.
+It is tracked by [Campaign A, #135](https://github.com/mk-global/creatorbrio/issues/135), within the [Video Studio roadmap](docs/roadmap/video-studio/README.md).
+
+Merged so far:
+
+- The production model, with typed change sets, undo and redo, and agent runs that can be kept or discarded as a whole.
+- A durable production store that survives crashes and restarts.
+- The Production API, with separate authority for a person and for agent runs, and browser pairing for the Studio.
+- A media library that copies imports, never modifies originals, and prepares preview copies.
+- A renderer that compiles the timeline into an MP4 with captions and graphics and checks it against Instagram's Reel requirements.
+- The Studio page described above.
+
+Still to come before a creator can go from raw footage to a finished video:
+
+- Transcripts and editing by words, a storyboard, and AI-assisted rough cuts and B-roll.
+- Sound: music, effects and cleanup; more graphics; reframing.
+- Rights and quality checks, more export profiles, and browser upload ([#141](https://github.com/mk-global/creatorbrio/issues/141)).
+- Creative acceptance on real footage. So far the Studio has been verified only with synthetic media, and two qualification gates remain conditional (HDR iPhone footage, G2) or partly complete (licence review, G9).
+
+The current status of every workstream and gate is in the [roadmap's status section](docs/roadmap/video-studio/README.md#current-status).
+
+## Roadmap
+
+Acceptance is based on evidence, not dates, so the roadmap has no release dates.
+
+- **Next: complete the Edit Studio.** The remaining Edit Studio work above, released only when it meets its acceptance tests and produces publishable results.
+- **Then: the Create Studio.** Topic or script to a voiced, illustrated, animated video, with local text-to-speech, consistent characters and scene-by-scene regeneration. It shares the same production model and renderer.
+- **Carousels.** Current carousel work is fixes and hardening (open issues such as [#145](https://github.com/mk-global/creatorbrio/issues/145), [#130](https://github.com/mk-global/creatorbrio/issues/130) and [#155](https://github.com/mk-global/creatorbrio/issues/155)). New carousel capabilities are not yet planned in issues.
+- **Out of scope for now.** A hosted or paid version is a possible later direction that the roadmap deliberately does not plan.
+
+The full plan, with its workstreams, qualification gates and the 113 product requirements behind it, is in [docs/roadmap/video-studio/](docs/roadmap/video-studio/README.md).
+
+## How it is built
+
+- **Local-first, in plain files.** No database and no accounts. Carousel data is JSON written through one module with per-file locks and atomic writes; video productions use an append-only journal with content-addressed documents, committed with a compare-and-swap that holds across processes.
+- **Planning separate from execution.** The Director decides what to communicate and the design agent decides how to lay it out, but code carries out the binding parts of a plan, so every count and placement is checked and every failure is a typed outcome rather than a silent substitution.
+- **Bounded agent authority.** The Director can only read copies of the carousel's images. The design agent has three tools. In the video API, an agent run gets its own token and scope, its edits are grouped so the whole run can be kept or discarded, and destructive commands must name the version they expect.
+- **People stay in control.** A slide's last five versions can be restored and every video edit can be undone and redone; an interrupted design is not exported until you accept it or continue it; the Studio page never applies an edit the server has not stored.
+- **Tests.** Vitest suites exercise API routes against the real stores, preview-to-export parity, the PDF's extracted text, crash recovery of the job runners, and a browser run of the whole Studio flow against a production build. Media-backed tests need FFmpeg, which CI does not have yet ([#142](https://github.com/mk-global/creatorbrio/issues/142)), so they run locally.
+- **Change process.** Every material change starts from an issue that passes a ticket validator. A pull request merges, by squash, only after CI (typecheck, lint, tests and build) and an independent automated AI reviewer pass on its exact final commit. Product direction and creative acceptance are the maintainer's decisions.
+
+## Known limitations
+
+- **Slides are edited through the agent.** There is no manual text or layout editor; you can reorder, undo, delete and ask for changes.
+- **Claude Code is required** to create slide content, and the design agent picks up your Claude Code configuration ([#156](https://github.com/mk-global/creatorbrio/issues/156)).
+- **Export needs the network** to fetch Google Fonts, and the native PDF refuses some CSS effects (filters over text, masks, backdrop filters and others) rather than print them wrongly; see [Native PDF limits](docs/architecture/carousel-export.md#native-pdf-limits).
+- **Custom font uploads and style presets** exist in the API but cannot be used yet ([#159](https://github.com/mk-global/creatorbrio/issues/159)).
+- **The Video Studio is early.** It imports by file path only, makes Instagram Reels only (1080×1920, 30 fps, up to 90 seconds), has no transitions, speed changes or effects, and has been verified with synthetic media only. Preview sync is within a frame while playing but can lag briefly at the start of playback and when a clip begins ([#151](https://github.com/mk-global/creatorbrio/issues/151)).
+- **Platforms.** Developed on macOS and tested in CI on Linux; Windows is untested.
+- **Open security issues.** Carousel export can read files outside `public/uploads` ([#145](https://github.com/mk-global/creatorbrio/issues/145)) and runs slide scripts in its headless browser ([#130](https://github.com/mk-global/creatorbrio/issues/130)), and several dependencies have known advisories ([#155](https://github.com/mk-global/creatorbrio/issues/155)). CreatorBrio is a single-user app meant to run on your own machine; do not expose it to a network.
 
 ## Your data
 
-Application source and your data are kept apart.
-Git tracks only the source; everything you create stays local and is ignored by Git.
+Application source and your data are kept apart: Git tracks only the source, and everything you create stays local and is ignored by Git.
 
 | Location | Contents |
 |---|---|
@@ -202,153 +261,34 @@ Git tracks only the source; everything you create stays local and is ignored by 
 | `data/carousels.json` | Carousels and their slides, including undo history and captions |
 | `data/templates.json` | Saved templates |
 | `data/style-presets.json` | Style presets the design agent can save |
-| `data/staged-actions.json` | Records for an internal API that the UI does not use yet |
-| `data/.font-cache/` | Cached Google Fonts CSS used by export |
-| `data/generation-runs.json` | Whether each carousel's last chat run finished, and its last creative run: stage, image tasks (an image the image service declined keeps the service's short code for why, until it is tried again) and, for a run that stopped before design, the plan and message kept for 24 hours so it can be retried |
+| `data/staged-actions.json` | Records for an internal API that the UI does not use |
+| `data/.font-cache/` | Cached Google Fonts used by export |
+| `data/generation-runs.json` | Whether each carousel's last chat run finished, and its last creative run, including a plan kept for 24 hours so a run stopped before design can be retried |
 | `data/asset-staging/` | Generated images waiting to be added to a carousel; removed once added, or after 24 hours |
 | `data/video/` | Video Studio productions, each with its full edit history |
 | `data/video-media/` | The Video Studio media library: a read-only copy of every imported file and its preview copies |
 | `data/video-renders/` | Exported videos, their captions and manifests |
 | `data/video-auth/`, `data/video-studio.key` | Paired browser sessions and the local key the Video Studio API uses; keep them private |
-| `public/uploads/` | Uploaded logos and reference images, generated images, and images generated by earlier versions |
-| `.env.local` | Local configuration, such as `CLAUDE_CLI_PATH`, `DIRECTOR_MAX_BUDGET_USD` to cap each planning run's Claude usage in US dollars (default: no cap), `DESIGN_AGENT_MAX_BUDGET_USD` to cap each design run's (default: no cap), `DESIGN_AGENT_TIMEOUT_SECONDS` for each design run's time limit (default 900), or `IMAGE_SERVICE_URL` to reach the image service on another loopback port (default `http://127.0.0.1:8791`; any address other than `127.0.0.1` or `localhost` is refused) |
+| `public/uploads/` | Uploaded logos and reference images, and generated images |
+| `.env.local` | Local settings such as `CLAUDE_CLI_PATH`, the time and spending limits above, and `IMAGE_SERVICE_URL` (loopback addresses only) |
 
-Chat transcripts, and the session ID that lets the next message continue the conversation, are stored in your browser's local storage for each carousel.
-Claude Code also keeps its own record of each design-agent session in its data directory, outside this project.
-Carousel exports are not stored; each one is built in memory and downloaded as a ZIP of PNGs or a PDF.
-Video Studio exports are kept in `data/video-renders/` so they can be downloaded again.
+Chat transcripts, and the session ID that lets the next message continue the conversation, are kept in your browser's local storage for each carousel; Claude Code also keeps its own record of each session.
+Carousel exports are built in memory and downloaded, not stored; Video Studio exports are kept in `data/video-renders/` so they can be downloaded again.
 
-Updating CreatorBrio with `git pull` does not touch these files.
-To back up your work, copy `data/`, `public/uploads/`, and `.env.local`.
-`/reset` deletes your carousels, templates, brands, style presets, and uploads and re-seeds empty defaults, after asking for confirmation.
-It leaves Video Studio productions, media and exports in place.
-It does not touch browser local storage or Claude Code's session records.
-The dashboard's selected brand is a preference kept in browser local storage; it changes what the dashboard shows and nothing stored on disk.
+`git pull` does not touch these files.
+To back up your work, copy `data/`, `public/uploads/` and `.env.local`.
+`/reset` deletes carousels, templates, brands, style presets and uploads and re-seeds empty defaults, after asking; it leaves Video Studio data, browser local storage and Claude Code's session records in place.
 
-## How a request is planned and designed
-
-Each message sent from a carousel runs one creative run before the design agent starts:
-
-1. **Reading linked pages**, when the message contains links.
-2. **Planning visuals.** The Visual Director, a separate Claude CLI call that can only view copies of the carousel's own images, returns a plan the server validates in full: the slide count and why, each slide's treatment, which images go where, each reference image's role, and any images to generate.
-3. **Preparing images**, one at a time, kept private until every required image is ready and then added to the carousel together.
-4. **Creating the design.** The plan's intent is saved on the carousel as its Creative Brief, and the design agent receives your message followed by the visual plan and builds the slides as before; its own instructions do not change.
-   Afterwards the server compares the slides with the plan and shows any differences without changing them.
-
-The details, limits and failure handling are in [docs/architecture/creative-workflow.md](./docs/architecture/creative-workflow.md), and the Director in [docs/architecture/visual-director.md](./docs/architecture/visual-director.md).
-
-## How the design agent works
-
-When you send a chat message, `/api/chat` starts the Claude CLI as a subprocess with `--allowedTools Bash WebFetch Read` and streams its replies back to the browser as Server-Sent Events.
-Each carousel's chat is one continuing conversation: the browser keeps that carousel's Claude session ID next to its transcript and sends it with the next message, so the agent resumes with everything said before.
-Clear starts a new conversation, and a session Claude Code can no longer find is reset automatically, with a message asking you to send again.
-If the agent fails after it has started replying, the chat panel keeps the partial reply and says what went wrong; diagnostic details stay in the server log.
-The agent's system prompt includes the open carousel's brand configuration, its slide list (IDs and notes), its reference images, and the address of this running app.
-A reference image is always an uploaded image stored as `public/uploads/<uuid>.png`; the server derives its path itself and lists only references that are still readable PNG files inside `public/uploads/`, so a reference can never point the agent at another file.
-Carousels created before multiple brands existed belong to the default brand, the original one.
-The agent reads and writes slide content through the app's API.
-
-The agent then works through the app's own API:
-
-1. It writes each slide as body-level HTML and CSS.
-2. It saves the slide by calling `/api/carousels/[id]/slides` with `curl`, through its `Bash` tool.
-3. The editor refreshes while the agent works, so new and changed slides appear in the filmstrip.
-
-`WebFetch` lets the agent research a topic while designing, and `Read` lets it open your reference images.
-
-### From slide to PNG and PDF
-
-Slides are stored as body-level HTML, without `<html>`, `<head>`, or `<!DOCTYPE>`.
-`wrapSlideHtml()` in [`src/lib/slide-html.ts`](./src/lib/slide-html.ts) wraps that body into a full document with font loading and fixed dimensions.
-The same function feeds both the sandboxed preview iframe and the Puppeteer export, which renders each slide at its exact pixel size.
-
-`POST /api/carousels/[id]/export` answers in one of three ways.
-Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
-With `?format=single-png`, a carousel with exactly one slide is answered with that slide's PNG itself, the same bytes the ZIP would contain.
-With `?format=pdf`, each slide is loaded in the same document, with the same inlined images and the same waits as for its PNG, and printed natively by Chromium to a one-page PDF with screen media, backgrounds and no margins.
-The print differs from the screenshot's page in four deliberate ways, each so that the PDF shows what the preview shows:
-
-- The slide's scripts do not run, as in the preview's sandboxed iframe.
-- The slide's own `@page` size, margins and page margin boxes are overridden, so the paper is the slide.
-- The body is positioned, so that it, rather than the page, contains absolutely positioned elements and its own `overflow: hidden` clips them in print as the screen clips them; an element reaching past an edge then neither shrinks the page nor starts another.
-  Nothing else about the body changes, so its layout, stacking and background are the screen's.
-- Google Fonts are fetched as static instances, one file per weight, from the same family, so they embed as TrueType; Chromium embeds the variable files the preview uses as Type 3 glyphs, whose text Apple's Preview and Safari break into fragments.
-
-The print-only rules and the checks run on the page before printing live in [`src/lib/print-check.ts`](./src/lib/print-check.ts).
-[`src/lib/export-pdf.ts`](./src/lib/export-pdf.ts) then copies those pages into one document in slide order, unchanged apart from removing links and re-expressing blurred shadows.
-Chromium prints a blurred `box-shadow` or `text-shadow` as a fill under a luminosity soft mask, which Apple's renderers (Preview, Quick Look, Safari) draw wrongly: a text shadow as a solid block, a box shadow cut off.
-[`src/lib/pdf-shadows.ts`](./src/lib/pdf-shadows.ts) draws each one instead as an image of the shadow's colour carrying the same blur as its own soft mask, which Apple's renderers and poppler both draw as the screen does; it matches only that exact construct and leaves anything else as printed.
-While a chat run is still writing the carousel's slides, every format is refused with status 409.
-Pages are sized at 0.75 pt per pixel (72 pt per inch over 96 CSS pixels per inch), so a 1080×1350 slide becomes an 810×1012.5 pt page, keeping its exact aspect ratio.
-Chromium rounds the paper up to a hundredth of an inch (a 4:5 slide prints 1013.04 pt tall), so each page is trimmed to the slide's exact size from its top edge, where the slide is drawn.
-The trim moves the page box, not the drawing, so the sliver falls below the box and the content is copied byte for byte; moving the drawing instead would leave gradients, which are positioned against the page itself, half a point off.
-
-#### Native PDF limits
-
-Chromium's PDF printer keeps text as text through transforms, opacity, clipping, gradients, blend modes other than `plus-lighter` and `plus-darker`, outlined text, and text and box shadows.
-Some effects behave differently on paper than on screen, or in some PDF readers, and are handled as follows.
-
-Refused before printing, with status 422 and a message naming the slide and the effect:
-
-- A CSS or SVG `filter` or a `-webkit-box-reflect` turns the element into an image of everything in it, so it is refused when anything it renders could draw text: a text node, `::before` or `::after` text (counters included), a form field, media controls, an embedded frame, a list marker, a `<details>` element's own label, a broken image's alt text, or an SVG `<use>` that reaches `<text>` through any chain of references.
-  The check follows what renders, not only the document tree: open shadow roots, the content slotted into them, and every frame of the slide are held to the same rule.
-  The check is deliberately conservative and does not ask whether that text is visible, so hidden text under a filter is refused too.
-  The same applies to a filter or reflection on a pseudo-element that styles an element's own content (`::first-letter`, `::first-line`, `::marker`, `::placeholder`, `::file-selector-button`, `::details-content`) when that element holds text.
-  Text that is never drawn, in `<style>`, `<script>` or SVG `<title>`, `<desc>` and `<metadata>`, does not count, and a filter on an image, a shape or an icon with no text is fine.
-- A closed shadow root anywhere in the slide, frames included, because its content cannot be checked; a frame the check cannot run in, a document nested too deeply for the DevTools protocol to read (far beyond real designs: 140 levels is accepted, 200 is not), and a check that takes longer than 15 seconds are refused for the same reason.
-- A `backdrop-filter` anywhere on the slide, including on a `::before` or `::after` whatever the size of its element, because Chromium leaves the text inside it, and can leave content painted after it, out of the PDF.
-- Text inside an SVG `<pattern>`, which prints as part of a picture, or used as an SVG `<clipPath>`, which prints as a soft mask that Apple's Preview and poppler-based readers draw wrongly.
-- Text filled through `background-clip: text` (gradient or image text), including through `::first-letter` or `::first-line`: it prints as text, but Apple's Preview and poppler-based readers draw it as a solid block.
-- A CSS or SVG mask (`mask`, `mask-image`) on anything visible, on any generated `::before` or `::after`, or on SVG content defined in `<defs>` or a `<symbol>` and drawn through `<use>`: Apple's Preview and poppler-based readers draw the masked image or text without its fade.
-- An element with `backface-visibility: hidden` turned away from the viewer, such as the back of a flip card: the screen hides it, but Chromium prints it, mirrored, over the face that shows.
-  A flip card is refused whichever face is turned; showing one face and leaving the other out with `display: none` prints as the screen shows.
-- `mix-blend-mode: plus-lighter` or `plus-darker`, which PDF has no equivalent for, so Chromium prints it as an ordinary overlay.
-- Content reaching past the slide when the print clip cannot apply, because the slide resizes or moves its own `body` (the clip is then left off, since positioning that body would move what is positioned inside it) or turns the body's clipping off; the page would otherwise come out shrunk.
-
-Refused after printing:
-
-- A slide whose page leaves out letters or digits the slide visibly shows.
-  Every letter and digit painted inside the slide (not hidden, clipped away or transparent) must be in the page's text as a PDF reader extracts it, through each font's Unicode map and the `ActualText` Chromium writes for ligatures and similar glyphs, compared without case, accents or ligatures; punctuation and emoji are not compared.
-  Characters are counted, so a character the slide shows twice must be in the page twice: the same words printed in another font elsewhere on the slide cannot stand in for ones the page lost.
-  Text under a `clip-path` that shows any of it is compared, since Chromium keeps every glyph of it in the page; text a clip path hides entirely is not.
-  The literal text of a `::before`, `::after` or custom `::marker` is compared when it is laid out in its element's flow and that element is wholly in view; counter numbers, `attr()` text, default list numbers and generated text positioned elsewhere are not compared.
-  This catches characters that fall back to a system font Chromium cannot embed, which it leaves out of the page entirely: on macOS, Chinese with no web font covering it falls back to PingFang and is refused, while Japanese and Korean fall back to Hiragino and Apple SD Gothic, which embed.
-  It also catches an effect not listed above that flattens part of a slide's text.
-  The message quotes up to five of the missing characters; text shortened by an ellipsis or a line clamp counts as shown but is not compared.
-- A slide that shows visible text but whose page holds no text at all, such as one whose only text is punctuation or symbols, flattened by an effect not listed above.
-- A slide that did not print as exactly one page of its own size, such as one with a shape placed entirely outside the slide, which shows nothing on screen but can start a second page in print.
-
-Printed, with a difference worth knowing:
-
-- A blurred shadow (`box-shadow`, `text-shadow`) is embedded as an image of its blur, re-expressed by the merge as described above; the text it belongs to stays text.
-  An unblurred shadow stays a vector shape, and a `drop-shadow` filter on a shape prints as a picture of that shape.
-- A radial gradient that fades to transparent, such as a glow, is drawn as on screen by Apple's readers, but darker and muddier by poppler-based readers (most Linux PDF viewers).
-  poppler also draws a hard colour stop in a slide-high gradient as a ramp a few pixels long, where Apple's readers draw it sharp.
-- Outlined text (`-webkit-text-stroke`) is printed by Chromium in two layers, the fill in the TrueType font and the outline in a Type 3 copy of it.
-  Readers find and select the words whole, but copying or extracting the page's text returns them twice.
-- Text that is not painted, such as a visually hidden label, text clipped out of view (by overflow, `contain: paint` or a clip path), text below the smallest opacity Chromium paints, SVG text left unused in `<defs>`, or SVG text with neither fill nor stroke, is not expected in the PDF.
-- If Google cannot serve static instances of a font covering every weight and style of its variable font, the variable font is embedded instead, as Type 3 glyphs with Unicode maps: the typeface is still right and the text still selectable, but Apple's readers fragment it.
-- A character a web font does not contain is drawn from a system font, as in the preview and the PNG export, and embedded when Chromium can embed that font; when it cannot, the slide is refused, as above.
-  For Chinese, giving the text a Google font such as Noto Sans SC avoids the fallback altogether.
-- The first PDF export using a font Google splits into many files is slow: Noto Sans SC is about 100 unicode-range files per weight, fetched one after another for the variable font and again for its static instances, which took over three minutes on a cold font cache (the PNG export's share is the first half of that).
-  Fonts are cached under `data/.font-cache`, so later exports take seconds; Latin fonts are a handful of files and take seconds even the first time.
-- An SVG file used as an image (a `data:` URI; uploads are PNG, JPEG or WebP) is printed as Chromium draws it and is not checked inside: a filter within it turns its text into a picture.
-- A page with no background is white paper in the PDF, while the PNG export shows headless Chromium's dark default canvas there.
-- Uploaded images are embedded at their own resolution: JPEGs as they are, PNG and WebP losslessly.
-  A carousel of large PNG or WebP photographs can therefore exceed LinkedIn's 100 MB limit where its PNG export would not; the export then refuses it with status 422, before merging when the printed slides alone are already over the limit.
-- The document has no tags or outline: pages are printed separately and merged, which cannot carry a document-level structure across.
-  Links are removed, because the preview and the PNG have nothing to click.
-
-## Slash commands and scripts
+## Commands and scripts
 
 Inside Claude Code:
 
 | Command | What it does |
 |---|---|
-| `/start [port]` | Set up if needed, launch the dev server in the background, and open the browser. Safe to re-run. |
-| `/stop [port]` | Stop this checkout's CreatorBrio server, whatever its port. With a port, stop that port's server only if it is this checkout's. Other applications and other worktrees' servers are never stopped; if this checkout runs several servers, it lists them and asks for a port. |
-| `/reset` | Delete local carousels, templates, brand, style presets, and uploads, then re-seed defaults. Asks first. |
-| `/doctor` | Check Node, the Claude CLI, dependencies, data files, and port 3000. |
+| `/start [port]` | Set up if needed, start the server in the background and open the browser. Safe to re-run. |
+| `/stop [port]` | Stop this checkout's CreatorBrio server, whatever its port. Other applications and other checkouts' servers are never stopped. macOS and Linux. |
+| `/reset` | Delete local carousels, templates, brands, style presets and uploads, then re-seed defaults. Asks first. |
+| `/doctor` | Check Node, the Claude CLI, dependencies, data files and port 3000. |
 
 From a terminal:
 
@@ -358,139 +298,76 @@ From a terminal:
 | `npm run dev` | Start the dev server. |
 | `npm run build` / `npm start` | Build and run a production server. |
 | `npm run doctor` | Run the environment check; works before `npm install`. |
-| `npm run studio:pair` | Print a one-time code that pairs a browser with the Video Studio at `/studio`. |
-| `node scripts/stop-server.mjs [port]` | What `/stop` runs: stop this checkout's CreatorBrio server. macOS and Linux. |
+| `npm run studio:pair` | Print a one-time code that pairs a browser with the Video Studio. |
+| `node scripts/stop-server.mjs [port]` | What `/stop` runs. macOS and Linux. |
 | `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` | The quality gate CI runs on every pull request. |
 
-## Architecture
+## Troubleshooting
 
-```mermaid
-flowchart LR
-  U(["Browser"])
-  C["Chat panel"]
-  P["Slide preview<br/>(sandboxed iframe)"]
-  F["Filmstrip"]
-  API["/api/chat<br/>SSE streaming/"]
-  CCLI["Claude CLI<br/>subprocess"]
-  SLIDES["/api/carousels/.../slides/"]
-  DATA[("data/*.json<br/>locked, atomic writes")]
-  EXP["/api/.../export/"]
-  PUP["Puppeteer<br/>(headless Chromium)"]
-  ZIP{{"ZIP of PNGs<br/>or PDF"}}
+**Node is too old.**
+Install Node 20.9 or later from [nodejs.org](https://nodejs.org) or with [nvm](https://github.com/nvm-sh/nvm).
+`npm run doctor` currently accepts any Node 20 ([#6](https://github.com/mk-global/creatorbrio/issues/6)), but Next.js needs 20.9.
 
-  U --> C & P & F
-  C -- "POST chat" --> API
-  API -- "plan" --> DIR["Visual Director<br/>(Claude CLI, Read only)"]
-  API -. "optional" .-> IMG[("Local image service<br/>(separate)")]
-  API -- "spawn" --> CCLI
-  CCLI -. "stream" .-> API
-  API -. "SSE" .-> C
-  CCLI -- "curl slide HTML" --> SLIDES
-  SLIDES <--> DATA
-  P <--> SLIDES
-  F <--> SLIDES
-  U -- "Export" --> EXP
-  EXP --> PUP
-  PUP --> ZIP
-  ZIP --> U
-```
+**The chat panel says to connect the Claude CLI.**
+Install Claude Code and sign in by running `claude` once.
+On macOS and Linux, CreatorBrio looks for `claude` in `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `~/.npm-global/bin` and on your `PATH`; on Windows, in `%APPDATA%\npm`, `%LOCALAPPDATA%\Programs\claude` and on your `PATH`.
+If yours is elsewhere, set `CLAUDE_CLI_PATH` in `.env.local` and restart the server.
 
-- **Local-first and single-user.** A localhost web app reading and writing local files, with no database and no app accounts. Its outside dependencies are Claude Code for the design agent and Google Fonts for typefaces.
-- **Claude CLI as the agent.** The agent reuses your Claude Code sign-in instead of requiring a separate API key.
-- **Slides as HTML.** HTML and CSS are more expressive than a canvas or a layout DSL, and the same markup drives preview and export.
-- **Sandboxed preview.** Preview iframes use `sandbox=""`, so slide markup cannot run scripts in the editor.
-- **JSON storage with locking.** All reads and writes go through [`src/lib/data.ts`](./src/lib/data.ts), which serializes changes per file and writes atomically, and refuses to overwrite a file that no longer parses.
+**Port 3000 is in use.**
+Run `/stop 3000` to stop it if it is this checkout's CreatorBrio server (anything else on the port is left alone and named), or use another port as shown in [Install and start](#install-and-start).
 
-### Architecture and design philosophy
+**Export fails.**
+The editor shows the reason.
+If Chromium is missing, re-run `npm run setup`, which downloads Chromium and test-launches it.
+If Chromium is installed but fails to launch, setup prints the cached Chromium folder to delete and the command to download it again: `npx puppeteer browsers install chrome`.
+On Linux you may need Chromium's system libraries, such as `libnss3`, `libatk1.0-0` and `libxss1`.
 
-CreatorBrio separates deciding what to communicate from deciding how to lay it out.
-The Visual Director owns strategy: intent, audience, the central message and which treatment fits.
-The design agent owns composition: copy, layout, typography and the slide HTML.
-Code, not a model, carries out the binding parts of a plan, so every placement and count is checked, every failure is a typed outcome, and nothing is silently substituted.
-Everything stays local, in plain files, with no database, queue or agent framework.
+**Generated slides ignore my brand.**
+The design agent uses the brand shown next to the carousel's name in the editor, not the one selected on the dashboard.
+Select that brand on the dashboard, open its settings with the pencil button, and check that a brand name, colours and style keywords are saved; brand details reach the agent only when a brand name is set.
 
-- [docs/architecture/README.md](./docs/architecture/README.md): goals, components and boundaries.
-- [docs/architecture/visual-director.md](./docs/architecture/visual-director.md): how planning works, the Creative Brief, and how the Director is evaluated.
-- [docs/architecture/creative-workflow.md](./docs/architecture/creative-workflow.md): from request to export, retry, cancellation, limits and the generated-image lifecycle.
-- [docs/architecture/design-decisions.md](./docs/architecture/design-decisions.md): why it is built this way, and the trade-offs.
-
-[`CLAUDE.md`](./CLAUDE.md) documents the architecture and conventions for AI assistants working on this codebase.
+**Something else.**
+Run `/doctor` or `npm run doctor`, and [open an issue](https://github.com/mk-global/creatorbrio/issues) if the problem persists.
 
 ## Project structure
 
 ```
 creatorbrio/
-├── .claude/commands/     Claude Code slash commands: /start, /stop, /reset, /doctor
-├── .github/workflows/    CI: typecheck, lint, test, build
-├── data/                 Your data (ignored by Git)
-├── docs/                 Maintainer guide, provenance, screenshots
-├── public/uploads/       Your uploads (ignored by Git)
-├── scripts/              setup, dev-server launcher, doctor
+├── .claude/commands/   Slash commands: /start, /stop, /reset, /doctor
+├── .github/            CI workflow, issue and pull request templates
+├── data/               Your data (ignored by Git)
+├── docs/
+│   ├── architecture/   How the carousel and video systems work
+│   ├── roadmap/        The Video Studio roadmap and gate records
+│   ├── research/       The research and specification behind the Video Studio
+│   └── screenshots/
+├── eval/               Opt-in evaluations of the Visual Director and acceptance runs
+├── public/uploads/     Your uploads (ignored by Git)
+├── scripts/            Setup, doctor, server control, Studio pairing, gate experiments
 ├── src/
-│   ├── app/              Pages and API routes
-│   ├── components/       Brand, chat, editor, layout, template, and UI components
-│   ├── lib/              Storage, rendering, export, system prompt, Claude CLI discovery
-│   └── types/            Shared TypeScript types
-└── tests/                Vitest suites
+│   ├── app/            Pages (dashboard, editor, /studio) and API routes
+│   ├── components/     Brand, chat, dashboard, editor, Studio, template and UI components
+│   ├── lib/            Storage, planning, the design agent, rendering, export, and lib/video for the Studio
+│   └── types/          Shared TypeScript types
+└── tests/              Vitest suites
 ```
-
-## Troubleshooting
-
-**`/start` or `npm run doctor` says Node is too old.**
-Install Node 20.9 or later from [nodejs.org](https://nodejs.org) or with [nvm](https://github.com/nvm-sh/nvm).
-
-**The chat panel says to connect the Claude CLI.**
-Install Claude Code and sign in by running `claude` once.
-On macOS and Linux, CreatorBrio looks for `claude` in `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `~/.npm-global/bin`, and on your `PATH`.
-On Windows it looks in `%APPDATA%\npm`, `%LOCALAPPDATA%\Programs\claude`, and on your `PATH`.
-If yours is elsewhere, set `CLAUDE_CLI_PATH` in `.env.local` and restart the dev server.
-On Windows, `where claude` in PowerShell shows the path.
-
-**Port 3000 is in use.**
-Run `/stop 3000` to stop it if it is this checkout's CreatorBrio server (anything else on the port is left alone and named), or use another port with `/start 3001` or the `PORT` setting shown in [Install and run](#install-and-run).
-
-**Export fails.**
-The editor shows the reason.
-If Chromium is missing, re-run `npm run setup`, which downloads Chromium and test-launches it.
-If Chromium is installed but fails to launch, the download is usually incomplete and setup will not replace it on its own.
-Setup prints the cached Chromium folder to delete and the command to download it again: `npx puppeteer browsers install chrome`.
-On Linux you may need Chromium's system libraries, such as `libnss3`, `libatk1.0-0`, and `libxss1`.
-
-**Generated slides ignore my brand.**
-Check the brand shown next to the carousel's name in the editor: the design agent uses that brand, not the one selected on the dashboard.
-Select that brand on the dashboard, open its settings with the pencil button, and confirm a brand name, colors, and style keywords are saved.
-Brand details reach the design agent only when a brand name is set.
-
-**Something else.**
-Run `/doctor` or `npm run doctor` for an environment check, and [open an Issue](https://github.com/mk-global/creatorbrio/issues) if the problem persists.
-
-## Planned capabilities
-
-These are planned directions, not shipped features.
-Each will be tracked as an Issue and described in the release notes only when released.
-
-- **Improved content workflows** for planning and iterating on a series of posts.
-- **Reusable branded templates** that carry a brand's layout system, beyond today's saved-carousel templates.
-- **Additional platform support** beyond Instagram's formats.
 
 ## Contributing
 
-CreatorBrio follows a no-ticket, no-work process: open an Issue first for anything material, and reference it from your pull request with `Closes #N`.
+Issues and pull requests are welcome on [GitHub](https://github.com/mk-global/creatorbrio/issues).
+CreatorBrio follows a no-ticket, no-work process: open an issue first for anything material, and reference it from your pull request with `Closes #N`.
 Before opening a pull request, run the full gate:
 
 ```bash
 npm run typecheck && npm run lint && npm test && npm run build
 ```
 
-[`docs/MAINTAINING.md`](./docs/MAINTAINING.md) covers branching, review, testing, release notes, and release practice.
-[`CLAUDE.md`](./CLAUDE.md) covers code conventions, including the slide rendering contract between preview and export.
+[`docs/MAINTAINING.md`](./docs/MAINTAINING.md) covers branching, review, testing and releases, and [`CLAUDE.md`](./CLAUDE.md) covers code conventions, including the slide rendering contract between preview and export.
 
 ## Origin and license
 
-CreatorBrio was named Framewoven until 2026-10-30.
-It was originally derived from [Open Carrusel](https://github.com/Hainrixz/open-carrusel), an MIT-licensed project, through a maintained fork.
-It is now independently maintained.
-Its Git history, original authorship, and the original copyright notice are preserved.
-See [`docs/PROVENANCE.md`](./docs/PROVENANCE.md) for the source baseline, attribution, and historical records.
+CreatorBrio was named Framewoven until 2026-10-30 ([#29](https://github.com/mk-global/creatorbrio/issues/29)).
+It was originally derived from [Open Carrusel](https://github.com/Hainrixz/open-carrusel), an MIT-licensed project, through a maintained fork, and is now independently maintained.
+Its Git history, original authorship and the original copyright notice are preserved; see [`docs/PROVENANCE.md`](./docs/PROVENANCE.md).
 
 CreatorBrio is released under the [MIT License](./LICENSE).
