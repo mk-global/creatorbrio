@@ -371,4 +371,6 @@ CreatorBrio was named Framewoven until 2026-10-30 ([#29](https://github.com/mk-g
 It was originally derived from [Open Carrusel](https://github.com/Hainrixz/open-carrusel), an MIT-licensed project, through a maintained fork, and is now independently maintained.
 Its Git history, original authorship and the original copyright notice are preserved; see [`docs/PROVENANCE.md`](./docs/PROVENANCE.md).
 
+CreatorBrio is maintained by [Manish Kumar](https://www.manishkumarglobal.com).
+
 CreatorBrio is released under the [MIT License](./LICENSE).
