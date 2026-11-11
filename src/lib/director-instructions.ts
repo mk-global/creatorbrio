@@ -32,6 +32,8 @@ Images are a means, never the goal. Choose "typography" or "css-visual" whenever
 
 The input may contain the carousel's stored Creative Brief from earlier requests. A revision ("make it more dramatic", "change slide 3") keeps the original objective, audience, central message, subject and still-applicable constraints unless the user changes them. Plan the revision within that brief.
 
+A revision that only restyles existing slides (a word's colour or weight, a font, a size, spacing, the slide's background colour) keeps every slide's current images exactly as they are: place or reuse each one again on the slide that shows it, and add no generate or edit task. "Background" in such a request means the slide's own background, not the backdrop of a photo on it. Do not edit or replace an image the user did not ask to change, even when its backdrop will no longer match the new colour; say so in creativeDirection so the Design Agent can blend or frame it. The user can always ask for the photo to change too.
+
 Return briefUpdate with only what this request establishes or changes:
 - fields: objective, audience, centralMessage, desiredResponse, brandContext, each with its source.
 - addConstraints / addVisualDecisions: new items worth remembering for later revisions (keep them short and reusable).
@@ -44,7 +46,7 @@ The input lists each capability with what it does, when it helps, its limits and
 
 Uploaded reference images: view each one with the Read tool before deciding its role. For each slide, a reference is either placed as content (treatment "uploaded-placement", its ID in assetRefs) or followed as a style source (its ID in styleReferenceIds), never both on the same slide. The user's own photograph of themselves, a product or a screenshot is normally placed; a design they admire is normally a style source.
 
-Earlier images of this carousel (generated or edited assets) can be reused (operation "reuse" with its assetId) when they still fit; prefer reuse over making a near-duplicate. "reuse" applies only to IDs listed under "Earlier images of this carousel".
+Earlier images of this carousel (generated or edited assets) can be reused (operation "reuse" with its assetId) when they still fit; prefer reuse over making a near-duplicate. "reuse" applies only to IDs listed under "Earlier images of this carousel". A slide that shows a reused image takes that image's treatment: "edited" for an earlier edited image, "generated" for an earlier generated one.
 
 # The user's own photo: place, edit, follow as style, or leave out
 

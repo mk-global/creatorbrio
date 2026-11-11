@@ -101,7 +101,8 @@ export const DIRECTOR_FAILURE_MESSAGES: Record<DirectorFailureCode, string> = {
   budget_setting_invalid: `The visual planner's spending cap, ${DIRECTOR_BUDGET_ENV}, is not a positive amount in US dollars, such as 0.75. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.`,
   agent_failed: "The visual planner stopped unexpectedly. Nothing was changed; send your message again.",
   invalid_output: "The visual planner did not return a plan. Nothing was changed; send your message again.",
-  invalid_plan: "The visual plan could not be used. Nothing was changed; send your message again, or rephrase it.",
+  invalid_plan:
+    "CreatorBrio could not use the visual plan it made for this message, so nothing was changed. Send the same message again to plan it afresh.",
   slide_count_mismatch:
     'The visual plan\'s slide count could not be used. Nothing was changed; say how many slides you want, from 1 to 20 (for example "10 slides"), and send your message again.',
   capability_unavailable: "This request needs something this machine cannot do yet. Nothing was changed.",
@@ -162,7 +163,7 @@ export function planContextFor(request: DirectorRequest): PlanContext {
     message: request.message,
     currentSlideCount: request.carousel.slides.length,
     referenceIds: request.references.map((r) => r.id),
-    committedAssets: request.assets.map(({ asset, intact }) => ({ id: asset.id, intact })),
+    committedAssets: request.assets.map(({ asset, intact }) => ({ id: asset.id, intact, origin: asset.origin })),
     capabilities: request.capabilities,
   };
 }

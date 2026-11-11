@@ -13,6 +13,8 @@ import { IMAGE_DIMENSIONS, ImageGenerationError, type ImageAspectRatio } from "@
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
 import { HANDOFF_START } from "@/lib/creative-handoff";
 import { stubDirector, typographyPlanFor } from "./helpers/stub-director";
+import { SIMPLE_REVISION_MESSAGE, simpleRevisionPlan } from "./fixtures/simple-revision-plan";
+import { DIRECTOR_FAILURE_MESSAGES } from "@/lib/visual-director";
 import type { DirectorRequest } from "@/lib/visual-director";
 
 // Through the real chat route, real storage and a real Design Agent
@@ -28,7 +30,7 @@ vi.mock("@/lib/claude-path", () => ({
 }));
 
 const { POST: chat } = await import("@/app/api/chat/route");
-const { addReferenceImage, appendCarouselAssets, createCarousel, getCarousel, setCreativeBrief } = await import("@/lib/carousels");
+const { addReferenceImage, addSlide, appendCarouselAssets, createCarousel, getCarousel, setCreativeBrief } = await import("@/lib/carousels");
 const { isGenerating, getInterruption, readCreativeRuns, slideFingerprint } = await import("@/lib/generation-status");
 const { creativeRunDeps } = await import("@/lib/creative-run");
 const { setAssetFaultHookForTests, simulateRestartForTests } = await import("@/lib/assets");
@@ -812,6 +814,75 @@ describe("revisions", () => {
     const stored = (await getCarousel(carousel.id))?.creativeBrief;
     expect(stored?.constraints.map((c) => c.text)).toEqual(["Playful tone"]);
     expect(stored?.centralMessage?.value).toBe("Comfort is the quiet risk");
+  });
+});
+
+describe("a one-word colour change on a cover that shows an earlier edited photo (#168)", () => {
+  /** The founder's shape: one 9:16 cover placing a background-replaced portrait of the user. */
+  async function editedCover() {
+    const carousel = await newCarousel("9:16");
+    const reference = await addReference(carousel.id, "portrait.png");
+    const add = async (origin: "edited" | "generated", seed: number) => {
+      const id = randomUUID();
+      const bytes = await png("9:16", seed);
+      await writeFile(path.join(workdir, "public", "uploads", `${id}.png`), bytes);
+      await appendCarouselAssets(carousel.id, [
+        { id, url: `/uploads/${id}.png`, origin, sourceIds: origin === "edited" ? [reference.id] : [], width: 1080, height: 1920, sha256: sha(bytes), runId: randomUUID(), createdAt: "" },
+      ]);
+      return id;
+    };
+    const editedId = await add("edited", 3);
+    const generatedId = await add("generated", 4);
+    const html = `<h1><span style="color:#ff6a1a">Don't</span> let <span style="color:#f5f5f0">failing</span> define you.</h1><img src="/uploads/${editedId}.png">`;
+    await addSlide(carousel.id, html, "Reel cover with the edited portrait low right");
+    const brief = { constraints: [], visualDecisions: [], assetRelationships: [], updatedAt: "", centralMessage: { value: "Failing is not who you are", source: "explicit" as const, at: "" } };
+    await setCreativeBrief(carousel.id, brief);
+    return { carousel: (await getCarousel(carousel.id))!, editedId, generatedId, html };
+  }
+
+  it("plans it as a revision that keeps the photo and designs it with no image work", async () => {
+    const { carousel, editedId } = await editedCover();
+    director.restore();
+    director = stubDirector(() => simpleRevisionPlan(editedId));
+    const { events } = await send({ carouselId: carousel.id, message: SIMPLE_REVISION_MESSAGE });
+
+    expect(of(events, "blocked")).toEqual([]);
+    expect(of(events, "error")).toEqual([]);
+    expect(stages(events)).toEqual(["planning", "designing"]);
+    expect(imageCalls).toEqual([]);
+    expect(editCalls).toEqual([]);
+    expect(director.requests[0].assets.find((a) => a.asset.id === editedId)).toMatchObject({ intact: true, asset: { origin: "edited" } });
+
+    const task = await taskMessage();
+    expect(task.startsWith(SIMPLE_REVISION_MESSAGE)).toBe(true);
+    expect(task).toContain("Slides to produce: 1 (the carousel's current number of slides).");
+    expect(task).toContain(`Slide 1: edited.`);
+    expect(task).toContain(`Place this image: /uploads/${editedId}.png`);
+
+    const after = (await getCarousel(carousel.id))!;
+    expect(after.slides).toHaveLength(1);
+    expect(after.slides[0].html).toContain(`/uploads/${editedId}.png`);
+    expect(after.assets?.map((a) => a.id).sort()).toEqual(carousel.assets?.map((a) => a.id).sort());
+    expect(of(events, "deviations")).toEqual([]);
+  });
+
+  it("still stops before design, changing nothing, when the edited slide claims an image that was never edited", async () => {
+    const { carousel, generatedId, html } = await editedCover();
+    director.restore();
+    director = stubDirector(() => simpleRevisionPlan(generatedId));
+    const { events } = await send({ carouselId: carousel.id, message: SIMPLE_REVISION_MESSAGE });
+
+    expect(of(events, "blocked")).toEqual([
+      { type: "blocked", code: "plan_failed", message: DIRECTOR_FAILURE_MESSAGES.invalid_plan, retryRunId: null },
+    ]);
+    expect(DIRECTOR_FAILURE_MESSAGES.invalid_plan).not.toMatch(/rephrase/);
+    expect(await designSpawned()).toBe(false);
+    expect(imageCalls).toEqual([]);
+    expect(editCalls).toEqual([]);
+    const after = (await getCarousel(carousel.id))!;
+    expect(after.slides.map((s) => s.html)).toEqual([html]);
+    expect(after.creativeBrief).toEqual(carousel.creativeBrief);
+    expect(after.assets).toEqual(carousel.assets);
   });
 });
 

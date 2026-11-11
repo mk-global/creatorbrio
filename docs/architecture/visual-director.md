@@ -77,6 +77,10 @@ The Director reads the stored brief and proposes an update; the server validates
 - a newer `explicit` instruction replaces or retires an older value, and the Director must quote the retired item and give a reason.
 
 Values a revision does not mention are kept.
+
+A revision that only restyles existing slides, such as one word's colour or weight, a font, a size, spacing or the slide's background colour, keeps every slide's current images as they are: the plan places or reuses each one again and adds no image task (#168).
+"Background" in such a request means the slide's background, not the backdrop of a photo on it.
+When a kept photo's backdrop will no longer match a new background colour, the Director says so in its creative direction for the Design Agent to blend or frame, rather than editing a photo the user did not ask to change.
 Lists are bounded; when one overflows, explicit items are kept first and the oldest inferences go.
 
 The brief changes only when a run goes on to design: it is saved after the run's images are attached, just before the Design Agent starts.
@@ -130,7 +134,13 @@ An unsupported edit is answered with the whole editing limit (only the backgroun
 
 An edit task names its kind (`replace-background`, or one of the unoffered `remove-object`, `relight` and `combine-images`), exactly one source (a reference image or intact asset of this carousel), an instruction that describes only the new background, an aspect ratio and the slides that place it, and is always required.
 For the user's own photo the Director decides between placing it as it is, editing its background, following it only as a style source, or leaving it out, and it never generates an image of a person as a stand-in for the user.
-A plan that is malformed in any other way is refused with a generic message, and its violations go to the server log only.
+A slide's treatment names what it shows: `edited` is a photo with its background replaced, either by an edit task in this plan or by reusing an earlier asset whose recorded origin is `edited`; `generated` places a plan asset, a new image or a reused one.
+The origin comes from the server's asset record, never from the plan, so a plan cannot call an image edited that never was.
+Before #168 only a new edit task counted, so every revision of a slide that kept an earlier edited photo was refused, however small.
+
+A plan that is malformed in any other way is refused, and its violations go to the server log only.
+The user is told that CreatorBrio could not use the plan it made, that nothing was changed, and to send the same message again, which plans it afresh.
+They are not asked to rephrase, because the plan, not the request, failed the checks.
 
 When a request depends on a page or document the Director was not given, such as "summarize my latest post" with no text or link, it returns `source-required` and asks the user to paste the text or share a public link.
 

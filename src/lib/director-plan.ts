@@ -1,4 +1,4 @@
-import { MAX_SLIDES } from "@/types/carousel";
+import { MAX_SLIDES, type CarouselAsset } from "@/types/carousel";
 import { BRIEF_LIMITS, isBoundedText, unknownFieldViolation, validateBriefUpdate, type BriefUpdate } from "./creative-brief";
 import { isAvailable, type CapabilityId, type CapabilityStatus } from "./creative-capabilities";
 import { IMAGE_DIMENSIONS, MAX_PROMPT_CHARS, type ImageAspectRatio } from "./image-service";
@@ -148,8 +148,12 @@ export interface PlanContext {
   /** Slides the carousel has now; zero means a new request. */
   currentSlideCount: number;
   referenceIds: readonly string[];
-  /** Committed assets and whether each file still matches its recorded hash. */
-  committedAssets: readonly { id: string; intact: boolean }[];
+  /**
+   * Committed assets: whether each file still matches its recorded hash, and
+   * its recorded origin, so a slide that keeps an earlier edited image can
+   * say so (#168).
+   */
+  committedAssets: readonly { id: string; intact: boolean; origin: CarouselAsset["origin"] }[];
   capabilities: readonly CapabilityStatus[];
 }
 
@@ -493,6 +497,13 @@ function validateSlides(
   }
   const references = new Set(context.referenceIds);
   const byKey = new Map(assets.map((a) => [a.key, a]));
+  const editedAssets = new Set(context.committedAssets.filter((a) => a.intact && a.origin === "edited").map((a) => a.id));
+  // An edited slide shows a photo with its background replaced: one edited in
+  // this request, or one edited earlier and kept as it is (#168).
+  const showsEditedImage = (key: string) => {
+    const asset = byKey.get(key);
+    return asset?.operation === "edit" || (asset?.operation === "reuse" && editedAssets.has(asset.assetId ?? ""));
+  };
   const seen = new Set<number>();
   const slides = input.map((raw, i) => {
     const path = `execution.slides[${i}]`;
@@ -525,8 +536,8 @@ function validateSlides(
       e.add(`${path}.treatment`, "uploaded-placement needs a reference in assetRefs");
     }
     if (treatment === "generated" && placedAssets.length === 0) e.add(`${path}.treatment`, "generated needs a plan asset in assetRefs");
-    if (treatment === "edited" && !placedAssets.some((k) => byKey.get(k)?.operation === "edit")) {
-      e.add(`${path}.treatment`, "edited needs an edit task in assetRefs");
+    if (treatment === "edited" && !placedAssets.some(showsEditedImage)) {
+      e.add(`${path}.treatment`, "edited needs an edit task or a reuse of an earlier edited image in assetRefs");
     }
     if ((treatment === "typography" || treatment === "css-visual") && assetRefs.length > 0) {
       e.add(`${path}.treatment`, `${treatment} places no images`);

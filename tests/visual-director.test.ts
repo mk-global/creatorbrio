@@ -33,6 +33,7 @@ const { ASSET_OPERATIONS, EDIT_KINDS, PLAN_FIELDS, SLIDE_COUNT_BASES, TREATMENTS
 const { IMAGE_DIMENSIONS } = await import("@/lib/image-service");
 const { EMPTY_BRIEF_UPDATE } = await import("@/lib/creative-brief");
 const { TEN_PAGE_BRIEF } = await import("./fixtures/ten-page-brief");
+const { SIMPLE_REVISION_MESSAGE, simpleRevisionPlan } = await import("./fixtures/simple-revision-plan");
 
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -362,6 +363,26 @@ describe("runDirector", () => {
     // True whether or not the message stated a count: it never claims the user asked for one.
     expect(message).not.toMatch(/asked for/);
     expect(message).not.toContain("Lisbon");
+  });
+
+  it("accepts a one-word colour change that keeps an earlier edited photo, the plan refused in #168", async () => {
+    const edited: CarouselAsset = { ...asset(ASSET_ID), origin: "edited", sourceIds: [reference.id] };
+    const cover = { id: "s1", html: `<img src="/uploads/${ASSET_ID}.png">`, previousVersions: [], order: 0, notes: "Reel cover, edited portrait low right" };
+    await play("plan", simpleRevisionPlan(ASSET_ID));
+    const result = await runDirector(
+      await request({ carousel: carousel({ slides: [cover] }), message: SIMPLE_REVISION_MESSAGE, assets: [{ asset: edited, intact: true }] })
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      plan: { execution: { requestType: "revision", slideCountBasis: "existing", slides: [{ treatment: "edited", assetRefs: ["a1"] }], assets: [{ operation: "reuse", assetId: ASSET_ID }] } },
+    });
+  });
+
+  it("tells the user an unusable plan was CreatorBrio's, without asking them to rephrase (#168)", () => {
+    const message = directorFailureMessage("invalid_plan");
+    expect(message).not.toMatch(/rephrase/i);
+    expect(message).toMatch(/nothing was changed/i);
+    expect(message).toMatch(/same message again/);
   });
 
   it("keeps a plan with any other violation as an invalid plan, even when its slide count is also wrong", async () => {

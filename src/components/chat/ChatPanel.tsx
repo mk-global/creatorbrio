@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import { ReferenceImages } from "./ReferenceImages";
-import { AlertCircle, Plug } from "lucide-react";
+import { Plug } from "lucide-react";
 import type { ReferenceImage } from "@/types/carousel";
 import {
   createChatStreamParser,
@@ -13,7 +13,7 @@ import {
   sessionAfterRun,
 } from "@/lib/chat-stream";
 import { readChatSession, writeChatSession } from "@/lib/chat-session";
-import { ContinueBar, type RunNoticeData } from "./RunNotice";
+import { ContinueBar, RunError, type RunNoticeData } from "./RunNotice";
 import type { ContinuationOffer } from "@/components/editor/useGenerationStatus";
 
 /** Shown when the stream closes without the run reporting how it ended. */
@@ -314,10 +314,7 @@ export function ChatPanel({
           />
         )}
         {error && (
-          <div className="mx-4 my-2 flex items-center gap-2 text-destructive text-xs bg-destructive/10 rounded-lg p-3">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            {error}
-          </div>
+          <RunError message={error} />
         )}
       </div>
 
