@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CreatorBrio 2.0 decisions</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="prototype/app.css">
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+<header class="doc-top"><div class="doc-top-inner">
+  <a class="doc-mark" href="index.html"><span class="logo"><span></span></span>CreatorBrio 2.0 review</a>
+  <nav class="doc-nav" aria-label="Review package">
+    <a href="index.html">Overview</a><a href="audit.html">Audit</a><a href="architecture.html">Architecture</a><a href="design-system.html">Design system</a><a href="blueprint.html">Blueprint</a><a href="decisions.html" aria-current="page">Decisions</a><a href="prototype/index.html">Prototype</a>
+  </nav>
+</div></header>
+
+<main class="doc doc-narrow" id="main">
+  <header class="lead">
+    <div class="eyebrow">Part 5 · For the founder</div>
+    <h1 class="t-display">Decisions</h1>
+    <p>Fifteen choices that are yours to make. Each has a recommendation; approving the package with no notes accepts all fifteen. The milestone each one blocks is named, so a decision can wait until its milestone if you prefer.</p>
+  </header>
+
+  <h2 id="direction">Direction</h2>
+
+  <div class="decision" id="d1">
+    <h3><span class="id">D1</span>Visual direction · blocks M2</h3>
+    <p>Light first, warm neutrals, Geist, one accent, the work as the only bright colour. Alternatives: keep today's cool greys and only fix contrast; or a darker, studio-first look across the whole app.</p>
+    <div class="rec"><b>Recommended:</b> approve the warm, light direction. It suits a tool whose output is colourful and whose users judge colour; the Studio keeps the black stage behind its video preview.</div>
+  </div>
+
+  <div class="decision" id="d2">
+    <h3><span class="id">D2</span>The accent's two jobs · blocks M2</h3>
+    <p>Keep <code>#e94560</code> for identity, focus and indicators, and use <code>#bf394f</code> for buttons and text. Alternatives: <code>#e94560</code> everywhere with dark text on buttons, which looks muddy; or one darker accent everywhere, which dulls the mark.</p>
+    <div class="rec"><b>Recommended:</b> the split. It is the only option that keeps the identity and passes AA.</div>
+  </div>
+
+  <h2 id="data">Data and formats</h2>
+
+  <div class="decision" id="d3">
+    <h3><span class="id">D3</span>How a project knows its format · blocks M2</h3>
+    <p>Store an optional <code>format</code> on each carousel, absent meaning Instagram Carousel. The alternative is to infer it from size and slide count, but a one-slide 9:16 carousel and a Reel cover look the same, and a document and a carousel at 4:5 look the same.</p>
+    <div class="rec"><b>Recommended:</b> the optional stored field. It is additive, needs no migration, and says what the person meant.</div>
+  </div>
+
+  <div class="decision" id="d4">
+    <h3><span class="id">D4</span>Can a project's format change later? · blocks M4</h3>
+    <p>The format only sets defaults (export, sizes, add-slide), so changing it is safe. Fixing it at creation, like the brand, is simpler to explain.</p>
+    <div class="rec"><b>Recommended:</b> fixed at creation in M2 and M3; allow "Change format" in M4's More menu only if people ask for it. Duplicate covers most needs.</div>
+  </div>
+
+  <div class="decision" id="d5">
+    <h3><span class="id">D5</span>How a Reel cover stays one slide · blocks M2</h3>
+    <p>The design agent's system prompt is frozen and pinned by a test, so the format cannot be added there without reopening that decision. Options:</p>
+    <ol>
+      <li><b>Advisory, visible:</b> the composer is prefilled with "A one-slide Reel cover." before the person's description, which they can read and edit; the editor offers no add-slide button.</li>
+      <li><b>Binding in the plan:</b> the Visual Director receives the format and its slide limit as a constraint and plans exactly one slide. Needs a Director change and tests.</li>
+      <li><b>In the design agent's prompt:</b> not recommended; it reopens a frozen, tested decision.</li>
+    </ol>
+    <div class="rec"><b>Recommended:</b> option 1 in M2, verified with one approved live run before M2 ships; option 2 as a follow-up if covers come back with more than one slide.</div>
+  </div>
+
+  <h2 id="structure">Structure</h2>
+
+  <div class="decision" id="d6">
+    <h3><span class="id">D6</span>First run · blocks M2</h3>
+    <p>Replace the automatic five-step brand modal with an inline "Set up your brand" card on Home. Until it is done, the default brand is used. The alternative keeps today's modal, which can be closed but opens again on every visit until the brand has a name, and stops it reopening.</p>
+    <div class="rec"><b>Recommended:</b> the inline card. The first thing a person sees should be what CreatorBrio makes.</div>
+  </div>
+
+  <div class="decision" id="d7">
+    <h3><span class="id">D7</span>A Settings page · blocks M2</h3>
+    <p>A real page for Claude Code status, the image service, Studio pairing, data location and privacy, at the foot of the sidebar. The alternative is no Settings and a status line in the sidebar.</p>
+    <div class="rec"><b>Recommended:</b> the page. Each of those questions has no home today, and the gear that says Settings already exists.</div>
+  </div>
+
+  <div class="decision" id="d8">
+    <h3><span class="id">D8</span>Templates as a destination · blocks M3</h3>
+    <p>Templates in the main navigation, or a filter inside Projects.</p>
+    <div class="rec"><b>Recommended:</b> its own destination. Starting from something and finding something are different intents, and the template list stays short.</div>
+  </div>
+
+  <div class="decision" id="d9">
+    <h3><span class="id">D9</span>Videos inside Projects · blocks M3</h3>
+    <p>Show Video Studio productions as a Videos filter in Projects, for browsers that are paired, or keep them only in the Studio.</p>
+    <div class="rec"><b>Recommended:</b> the filter, as a read-only list that opens the Studio. Every production is stored under the default brand today, so the list does not filter videos by brand, and says so. It needs D15.</div>
+  </div>
+
+  <div class="decision" id="d10">
+    <h3><span class="id">D10</span>Quick create does not send · blocks M2</h3>
+    <p>"Start from an idea" creates the project and fills the composer, but does not start the design. The alternative sends at once.</p>
+    <div class="rec"><b>Recommended:</b> fill, do not send. A design is a paid run of a few minutes; the person should see and confirm what is sent.</div>
+  </div>
+
+  <h2 id="engineering">Engineering</h2>
+
+  <div class="decision" id="d11">
+    <h3><span class="id">D11</span>Project thumbnails · blocks M3</h3>
+    <p>Lazy live previews (a sandboxed iframe of the first slide, only for cards on screen), or PNG thumbnails cached when a project is saved or exported.</p>
+    <div class="rec"><b>Recommended:</b> lazy live previews first; they are always current and need no storage. Add cached PNGs only if a measured library is slow.</div>
+  </div>
+
+  <div class="decision" id="d12">
+    <h3><span class="id">D12</span>A menu primitive · blocks M2</h3>
+    <p>Add <code>@radix-ui/react-dropdown-menu</code>, from the same family as the Radix Dialog the app already uses, or hand-build menus.</p>
+    <div class="rec"><b>Recommended:</b> add the Radix menu. Keyboard, focus and screen-reader behaviour in menus is where hand-built UI fails, and the family is already trusted here.</div>
+  </div>
+
+  <div class="decision" id="d13">
+    <h3><span class="id">D13</span>The editor's address · blocks M2</h3>
+    <p>Keep <code>/carousel/[id]</code> for every format, or move to <code>/projects/[id]</code> with a redirect.</p>
+    <div class="rec"><b>Recommended:</b> keep it. Bookmarks, tests and docs use it; the name in the address is not something people read.</div>
+  </div>
+
+  <div class="decision" id="d14">
+    <h3><span class="id">D14</span>Video Studio on phones · blocks M2</h3>
+    <p>On a phone, the Studio offers pairing, the productions list and render status, and says the timeline needs a larger screen. The alternative is a phone timeline.</p>
+    <div class="rec"><b>Recommended:</b> list only on phones. A usable phone timeline is its own project.</div>
+  </div>
+
+  <div class="decision" id="d15">
+    <h3><span class="id">D15</span>Knowing whether a browser is paired · blocks M2</h3>
+    <p>Home's Studio panel, Settings and the Videos filter need to know whether this browser is paired. Today the only way to ask is the Studio's session route, which answers 401 when it is not, so every unpaired visit to Home would log an error. Options: an additive status form of the session route that answers "not paired" with a 200; or never ask outside the Studio, and show a plain link there.</p>
+    <div class="rec"><b>Recommended:</b> the additive status form, with the same cookie, header and origin rules as the route today. It is the one change this proposal makes near the Studio's API, it adds no authority, and it also removes the 401 noise the Studio page logs before pairing (audit A16). The Production API, store and media registry stay untouched.</div>
+  </div>
+
+  <h2 id="risks">Risks and known limitations of this package</h2>
+  <ul>
+    <li><b>The editor in the prototype is representative.</b> The chat, run notices, filmstrip editing and exports are the existing ones and are not redrawn; <a href="architecture.html#matrix">the capability matrix</a> says where each lives.</li>
+    <li><b>The Studio was not audited live.</b> The pairing script documents a non-interactive option that the repository's tests use, but this session's permission policy refused it, and that was respected. Studio findings come from source and the README's screenshot. A live pass against an isolated instance, run or approved by you, would close this gap.</li>
+    <li><b>No design run was started</b> while auditing, so the timing claims are the README's ("a few minutes").</li>
+    <li><b>D5 is untested live.</b> Whether the prefilled words reliably yield one slide needs one approved run before M2 ships.</li>
+    <li><b>Fonts load from Google</b> in both the prototype and these pages; offline, they fall back to system fonts and look slightly different.</li>
+  </ul>
+</main>
+</body>
+</html>

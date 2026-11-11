@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CreatorBrio 2.0 architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="prototype/app.css">
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+<header class="doc-top"><div class="doc-top-inner">
+  <a class="doc-mark" href="index.html"><span class="logo"><span></span></span>CreatorBrio 2.0 review</a>
+  <nav class="doc-nav" aria-label="Review package">
+    <a href="index.html">Overview</a><a href="audit.html">Audit</a><a href="architecture.html" aria-current="page">Architecture</a><a href="design-system.html">Design system</a><a href="blueprint.html">Blueprint</a><a href="decisions.html">Decisions</a><a href="prototype/index.html">Prototype</a>
+  </nav>
+</div></header>
+
+<main class="doc" id="main">
+  <header class="lead">
+    <div class="eyebrow">Part 2 · Structure</div>
+    <h1 class="t-display">Information architecture and journeys</h1>
+    <p>Six destinations, one creation flow and one editor. Every format CreatorBrio makes is reachable from the first screen, every capability that ships today keeps a home, and nothing is shown that does not exist.</p>
+  </header>
+
+  <nav class="toc" aria-label="On this page">
+    <a href="#model">Navigation model</a><a href="#validation">Why these six</a><a href="#destinations">Destinations</a><a href="#routes">Routes</a><a href="#formats">Formats</a><a href="#journeys">Journeys</a><a href="#matrix">Capability matrix</a><a href="#scale">0, 5 and hundreds</a><a href="#data">Data and API</a>
+  </nav>
+
+  <h2 id="model">Navigation model</h2>
+  <div class="cards-2">
+    <div class="pane">
+      <h3>Desktop and tablet</h3>
+      <p>A persistent left sidebar. At the top, the product mark, the <b>brand switcher</b> ("Brand: Northwind Studio") and one <b>Create</b> button. Then Home, Projects, Templates, Brands and Video Studio, the last tagged <span class="tag-early">Early</span>. Settings and a one-line note that work is saved as files on this computer sit at the foot.</p>
+      <p>From 1023 pixels down the sidebar becomes an 84 pixel icon rail with labels under the icons.</p>
+    </div>
+    <div class="pane">
+      <h3>Phone (767 pixels and below)</h3>
+      <p>A top bar with the mark, the brand switcher and Settings, and a bottom tab bar: <b>Home, Projects, Create, Templates, More</b>. More opens Brands, Video Studio and Settings. Create is the raised centre tab. Five tabs is the limit at which every label still fits at 320 pixels.</p>
+    </div>
+  </div>
+  <p>The editor and the Video Studio workspace are <b>focus modes</b>: they take the full window with their own top bar and a way back, because both need every pixel for the canvas.</p>
+  <div class="compare">
+    <figure><img src="screenshots/prototype/home-1440.png" alt="Proposed Home at 1440 pixels with the sidebar"><figcaption>Desktop shell, Home</figcaption></figure>
+    <figure><img src="screenshots/prototype/home-768.png" alt="Proposed Home at 768 pixels with the icon rail"><figcaption>Tablet, icon rail</figcaption></figure>
+  </div>
+
+  <h2 id="validation">Why these six destinations</h2>
+  <p>The hypothesis was Home, Projects, Templates, Brands, Video Studio and Settings. It holds, with two refinements. Each destination is an object a person owns or a place they start from; none is a placeholder.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Destination</th><th>Verdict</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td>Home</td><td>Keep</td><td>The answer to "what do you want to make?" and "where was I?". Replaces the dashboard.</td></tr>
+      <tr><td>Projects</td><td>Keep</td><td>The library of everything made, across formats and brands. Today's "My Carousels" tab, made to scale.</td></tr>
+      <tr><td>Templates</td><td>Keep, top level</td><td>A template is a starting point, not a project; starting is a different intent from finding. Folding it into Projects as a filter is the alternative (<a href="decisions.html#d8">D8</a>).</td></tr>
+      <tr><td>Brands</td><td>Keep</td><td>Brands already exist and shape every design, yet today they are edited in a modal behind a pencil and a gear.</td></tr>
+      <tr><td>Video Studio</td><td>Keep, tagged Early</td><td>A real, working editor that nobody can find. Its entry page says plainly what works and what is not built.</td></tr>
+      <tr><td>Settings</td><td>Keep, in the sidebar foot</td><td>It earns its place with real content: Claude Code status, the image service, Studio pairing, where data lives and what leaves the machine. It is visited rarely, so it sits below the main list (<a href="decisions.html#d7">D7</a>).</td></tr>
+      <tr><td>Publishing, Analytics, Automation</td><td>Not added</td><td>Nothing exists behind them. Empty sections would advertise work that is not planned.</td></tr>
+      <tr><td>Image editor</td><td>Not added</td><td>Image generation and editing happen inside a design run, through the optional local image service. A separate editor would duplicate that path.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="destinations">Destinations</h2>
+
+  <h3 id="home">Home</h3>
+  <dl class="spec">
+    <dt>Objective</dt><dd>Start something in one decision, or get back to recent work in one click.</dd>
+    <dt>Content</dt><dd><ul><li>"What would you like to create?" with "Creating for <i>brand</i>" and Switch brand.</li><li>Four format cards: Instagram Carousel, LinkedIn Document, Reel Cover and Video Studio (Early), each saying what it exports.</li><li>Start from an idea: one line, a format and Continue.</li><li>Continue creating: the four most recent projects of this brand, with real first-slide previews, format and slide count.</li><li>Start from a template, a Video Studio panel and a brand panel.</li></ul></dd>
+    <dt>Primary action</dt><dd>A format card, which opens the creation flow on its second step.</dd>
+    <dt>Secondary</dt><dd>Start from an idea; open a recent project; All projects; use a template; open the Studio; edit the brand.</dd>
+    <dt>Empty</dt><dd>An inline "Set up your brand" card (a name, five colours, two fonts and a few style words; about a minute) replaces the modal that reopens on every visit. It does not block anything: the format cards stay, and the default brand is used until the person sets theirs up. "How it works" explains the three steps honestly, including that a design takes a few minutes. <a href="prototype/index.html#/home?data=empty">Open</a></dd>
+    <dt>Loading</dt><dd>Skeletons shaped like the cards they replace. <a href="prototype/index.html#/home?data=loading">Open</a></dd>
+    <dt>Error</dt><dd>A banner that says the projects could not be loaded, that nothing was deleted, and offers Try again; creation still works. <a href="prototype/index.html#/home?data=error">Open</a></dd>
+    <dt>Not connected</dt><dd>When Claude Code is not found, a warning banner says existing work can still be opened, arranged and exported, that designing needs Claude Code, and links to Settings with How to connect. <a href="prototype/index.html#/home?claude=0">Open</a></dd>
+    <dt>Phone</dt><dd>Format cards in two columns, then one row each at 320 pixels with their export line; quick create stacks; recent projects in two columns.</dd>
+    <dt>Reuses</dt><dd>Brand selection (<code>useBrandSelection</code>), carousel list, templates list, <code>/api/chat/check</code>. Knowing whether this browser is paired, without logging a 401 on every visit, needs the session status form in <a href="decisions.html#d15">D15</a>; until then the Studio panel links to the Studio without listing productions.</dd>
+    <dt>Extends to</dt><dd>A new format is one more card and one more entry in the format registry; nothing else on Home changes.</dd>
+  </dl>
+
+  <h3 id="projects">Projects</h3>
+  <dl class="spec">
+    <dt>Objective</dt><dd>Find any project among hundreds in seconds.</dd>
+    <dt>Content</dt><dd>Search, This brand or All brands, sort by last edited or name, grid or list, and format filters with counts: All designs, Instagram Carousels, LinkedIn Documents, Reel Covers, and Videos when this browser is paired.</dd>
+    <dt>Primary action</dt><dd>Open a project. Cards are links: Tab reaches them, Enter opens them.</dd>
+    <dt>Secondary</dt><dd>A visible "More" menu on every card: Open, Duplicate, Save as template, Delete (confirmed). New project.</dd>
+    <dt>Empty</dt><dd>"No projects yet" explains what a project is, with Create a project. A search or filter with no match says "No projects match", suggests all brands or another format, and offers Clear filters. <a href="prototype/index.html#/projects?data=empty">Open</a></dd>
+    <dt>Loading / error</dt><dd>Card skeletons; an error banner with Try again that keeps the filters. <a href="prototype/index.html#/projects?data=error">Open</a></dd>
+    <dt>Phone</dt><dd>Two-column grid, search full width, filters scroll sideways, the view toggle hidden.</dd>
+    <dt>Reuses</dt><dd>Carousel list and duplicate, template save and delete routes; <code>ConfirmDialog</code>.</dd>
+    <dt>Extends to</dt><dd>Tags, folders or a shared library later, as further filters; the summary API takes them as query parameters.</dd>
+  </dl>
+
+  <h3 id="templates">Templates</h3>
+  <dl class="spec">
+    <dt>Objective</dt><dd>Start a new project from a proven layout.</dd>
+    <dt>Content</dt><dd>The active brand's templates with a format filter; each card shows a preview, its format and its length.</dd>
+    <dt>Primary action</dt><dd>Use template, which opens the creation flow with the template chosen.</dd>
+    <dt>Secondary</dt><dd>Delete, with confirmation.</dd>
+    <dt>Empty</dt><dd>Explains what a template is and how to make one: open any project and choose Save as template from its menu. A format filter with no match says so and offers Show all formats. <a href="prototype/index.html#/templates?data=empty">Open</a></dd>
+    <dt>Error</dt><dd>"Couldn't load templates" with Try again, never an empty list. <a href="prototype/index.html#/templates?data=error">Open</a></dd>
+    <dt>Reuses</dt><dd><code>/api/templates</code>, <code>/api/templates/[id]/use</code>, <code>TemplateCard</code> restyled.</dd>
+  </dl>
+
+  <h3 id="brands">Brands</h3>
+  <dl class="spec">
+    <dt>Objective</dt><dd>See every brand at a glance and edit one with a live preview.</dd>
+    <dt>Content</dt><dd>A tile per brand: name, colours, fonts and style words, marked Default and Active. A full-page editor: identity and logo, five colours, heading and body fonts, style words, and a sticky slide preview that updates as you edit.</dd>
+    <dt>Primary action</dt><dd>Use this brand (makes it active for new work), or Edit.</dd>
+    <dt>Secondary</dt><dd>New brand. Brands cannot be deleted today, and the page says so instead of offering a Delete that fails.</dd>
+    <dt>Phone</dt><dd>Tiles in one column; the editor's preview moves above the form.</dd>
+    <dt>Reuses</dt><dd><code>/api/brands</code>, <code>ColorPicker</code>, <code>FontSelector</code>, <code>LogoUpload</code>, <code>StyleKeywordPicker</code>, <code>CarouselBrandBadge</code>.</dd>
+  </dl>
+
+  <h3 id="studio">Video Studio</h3>
+  <dl class="spec">
+    <dt>Objective</dt><dd>Say honestly what the Studio does, get this browser paired, and open a production.</dd>
+    <dt>Content</dt><dd>An Early hero: "Edit a short Instagram Reel by hand", with Works today and Not built yet lists taken from the README. A pairing card with the exact terminal command. Once paired, the productions list, New production and Sign out.</dd>
+    <dt>Primary action</dt><dd>Pair this browser; once paired, open a production.</dd>
+    <dt>Workspace</dt><dd>Opening a production leads to the existing Studio editor, unchanged: light chrome around a black video stage. 2.0 only aligns its existing top bar with the rest of the app.</dd>
+    <dt>Phone</dt><dd>Pairing and the list work; a note says the timeline needs a larger screen (<a href="decisions.html#d14">D14</a>).</dd>
+    <dt>Reuses</dt><dd><code>StudioApp</code>, <code>PairingPanel</code>, <code>ProductionPicker</code>, <code>StudioApi</code>. No change to the Production API.</dd>
+  </dl>
+
+  <h3 id="settings">Settings</h3>
+  <dl class="spec">
+    <dt>Objective</dt><dd>Answer "is everything working, and where is my data?"</dd>
+    <dt>Content</dt><dd>Claude Code status; the local image service (Not checked until a read-only status check exists); Studio pairing and the sign-out-everywhere command; FFmpeg; where data lives and how to back it up; what leaves the computer; version and licence.</dd>
+    <dt>Reuses</dt><dd><code>/api/chat/check</code>, the Studio session route (through <a href="decisions.html#d15">D15</a>), README text for data and privacy.</dd>
+  </dl>
+
+  <h3 id="editor">Editor (existing, integrated)</h3>
+  <dl class="spec">
+    <dt>Objective</dt><dd>Design and export one project. The editor is the existing one; 2.0 changes its frame, not its engine.</dd>
+    <dt>Changes</dt><dd><ul><li>Top bar: back to Projects, name, format and brand chips, a More menu (Duplicate, Save as template, Delete) and a format-aware Export button: "Export PNGs", "Export PDF" or "Export PNG".</li><li>Labelled tools: Size (a menu, absent for a Reel cover), Caption, Safe zones, Full screen.</li><li>Phones: Preview and Chat tabs instead of three squeezed panels.</li><li>Add a slide puts "Add a slide that" into the chat; a Reel cover has no add button.</li></ul></dd>
+    <dt>Unchanged</dt><dd>The chat and its run notices, Continue and accept, the sandboxed preview, the filmstrip with drag, undo and delete, captions, every export and its 409 rules.</dd>
+  </dl>
+
+  <h2 id="routes">Routes</h2>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Route</th><th>Screen</th><th>Today</th></tr></thead>
+    <tbody>
+      <tr><td><code>/</code></td><td>Home</td><td>Dashboard, replaced</td></tr>
+      <tr><td><code>/projects</code></td><td>Projects</td><td>New; was the My Carousels tab</td></tr>
+      <tr><td><code>/templates</code></td><td>Templates</td><td>New; was the Templates tab</td></tr>
+      <tr><td><code>/brands</code>, <code>/brands/[id]</code></td><td>Brands and brand editor</td><td>New; was the brand modal</td></tr>
+      <tr><td><code>/studio</code></td><td>Video Studio entry and workspace</td><td>Exists; gains the shell and the entry content</td></tr>
+      <tr><td><code>/settings</code></td><td>Settings</td><td>New</td></tr>
+      <tr><td><code>/carousel/[id]</code></td><td>Editor, for every format</td><td>Exists, kept (<a href="decisions.html#d13">D13</a>)</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="formats">Formats on one engine</h2>
+  <p>A LinkedIn Document and a Reel Cover are carousels. They use the same storage, the same editor, the same design agent and the same export code. The format is a label that sets sensible defaults; it does not create a second project model.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Format</th><th>Default size</th><th>Sizes offered</th><th>Slides</th><th>Default export</th><th>Also available</th></tr></thead>
+    <tbody>
+      <tr><td>Instagram Carousel</td><td>4:5</td><td>4:5, 1:1, 9:16</td><td>1 to 20</td><td>PNG images (ZIP)</td><td>LinkedIn PDF</td></tr>
+      <tr><td>LinkedIn Document</td><td>4:5</td><td>4:5, 1:1</td><td>1 to 20</td><td>LinkedIn PDF</td><td>PNG images (ZIP)</td></tr>
+      <tr><td>Reel Cover</td><td>9:16</td><td>9:16 only</td><td>1</td><td>One PNG</td><td>PNG ZIP, PDF</td></tr>
+      <tr><td>Video Studio</td><td colspan="5">Its own production model and editor, reached from the same Create entry. Not a carousel.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Projects created before 2.0 have no format and read as Instagram Carousels, so every existing project opens unchanged (<a href="decisions.html#d3">D3</a>). The server, not only the screen, keeps a Reel cover at 9:16: a size change to anything else is refused for that format.</p>
+
+  <h2 id="journeys">Journeys</h2>
+  <p>Each link opens the prototype in the state the journey starts from.</p>
+
+  <h3>J1 · First visit</h3>
+  <p>Home opens with the four format cards, an inline "Set up your brand" card and How it works. Nothing blocks the first action; until the brand is set up, designs use the default brand. <a href="prototype/index.html#/home?data=empty">Open J1</a></p>
+
+  <h3>J2 · Instagram Carousel</h3>
+  <ol><li>Home: Instagram Carousel.</li><li>Step 2: the active brand is preselected; Portrait 4:5 is chosen, Square and Story offered; "A description" or "A template"; an optional "What is it about?"; an optional name.</li><li>Create and open: the editor, with the description waiting in the chat.</li><li>Send starts the design run, which the person sees arrive slide by slide.</li></ol>
+  <p><a href="prototype/index.html#/home">Open J2</a> and choose Instagram Carousel.</p>
+
+  <h3>J3 · LinkedIn Document</h3>
+  <p>As J2, with portrait and square only, "pages" instead of slides, the chat prefilled with "A LinkedIn document." before the description, and Export PDF as the editor's main action. <a href="prototype/index.html#/editor/p-onboarding">Open a document in the editor</a></p>
+
+  <h3>J4 · Reel Cover</h3>
+  <p>As J2, with the size fixed at 9:16 and the chat prefilled with "A one-slide Reel cover." The editor has no add-slide button, the Size control is a fixed label, and Export PNG is the main action. <a href="prototype/index.html#/editor/p-studio-cover">Open a cover in the editor</a></p>
+
+  <h3>J5 · From an idea</h3>
+  <p>Home: type an idea, choose a format, Continue. The creation flow opens on step 2 with the idea filled in. Nothing is designed until Send (<a href="decisions.html#d10">D10</a>).</p>
+
+  <h3>J6 · From a template</h3>
+  <p>Templates: Use template. The creation flow opens with "A template" selected and the template chosen; the new project opens with its slides. <a href="prototype/index.html#/templates">Open J6</a></p>
+
+  <h3>J7 · Continue working</h3>
+  <p>Home: a recent project under Continue creating, or Projects: search, filter, open. <a href="prototype/index.html#/projects">Open J7</a></p>
+
+  <h3>J8 · Video Studio</h3>
+  <p>Video Studio: read what works today, pair this browser with the code from the terminal, open a production in the existing editor. <a href="prototype/index.html#/studio?paired=0">Open unpaired</a> · <a href="prototype/index.html#/studio?paired=1">Open paired</a></p>
+
+  <h3>J9 · Switch brand</h3>
+  <p>The brand switcher in the sidebar changes what Home, Projects and Templates show and which brand new work uses. An existing project keeps the brand it was made with, and the toast says so. <a href="prototype/index.html#/home?brand=kettle">Open as Kettle &amp; Pine</a></p>
+
+  <h2 id="matrix">Capability matrix</h2>
+  <p>Every capability that ships today, where it lives in 2.0, and how the prototype shows it. "Illustrative" means the prototype shows the control and labels it as not working there.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Capability today</th><th>Home in 2.0</th><th>Prototype</th><th>Milestone</th></tr></thead>
+    <tbody>
+      <tr><td>Create a carousel at 1:1, 4:5 or 9:16</td><td>Create flow; Instagram Carousel offers all three sizes</td><td>Works</td><td>M2</td></tr>
+      <tr><td>Change a project's size later (slides are not reflowed)</td><td>Editor, Size menu (not for Reel covers)</td><td>Works</td><td>M4</td></tr>
+      <tr><td>Design by chat, Visual Director plan, Creative Brief</td><td>Editor chat, unchanged</td><td>Illustrative (Send)</td><td>Unchanged</td></tr>
+      <tr><td>Reference images; up to three pasted links</td><td>Editor chat, unchanged</td><td>Illustrative</td><td>Unchanged</td></tr>
+      <tr><td>Optional image service: generate or edit images</td><td>Inside design runs; its status in Settings</td><td>Settings shows "Not checked"</td><td>M2 (status)</td></tr>
+      <tr><td>Stop a run; interrupted notice; accept; Continue; export refused with 409 while unfinished</td><td>Editor, unchanged</td><td>Not shown</td><td>Unchanged</td></tr>
+      <tr><td>Preview, safe zones, full window</td><td>Editor tools, labelled</td><td>Safe zones work; full window illustrative</td><td>M4</td></tr>
+      <tr><td>Drag to reorder; five undo steps per slide; delete a slide</td><td>Editor filmstrip, unchanged</td><td>Not shown</td><td>Unchanged</td></tr>
+      <tr><td>Rename</td><td>Editor title, unchanged</td><td>Not shown</td><td>Unchanged</td></tr>
+      <tr><td>Duplicate</td><td>Card menu and editor More menu</td><td>Works</td><td>M3, M4</td></tr>
+      <tr><td>Delete a project</td><td>Card menu and editor More menu, confirmed</td><td>Works</td><td>M3, M4</td></tr>
+      <tr><td>Save as template</td><td>Card menu and editor More menu, with a confirmation toast</td><td>Works</td><td>M3, M4</td></tr>
+      <tr><td>Start from a template; delete a template</td><td>Templates, and the create flow's "A template"</td><td>Works</td><td>M3</td></tr>
+      <tr><td>Captions and hashtags with Copy</td><td>Editor, Caption tool</td><td>Illustrative</td><td>M4</td></tr>
+      <tr><td>PNG ZIP; single PNG for one slide; LinkedIn PDF</td><td>Editor Export, default chosen by format</td><td>Illustrative menu</td><td>M4</td></tr>
+      <tr><td>Brands: create, edit, colours, fonts, logo, style words, default brand</td><td>Brands page and brand editor</td><td>Works, logo upload illustrative</td><td>M3</td></tr>
+      <tr><td>Selected brand remembered per browser</td><td>Brand switcher, same storage key</td><td>Works</td><td>M2</td></tr>
+      <tr><td>A carousel keeps its brand for life</td><td>Unchanged; stated on cards and in the editor</td><td>Works</td><td>Unchanged</td></tr>
+      <tr><td>Claude Code availability check</td><td>Home banner and Settings</td><td>Works (prototype toggle)</td><td>M2</td></tr>
+      <tr><td>Studio: pair, sign out, revoke all, productions, editor, render and download</td><td>Video Studio entry and the existing workspace</td><td>Pairing simulated; workspace shown as a screenshot</td><td>M2 entry; workspace unchanged</td></tr>
+      <tr><td>Studio productions in one list with projects</td><td>Projects, Videos filter (paired browsers)</td><td>Works</td><td>M3, after D15</td></tr>
+      <tr><td>Custom font uploads and style presets (API only)</td><td>Not surfaced until <a href="https://github.com/mk-global/creatorbrio/issues/159">#159</a> decides</td><td>Not shown</td><td>#159</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="scale">Zero, five and hundreds of projects</h2>
+  <div class="cards-3">
+    <div class="pane"><h3>Zero</h3><p>Home leads with the four formats, a first-run brand card and How it works. Projects and Templates have empty states that point to Create.</p></div>
+    <div class="pane"><h3>Five</h3><p>Home's Continue creating shows four with "All 5 projects". Projects shows them all without paging.</p></div>
+    <div class="pane"><h3>Hundreds</h3><p>Home stays the same size. Projects searches, filters and sorts on the server, shows 24 at a time with "Show 24 more", and renders only the first slide of cards on screen.</p></div>
+  </div>
+
+  <h2 id="data">Data and API implications</h2>
+  <p>All additive. No existing field changes meaning, no route changes its response for existing callers, and nothing in the Video Studio changes. Details per milestone are in <a href="blueprint.html">the blueprint</a>.</p>
+  <ul>
+    <li><b>An optional <code>format</code> on a carousel</b>, set at creation. Absent means Instagram Carousel (<a href="decisions.html#d3">D3</a>).</li>
+    <li><b>A summary view of the carousel list</b>: <code>GET /api/carousels?view=summary</code> returns the name, brand, format, size, slide count and first slide, without every slide's HTML and undo history. Search, filter, sort and paging parameters follow in M3.</li>
+    <li><b>A read-only status route</b> for Settings and Home: whether Claude Code is available and whether an image service is configured. No secrets or paths in its response.</li>
+    <li><b>A session status form</b> of the Studio's session route that answers "not paired" without a 401 (<a href="decisions.html#d15">D15</a>). The Production API, store and media registry are unchanged.</li>
+    <li><b>Using a template</b> accepts an optional name, and the new carousel takes the template's format.</li>
+    <li><b>The selected-brand storage key stays</b> <code>framewoven:selected-brand</code>; renaming it would reset every browser's choice.</li>
+    <li><b>The idea typed on Home</b> reaches the editor through session storage keyed by the new project's id, never through the URL, and is never sent automatically.</li>
+  </ul>
+</main>
+</body>
+</html>

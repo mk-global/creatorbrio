@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CreatorBrio 2.0 blueprint</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="prototype/app.css">
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+<header class="doc-top"><div class="doc-top-inner">
+  <a class="doc-mark" href="index.html"><span class="logo"><span></span></span>CreatorBrio 2.0 review</a>
+  <nav class="doc-nav" aria-label="Review package">
+    <a href="index.html">Overview</a><a href="audit.html">Audit</a><a href="architecture.html">Architecture</a><a href="design-system.html">Design system</a><a href="blueprint.html" aria-current="page">Blueprint</a><a href="decisions.html">Decisions</a><a href="prototype/index.html">Prototype</a>
+  </nav>
+</div></header>
+
+<main class="doc" id="main">
+  <header class="lead">
+    <div class="eyebrow">Part 4 · Delivery</div>
+    <h1 class="t-display">Implementation blueprint</h1>
+    <p>Three milestones, each shippable on its own, each leaving no dead link behind. Nothing here starts before the founder approves the direction and the decisions it depends on.</p>
+  </header>
+
+  <div class="callout gate">
+    <h4>Gate</h4>
+    <p>Milestone 2 starts only after founder approval of the visual direction and of decisions D1, D2, D3, D5, D6, D7, D10, D12, D13, D14 and D15. Each milestone begins with its own GitHub issue, validated with the repository's ticket validator, and ends with its own pull request.</p>
+  </div>
+
+  <nav class="toc" aria-label="On this page">
+    <a href="#principles">Principles</a><a href="#m2">M2 · Shell, Home, creation</a><a href="#m3">M3 · Projects, Templates, Brands</a><a href="#m4">M4 · Editor integration</a><a href="#reuse">Reuse and new</a><a href="#cross">Across milestones</a><a href="#not">Not in scope</a>
+  </nav>
+
+  <h2 id="principles">Principles for the build</h2>
+  <ul>
+    <li><b>One engine.</b> Every format is a carousel. No second project model, no second editor, no second export path.</li>
+    <li><b>Additive data.</b> New fields are optional and have a meaning when absent; no stored record is rewritten; no route changes its response for existing callers.</li>
+    <li><b>No dead ends at any milestone.</b> M2 links Projects, Templates and Brands to working pages built from today's components; M3 replaces them.</li>
+    <li><b>The design agent is not touched.</b> Its system prompt is frozen and pinned by a test (<code>docs/architecture/design-decisions.md</code>). Format guidance travels as visible words in the person's own message.</li>
+    <li><b>The Video Studio is left as it is.</b> 2.0 adds an entry page and aligns its top bar. The one change near its API is an additive status form of the session route (D15); the Production API, store and media registry are not touched.</li>
+  </ul>
+
+  <section class="milestone" id="m2">
+    <h2>Milestone 2 · App shell, Home and the creation flow</h2>
+    <dl class="spec">
+      <dt>Outcome</dt><dd>Every format, the Video Studio and Settings are reachable from the first screen; a new person can start without a modal; primary actions pass AA; Home works on phones.</dd>
+      <dt>Scope</dt><dd><ul>
+        <li>Design tokens: repoint <code>globals.css</code> as in <a href="design-system.html#migration">the migration table</a>, add <code>brand</code>, <code>line-strong</code>, status and studio tokens.</li>
+        <li>App shell on <code>/</code>, <code>/projects</code>, <code>/templates</code>, <code>/brands</code>, <code>/studio</code> and <code>/settings</code>: sidebar, icon rail, phone top bar, tab bar and More sheet, brand switcher.</li>
+        <li>Home: format cards, quick create, Continue creating, template strip, Studio panel, brand panel, Claude Code banner, first-run brand card (replacing the automatic BrandSetup modal), loading, empty and error states.</li>
+        <li>Creation flow replacing the create dialog: format, brand, size, description or template, optional name.</li>
+        <li><code>/projects</code> and <code>/templates</code> as today's grids moved into the shell, with keyboard-reachable cards (A3); <code>/brands</code> as a list that opens today's brand editor.</li>
+        <li><code>/settings</code>; the Video Studio entry content around today's <code>StudioApp</code>.</li>
+        <li>Copy fixes A10, A11, A17 and A20.</li>
+      </ul></dd>
+      <dt>Reuses</dt><dd><code>Button</code>, <code>Badge</code>, <code>Input</code>, <code>Notice</code>, <code>ConfirmDialog</code> (Radix Dialog), <code>useBrandSelection</code>, <code>BrandSelector</code> logic, <code>BrandSetup</code> (from Brands and the first-run card), <code>CarouselCard</code> and <code>TemplateGallery</code> (moved), <code>StudioApp</code>, <code>PairingPanel</code>, <code>ProductionPicker</code>, <code>StudioApi</code>, <code>SlideRenderer</code> for previews, <code>src/lib/export-formats.ts</code> for each format's export line.</dd>
+      <dt>New</dt><dd><code>AppShell</code>, <code>Sidebar</code>, <code>MobileTopBar</code>, <code>TabBar</code>, <code>MoreSheet</code>, <code>BrandSwitcher</code>, <code>FormatCard</code>, <code>CreateFlow</code>, <code>QuickCreate</code>, <code>RecentProjects</code>, <code>StudioHomePanel</code>, <code>BrandSummaryPanel</code>, <code>FirstRunBrandCard</code>, <code>SettingsPage</code>, a <code>Menu</code> primitive (D12) and a <code>Toast</code>. A format registry in <code>src/lib/formats.ts</code> holding each format's name, default size, sizes, slide limit and default export. An optional <code>initialDraft</code> on <code>ChatInput</code>.</dd>
+      <dt>Data model</dt><dd>Optional <code>format</code> on <code>Carousel</code> in <code>src/types/carousel.ts</code>: <code>"instagram-carousel" | "linkedin-document" | "reel-cover"</code>. Absent reads as <code>"instagram-carousel"</code>. Set at creation; not in <code>pickCarouselUpdate</code> in this milestone. No stored record is rewritten.</dd>
+      <dt>API</dt><dd><ul>
+        <li><code>POST /api/carousels</code> accepts an optional <code>format</code>; an unknown value is refused with 400 and a reason. A Reel cover is created at 9:16 whatever size is sent.</li>
+        <li><code>GET /api/carousels?view=summary</code> (with the existing optional <code>brandId</code>) returns per carousel: id, name, brandId, format, aspectRatio, slide count, the first slide's HTML, createdAt and updatedAt. No other slide HTML and no undo history. Without <code>view</code>, the response is unchanged.</li>
+        <li><code>GET /api/status</code>, read-only: Claude Code available or not (reusing the <code>/api/chat/check</code> logic) and whether an image service is configured (<code>imageGenerationConfigured()</code>, which makes no network call). Whether it answers would need a new short loopback probe and is left out. No paths, URLs or secrets in the response. Behind the same loopback and origin rules as every route in <code>src/proxy.ts</code>.</li>
+        <li>The session status form (D15): <code>GET /api/video/session</code> with an explicit status parameter answers 200 with <code>{ paired: false }</code> instead of 401, under the same cookie, header and origin rules. Without the parameter, the route answers exactly as today.</li>
+        <li><code>PUT /api/carousels/[id]</code> refuses an <code>aspectRatio</code> other than 9:16 for a Reel cover, so the format's rule holds on the server, not only on screen. Carousels without a format are unaffected.</li>
+        <li>A project's name stays required by <code>POST /api/carousels</code>; the creation flow derives one from the description when the person leaves the field empty, as the prototype does.</li>
+        <li>The idea typed on Home reaches the editor through <code>sessionStorage</code> keyed by the new carousel's id, is cleared once read, and is never sent automatically.</li>
+      </ul></dd>
+      <dt>Migration risks</dt><dd><ul>
+        <li>The token repoint changes every screen, including the editor. Intended, but it needs a visual pass of every route at five widths.</li>
+        <li><code>tests/chat-notice-contrast.test.ts</code> reads the real <code>globals.css</code>; it must stay green and is the model for a new app-wide contrast test.</li>
+        <li><code>/start</code> recognises the app by its page title (<code>tests/docs-consistency.test.ts</code>); keep the title or update the pattern with it.</li>
+        <li>The selected-brand key <code>framewoven:selected-brand</code> must not be renamed, or every browser loses its choice.</li>
+        <li>Removing the automatic first-run modal must not remove a way to create the first brand.</li>
+        <li><code>/studio</code> keeps its pairing and session behaviour exactly. Outside the Studio, the shell asks about pairing only through the D15 status form, so no page logs a 401.</li>
+        <li>The browser tests below use the built-app harness, which skips without a fresh production build, and CI today runs <code>npm test</code> before <code>npm run build</code>. Without the CI change listed under dependencies, those tests would pass by skipping.</li>
+      </ul></dd>
+      <dt>Dependencies</dt><dd>Founder approval (see the gate). If D12 is approved, <code>@radix-ui/react-dropdown-menu</code>, from the same family as the dialog the app already uses. A CI change: build before the built-app browser tests run (or a job that runs them after <code>npm run build</code>), and make those tests fail rather than skip under CI, as <code>tests/chat-notice-contrast.test.ts</code> already does for its browser.</dd>
+      <dt>Acceptance criteria</dt><dd><ul>
+        <li>Home shows Instagram Carousel, LinkedIn Document, Reel Cover and Video Studio, each saying what it exports.</li>
+        <li>Video Studio and Settings are reachable from every shell page, with the keyboard and on a phone.</li>
+        <li>Creating a Reel cover makes a 9:16 carousel with <code>format: "reel-cover"</code> and opens the editor with "A one-slide Reel cover." and the description in the composer, unsent.</li>
+        <li>Creating a LinkedIn document stores <code>format: "linkedin-document"</code>; existing carousels load and open unchanged.</li>
+        <li>The active brand is preselected in the creation flow; a new brand set up from the first-run card becomes active.</li>
+        <li>Every text and control pair passes AA, measured by a test against the real stylesheet.</li>
+        <li>No page in the shell scrolls sideways at 390 or 320 pixels.</li>
+        <li><code>GET /api/carousels</code> without <code>view</code> returns exactly what it does today.</li>
+        <li>README, <code>CLAUDE.md</code> and the API list describe the new routes, parameters and screens.</li>
+      </ul></dd>
+      <dt>Regression coverage</dt><dd><ul>
+        <li>Unit: the format registry; <code>format</code> validation; the summary projection never includes undo history or slides after the first.</li>
+        <li>Route: <code>POST /api/carousels</code> with each format, with none and with an unknown one; a Reel cover refusing a size change; summary and full list shapes; <code>/api/status</code> response has no paths or URLs; the session status form answering 200 unpaired and paired, and the route without it unchanged.</li>
+        <li>Browser, on the built-app harness in <code>tests/helpers/studio-app.ts</code> (temporary data, no Claude CLI on its path), running in CI after the build: Home's four formats; Tab reaches a recent project and Enter opens it; create a Reel cover and land in the editor at 9:16 with the composer prefilled and no chat request made; Studio link present; no sideways scroll at 390 and 320.</li>
+        <li>Contrast: extend the chat-notice approach to buttons, links, inputs and banners.</li>
+        <li>Existing suites unchanged: carousel contract, brands, brand selection, export, Studio end to end.</li>
+      </ul></dd>
+      <dt>Complexity</dt><dd><b>Large.</b> Mostly new presentation code over existing data; the riskiest parts are the token repoint, keeping <code>/studio</code>'s session behaviour exact, and the CI change.</dd>
+    </dl>
+  </section>
+
+  <section class="milestone" id="m3">
+    <h2>Milestone 3 · Projects, Templates and Brands</h2>
+    <dl class="spec">
+      <dt>Outcome</dt><dd>A library that stays fast and findable at hundreds of projects; templates that are safe to manage; brands edited on a page with a live preview.</dd>
+      <dt>Scope</dt><dd><ul>
+        <li>Projects: search, This brand or All brands, format filters with counts, sort, grid and list, 24 at a time; a visible More menu on every card (A6) with Duplicate, Save as template and confirmed Delete; empty, no-match, loading and error states; Videos filter for paired browsers.</li>
+        <li>Lazy first-slide thumbnails: one sandboxed iframe per card on screen, nothing for cards off screen (D11).</li>
+        <li>Templates: format filter, confirmed delete (A7), error state and a message when Use template fails (A19).</li>
+        <li>Brands page and <code>/brands/[id]</code> editor with a sticky live preview; New brand.</li>
+      </ul></dd>
+      <dt>Reuses</dt><dd>M2's shell, summary view, menu and toast; <code>ConfirmDialog</code>; <code>/api/carousels/[id]/duplicate</code>; <code>POST /api/templates</code> and <code>/api/templates/[id]/use</code>; <code>ColorPicker</code>, <code>FontSelector</code>, <code>LogoUpload</code>, <code>StyleKeywordPicker</code>, <code>CarouselBrandBadge</code>; <code>SlideRenderer</code> for thumbnails and the brand preview; <code>StudioApi</code> for the Videos filter.</dd>
+      <dt>New</dt><dd><code>ProjectsPage</code>, <code>ProjectCard</code>, <code>ProjectRow</code>, <code>ProjectFilters</code>, <code>LazySlideThumb</code>, <code>TemplatesPage</code>, <code>BrandsPage</code>, <code>BrandTile</code>, <code>BrandEditorPage</code>, <code>BrandPreview</code>.</dd>
+      <dt>Data model</dt><dd>Optional <code>format</code> on <code>Template</code>, copied from the source carousel when a template is saved; absent reads as Instagram Carousel. A carousel made from a template takes the template's format. A Video Studio production already has a <code>format</code> field that is an object (width, height, frame rate); the combined Projects list keeps the two apart with a separate <code>kind</code> rather than reusing the name.</dd>
+      <dt>API</dt><dd><ul>
+        <li>The summary view gains <code>q</code>, <code>format</code>, <code>sort</code> (<code>edited</code> or <code>name</code>), <code>limit</code> (at most 100) and an opaque <code>cursor</code> that encodes the active sort key and the id, with per-format counts. Invalid values are refused with 400.</li>
+        <li><code>GET /api/templates</code> includes each template's format.</li>
+        <li><code>POST /api/templates/[id]/use</code> accepts an optional body with a <code>name</code>; without one it names the carousel as today. <code>createCarousel</code> accepts the format it passes on.</li>
+      </ul></dd>
+      <dt>Migration risks</dt><dd><ul>
+        <li>The store is one JSON file, so every summary request reads it whole. Fine for hundreds and low thousands; an index is a separate decision if that changes.</li>
+        <li>Paging while projects are edited can skip or repeat a card; the cursor is stable for a single session's view and the page says when it refreshed.</li>
+        <li>Many iframes at once cost memory; the thumbnail must render only on screen and only the first slide.</li>
+        <li>BrandSetup's modal and the new page must not diverge; the page reuses its field components rather than copying them.</li>
+      </ul></dd>
+      <dt>Dependencies</dt><dd>M2 merged. D8, D9 and D11 approved.</dd>
+      <dt>Acceptance criteria</dt><dd><ul>
+        <li>With 300 synthetic projects, Projects shows the first 24 and their counts, and search narrows the list on the server.</li>
+        <li>Every card action is reachable by keyboard and touch; Delete asks first.</li>
+        <li>Deleting a template asks first; a failed load or Use template says so.</li>
+        <li>A brand is edited on its own page and the preview follows every change before saving.</li>
+        <li>No more iframes exist than cards on screen.</li>
+      </ul></dd>
+      <dt>Regression coverage</dt><dd>Route tests for every summary parameter, its limits and its 400s; cursor paging over a fixture of 300 in both sorts; template format inheritance; Use template with and without a name; browser tests for search, filters, card menu, confirmed deletes and the brand editor; a check that off-screen cards mount no iframe.</dd>
+      <dt>Complexity</dt><dd><b>Medium to large.</b> The library and paging are the bulk; Templates and Brands mostly recompose existing parts.</dd>
+    </dl>
+  </section>
+
+  <section class="milestone" id="m4">
+    <h2>Milestone 4 · Editor integration</h2>
+    <dl class="spec">
+      <dt>Outcome</dt><dd>The editor belongs to the new product: labelled, format-aware and usable on a phone, with its design engine unchanged.</dd>
+      <dt>Scope</dt><dd><ul>
+        <li>Top bar: back to Projects, the existing inline rename, format and brand chips, a More menu (Duplicate, Save as template with a confirmation toast, closing <a href="https://github.com/mk-global/creatorbrio/issues/158">#158</a>, and Delete), and Export whose main action is the format's default.</li>
+        <li>Labelled tools: Size as a menu (a fixed label for a Reel cover), Caption (shows <code>CaptionPanel</code>), Safe zones, Full screen.</li>
+        <li>Phones: Preview and Chat tabs, closing <a href="https://github.com/mk-global/creatorbrio/issues/170">#170</a>.</li>
+        <li>Add a slide puts "Add a slide that" into the composer; a Reel cover has no add button.</li>
+        <li>The Studio already has a top bar with a back link; it is aligned with the app's new top bar and goes back to the Studio entry, with no change to the Studio's behaviour.</li>
+      </ul></dd>
+      <dt>Reuses</dt><dd><code>ChatPanel</code>, <code>ChatInput</code>, <code>RunNotice</code>, <code>useGenerationStatus</code>, <code>InterruptedExportNotice</code>, <code>CarouselPreview</code>, <code>SlideRenderer</code>, <code>SlideFilmstrip</code>, <code>SafeZoneOverlay</code>, <code>FullscreenPreview</code>, <code>CaptionPanel</code>, <code>ExportButton</code>, <code>AspectRatioSelector</code>'s options, <code>TopBar</code>'s rename.</dd>
+      <dt>New</dt><dd><code>EditorTopBar</code>, <code>EditorTools</code>, <code>EditorTabs</code>, <code>SizeMenu</code>.</dd>
+      <dt>Data model</dt><dd>None, unless D4 makes the format changeable; then <code>format</code> joins <code>pickCarouselUpdate</code>.</dd>
+      <dt>API</dt><dd>None, unless D4: then <code>PUT /api/carousels/[id]</code> accepts <code>format</code> with the same validation as creation.</dd>
+      <dt>Migration risks</dt><dd><ul>
+        <li>The chat run, its notices, Continue and accept, and Export's 409 rules are intricate; the editor's frame changes around them, not through them.</li>
+        <li>The default export depends on format and slide count. <code>export-formats.ts</code> offers the single PNG only for a one-slide carousel, so a Reel cover that ended up with more than one slide defaults to the ZIP.</li>
+        <li>Moving Delete into a menu changes muscle memory; the confirmation stays.</li>
+      </ul></dd>
+      <dt>Dependencies</dt><dd>M2 merged; M3 is not required. D4 and D13 approved.</dd>
+      <dt>Acceptance criteria</dt><dd><ul>
+        <li>Every editor control has a visible label or a tooltip and an accessible name.</li>
+        <li>Export's main action downloads PNG images for a carousel, a PDF for a document and one PNG for a one-slide cover.</li>
+        <li>Save as template confirms success or says why it failed.</li>
+        <li>At 390 pixels the canvas fills the width under a Preview and Chat switch.</li>
+        <li>Stop, interrupted, accept, Continue and the export refusal behave exactly as before.</li>
+      </ul></dd>
+      <dt>Regression coverage</dt><dd>The existing export, export-readiness, chat-stream and generation suites unchanged and green; browser tests for the phone tabs, the format-aware export default, the Save as template toast and the size menu; a Studio end-to-end pass to prove the workspace frame changed nothing.</dd>
+      <dt>Complexity</dt><dd><b>Medium.</b> Contained to one page, with careful work around the chat run.</dd>
+    </dl>
+  </section>
+
+  <h2 id="reuse">Reuse and new</h2>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Area</th><th>Reused as is</th><th>Reused, restyled or moved</th><th>New</th></tr></thead>
+    <tbody>
+      <tr><td>Primitives</td><td><code>Button</code>, <code>Badge</code>, <code>Input</code>, <code>ConfirmDialog</code></td><td><code>Notice</code> (banner tones)</td><td><code>Menu</code>, <code>Toast</code></td></tr>
+      <tr><td>Shell</td><td></td><td><code>TopBar</code> (editor rename)</td><td><code>AppShell</code>, <code>Sidebar</code>, <code>MobileTopBar</code>, <code>TabBar</code>, <code>MoreSheet</code>, <code>BrandSwitcher</code></td></tr>
+      <tr><td>Home and creation</td><td><code>useBrandSelection</code></td><td><code>BrandSetup</code></td><td><code>FormatCard</code>, <code>CreateFlow</code>, <code>QuickCreate</code>, <code>RecentProjects</code>, <code>StudioHomePanel</code>, <code>BrandSummaryPanel</code>, <code>FirstRunBrandCard</code>, format registry</td></tr>
+      <tr><td>Library</td><td><code>SlideRenderer</code></td><td><code>CarouselCard</code>, <code>TemplateCard</code>, <code>TemplateGallery</code></td><td><code>ProjectsPage</code>, <code>ProjectCard</code>, <code>ProjectRow</code>, <code>ProjectFilters</code>, <code>LazySlideThumb</code>, <code>TemplatesPage</code></td></tr>
+      <tr><td>Brands</td><td><code>ColorPicker</code>, <code>FontSelector</code>, <code>LogoUpload</code>, <code>StyleKeywordPicker</code>, <code>CarouselBrandBadge</code></td><td></td><td><code>BrandsPage</code>, <code>BrandTile</code>, <code>BrandEditorPage</code>, <code>BrandPreview</code></td></tr>
+      <tr><td>Editor</td><td><code>ChatPanel</code>, <code>RunNotice</code>, <code>useGenerationStatus</code>, <code>InterruptedExportNotice</code>, <code>CarouselPreview</code>, <code>SlideFilmstrip</code>, <code>SafeZoneOverlay</code>, <code>FullscreenPreview</code>, <code>CaptionPanel</code></td><td><code>ExportButton</code> (default by format), <code>ChatInput</code> (optional initial draft), <code>AspectRatioSelector</code> (as a menu)</td><td><code>EditorTopBar</code>, <code>EditorTools</code>, <code>EditorTabs</code>, <code>SizeMenu</code></td></tr>
+      <tr><td>Studio</td><td><code>StudioApp</code>, <code>PairingPanel</code>, <code>ProductionPicker</code>, <code>StudioApi</code></td><td></td><td>Entry content around them; <code>SettingsPage</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="cross">Across milestones</h2>
+  <ul>
+    <li><b>Documentation in the same change:</b> README's screens and capability table, <code>CLAUDE.md</code>'s architecture and API list, and a new <code>docs/architecture/app-shell.md</code> for the shell, routes and format registry.</li>
+    <li><b>Security:</b> new routes sit behind <code>src/proxy.ts</code>'s loopback and origin rules; inputs are validated through <code>src/lib/api-input.ts</code>; <code>/api/status</code> returns no paths, URLs or secrets; slide previews keep <code>sandbox=""</code>.</li>
+    <li><b>No paid runs in tests:</b> browser tests use the built-app harness, which has no Claude CLI on its path.</li>
+    <li><b>Rollback:</b> each milestone is one pull request. Reverting it leaves data readable, because every new field is optional and every old path still works.</li>
+  </ul>
+
+  <h2 id="not">Not in scope</h2>
+  <ul>
+    <li>Changes to the design agent's prompt, the Visual Director or the export renderer.</li>
+    <li>Any change to the Production API, its store or media registry.</li>
+    <li>Brand deletion, custom font uploads and style presets (<a href="https://github.com/mk-global/creatorbrio/issues/159">#159</a>).</li>
+    <li>Publishing, scheduling, analytics, accounts or a hosted version.</li>
+    <li>Dark mode for the light interface.</li>
+  </ul>
+</main>
+</body>
+</html>

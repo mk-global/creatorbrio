@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CreatorBrio 2.0 design system</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="prototype/app.css">
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+<header class="doc-top"><div class="doc-top-inner">
+  <a class="doc-mark" href="index.html"><span class="logo"><span></span></span>CreatorBrio 2.0 review</a>
+  <nav class="doc-nav" aria-label="Review package">
+    <a href="index.html">Overview</a><a href="audit.html">Audit</a><a href="architecture.html">Architecture</a><a href="design-system.html" aria-current="page">Design system</a><a href="blueprint.html">Blueprint</a><a href="decisions.html">Decisions</a><a href="prototype/index.html">Prototype</a>
+  </nav>
+</div></header>
+
+<main class="doc" id="main">
+  <header class="lead">
+    <div class="eyebrow">Part 3 · Visual language</div>
+    <h1 class="t-display">Design system</h1>
+    <p>Quiet, warm and exact. The interface steps back so the work, which is always colourful and always the brand's, is the brightest thing on screen. Every value on this page is read live from the prototype's stylesheet, so this page and the prototype cannot disagree.</p>
+  </header>
+
+  <nav class="toc" aria-label="On this page">
+    <a href="#principles">Principles</a><a href="#colour">Colour</a><a href="#accent">The accent</a><a href="#contrast">Contrast</a><a href="#type">Type</a><a href="#space">Space, radius, elevation</a><a href="#motion">Motion</a><a href="#icons">Icons</a><a href="#components">Components</a><a href="#layout">Layout</a><a href="#a11y">Accessibility</a><a href="#studio">Studio canvas</a><a href="#migration">From today's tokens</a>
+  </nav>
+
+  <h2 id="principles">Principles</h2>
+  <div class="cards-2">
+    <div class="pane"><h3>The work is the colour</h3><p>Surfaces are warm neutrals. Brand colours appear in previews, swatches and art; the interface uses one accent and saves it for the next action.</p></div>
+    <div class="pane"><h3>Say what is true</h3><p>Every state has words: loading, empty, failed, not connected, early. Times are honest ("a few minutes"). Nothing that does not work looks as if it does.</p></div>
+    <div class="pane"><h3>One of each</h3><p>One primary action per view, one menu pattern, one dialog pattern, one toast. A person learns each once.</p></div>
+    <div class="pane"><h3>Calm motion</h3><p>Short, decelerating transitions that confirm cause and effect. No motion is needed to understand anything, and reduced motion removes it.</p></div>
+  </div>
+
+  <h2 id="colour">Colour</h2>
+  <p>Light first. The canvas is a warm off-white so white cards and white slides read as objects on a table rather than holes in the page.</p>
+  <div id="swatches"></div>
+
+  <h2 id="accent">The accent: keep it, split its jobs</h2>
+  <p>CreatorBrio's coral red <code>#e94560</code> is recognisable and already in the mark. It stays. But as a fill behind white text it measures 3.83:1, and as text on the page 3.67:1; both fail WCAG AA. Two options were rejected: replacing the colour loses the identity, and darkening it everywhere dulls the mark and the focus ring for no gain.</p>
+  <div class="cards-2">
+    <div class="pane"><h3><span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:var(--brand);vertical-align:-2px;margin-right:8px"></span>Brand <code>--brand</code></h3><p>Identity and indication, where 3:1 is the bar: the mark, the focus ring, the active navigation marker, the selected slide, brand dots.</p></div>
+    <div class="pane"><h3><span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:var(--accent);vertical-align:-2px;margin-right:8px"></span>Accent <code>--accent</code></h3><p>The same hue, deeper, for anything read: filled buttons, links, the active chip. White on it measures 5.37:1.</p></div>
+  </div>
+  <div class="specimen">
+    <button class="btn btn-primary">Create</button>
+    <a href="#accent" style="color:var(--accent);font-weight:600">Switch brand</a>
+    <button class="btn btn-secondary" style="box-shadow:var(--focus)">Focused control</button>
+    <span style="display:inline-flex;align-items:center;gap:8px;font-size:14px"><span style="width:3px;height:20px;border-radius:2px;background:var(--brand)"></span>Active navigation</span>
+  </div>
+
+  <h2 id="contrast">Measured contrast</h2>
+  <p>Computed in your browser from the tokens above with the WCAG 2.x formula. Text needs 4.5:1; large text, focus indicators and the boundaries of controls need 3:1. Disabled controls are exempt and use 50% opacity.</p>
+  <div class="table-wrap"><table class="t" id="contrast-table">
+    <thead><tr><th>Use</th><th>Foreground</th><th>Background</th><th>Ratio</th><th>Needs</th><th>Result</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <p class="t-small muted" id="contrast-summary"></p>
+
+  <h2 id="type">Type</h2>
+  <p>Geist for the interface, which the app already ships, and Geist Mono for paths and commands. Brand fonts appear only inside slides and brand previews. Sizes are few and steps are clear; letter spacing tightens as size grows.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Style</th><th>Size / line</th><th>Weight</th><th>Specimen</th></tr></thead>
+    <tbody>
+      <tr><td>Display</td><td class="num">36 / 1.12 (27 on phones)</td><td>600</td><td><span class="t-display">What would you like to create?</span></td></tr>
+      <tr><td>Heading 1</td><td class="num">28 / 1.2 (24 on phones)</td><td>600</td><td><span class="t-h1">Projects</span></td></tr>
+      <tr><td>Heading 2</td><td class="num">20 / 1.3</td><td>600</td><td><span class="t-h2">Continue creating</span></td></tr>
+      <tr><td>Heading 3</td><td class="num">16 / 1.4</td><td>600</td><td><span class="t-h3">Instagram Carousel</span></td></tr>
+      <tr><td>Body</td><td class="num">15 / 1.47</td><td>400</td><td>Slides people swipe through on Instagram.</td></tr>
+      <tr><td>Small</td><td class="num">13 / 1.45</td><td>400 to 600</td><td><span class="t-small">6 slides · 2 hours ago</span></td></tr>
+      <tr><td>Caption</td><td class="num">12 / 1.4</td><td>400 to 500</td><td><span class="t-caption muted">Sends to Claude Code</span></td></tr>
+      <tr><td>Mono</td><td class="num">0.88em</td><td>400</td><td><code>npm run studio:pair</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="space">Space, radius and elevation</h2>
+  <h3>Spacing</h3>
+  <p>A 4-pixel base: 4, 8, 12, 16, 20, 24, 32, 40, 56. Page gutters are 40 pixels on wide screens, 32 below 1200, 28 below 1024 and 16 on phones.</p>
+  <div class="specimen on-canvas" style="align-items:flex-end">
+    <span style="width:4px;height:4px;background:var(--brand)"></span><span style="width:8px;height:8px;background:var(--brand)"></span><span style="width:12px;height:12px;background:var(--brand)"></span><span style="width:16px;height:16px;background:var(--brand)"></span><span style="width:20px;height:20px;background:var(--brand)"></span><span style="width:24px;height:24px;background:var(--brand)"></span><span style="width:32px;height:32px;background:var(--brand)"></span><span style="width:40px;height:40px;background:var(--brand)"></span><span style="width:56px;height:56px;background:var(--brand)"></span>
+  </div>
+  <h3>Radius</h3>
+  <div class="specimen on-canvas">
+    <div style="width:88px;height:56px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);display:grid;place-items:center;font-size:12px">6 · small</div>
+    <div style="width:88px;height:56px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);display:grid;place-items:center;font-size:12px">10 · controls</div>
+    <div style="width:88px;height:56px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);display:grid;place-items:center;font-size:12px">14 · cards</div>
+    <div style="width:88px;height:56px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-xl);display:grid;place-items:center;font-size:12px">20 · sheets</div>
+    <div style="width:88px;height:32px;background:var(--surface);border:1px solid var(--line);border-radius:999px;display:grid;place-items:center;font-size:12px">pill · chips</div>
+  </div>
+  <h3>Elevation</h3>
+  <p>Two levels. <b>Raised</b> lifts cards and secondary buttons off the canvas by a hair. <b>Overlay</b> is for anything above the page: menus, dialogs, toasts and the slide preview. The scrim behind a dialog is warm ink at 44%.</p>
+  <div class="specimen on-canvas">
+    <div class="card" style="width:180px;height:72px;display:grid;place-items:center;font-size:13px">Raised</div>
+    <div style="width:180px;height:72px;display:grid;place-items:center;font-size:13px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--overlay-shadow)">Overlay</div>
+  </div>
+
+  <h2 id="motion">Motion</h2>
+  <p>One curve, <code>cubic-bezier(0.23, 1, 0.32, 1)</code>, a strong ease-out the app already defines. Menus pop in over 160 ms, toasts rise over 200 ms, hover colour changes take 140 to 160 ms, and a pressed button scales to 98%. Cards lift by 2 pixels on hover. With reduced motion, durations drop to nothing and nothing moves.</p>
+
+  <h2 id="icons">Icons</h2>
+  <p>Lucide, which the app already uses through <code>lucide-react</code>: 1.75 stroke, 16 pixels in small controls, 18 by default, 22 for emphasis. An icon is never the only label of an action except where a tooltip and an accessible name are both present.</p>
+
+  <h2 id="components">Components</h2>
+  <p>Live specimens drawn with the prototype's own classes.</p>
+
+  <h3>Buttons</h3>
+  <div class="specimen">
+    <button class="btn btn-primary">Create and open</button>
+    <button class="btn btn-secondary">Back</button>
+    <button class="btn btn-ghost">Cancel</button>
+    <button class="btn btn-danger">Delete project</button>
+    <button class="btn btn-primary btn-sm">Send</button>
+    <button class="btn btn-secondary btn-sm">Use template</button>
+    <button class="btn btn-primary" disabled>Disabled</button>
+  </div>
+  <p class="t-small">Heights 40 and 32. One primary per view. Destructive actions are red only inside the confirmation, never on the first click.</p>
+
+  <h3>Chips, tags and status</h3>
+  <div class="specimen">
+    <span class="chip">Carousel</span><span class="chip">4:5 · 1080 × 1350</span>
+    <span class="tag-early">Early</span>
+    <span class="status ok"><span class="dot"></span>Connected</span>
+    <span class="status warn"><span class="dot"></span>Not paired</span>
+    <span class="status off"><span class="dot"></span>Not checked</span>
+  </div>
+
+  <h3>Filter chips and segmented control</h3>
+  <div class="specimen">
+    <div class="filters"><button class="fchip" aria-pressed="true">All designs <span class="count">51</span></button><button class="fchip" aria-pressed="false">LinkedIn Documents <span class="count">10</span></button></div>
+    <div class="seg" role="group" aria-label="Scope"><button aria-pressed="true">This brand</button><button aria-pressed="false">All brands</button></div>
+  </div>
+
+  <h3>Inputs</h3>
+  <div class="specimen col" style="max-width:520px">
+    <div class="field"><label for="ds-name">Name <span class="muted" style="font-weight:400">Optional</span></label><input id="ds-name" class="input" placeholder="Named from your description if left empty"></div>
+    <div class="field"><label for="ds-brand">Brand</label><select id="ds-brand" class="select"><option>Northwind Studio</option></select><span class="hint">A project keeps its brand for good, so its designs always match.</span></div>
+    <div class="field"><label for="ds-about">What is it about?</label><textarea id="ds-about" class="textarea" placeholder="For example: three small habits for a calmer morning"></textarea></div>
+  </div>
+  <p class="t-small">Every field has a visible label tied to it. Hints sit under the field; errors replace the hint and say how to fix the problem.</p>
+
+  <h3>Banners</h3>
+  <div class="specimen col">
+    <div class="banner warn" role="note"><div class="b-body"><div class="b-title">Claude Code is not connected</div><div class="t-small">You can open, arrange and export existing work. Designing new slides needs Claude Code.</div></div></div>
+    <div class="banner info" role="note"><div class="b-body"><div class="b-title">The timeline needs a larger screen</div><div class="t-small">Pair and check renders here; edit on a computer.</div></div></div>
+    <div class="banner danger" role="note"><div class="b-body"><div class="b-title">Couldn't load your projects</div><div class="t-small">Nothing was deleted; your files were left as they are.</div></div><button class="btn btn-secondary btn-sm">Try again</button></div>
+  </div>
+
+  <h3>Menu, toast and empty state</h3>
+  <div class="specimen on-canvas" style="align-items:flex-start">
+    <div class="menu" role="menu" aria-label="Specimen menu" style="position:static;animation:none">
+      <button role="menuitem">Duplicate</button><button role="menuitem">Save as template</button><hr><button role="menuitem" class="danger">Delete</button>
+    </div>
+    <div style="flex:1 1 280px;display:flex;flex-direction:column;gap:10px">
+      <div class="toast" style="animation:none"><span class="t-msg">Saved “Brand voice checklist” as a template.</span><button>Undo</button></div>
+      <div class="toast illus" style="animation:none"><span class="t-tag">Illustrative</span><span class="t-msg">In the app this renders every slide and downloads the file.</span></div>
+    </div>
+  </div>
+  <div class="card empty" style="margin-top:12px"><h3 class="t-h3">No templates for Northwind Studio yet</h3><p>A template is a project saved for reuse. Open any project and choose Save as template from its menu.</p><button class="btn btn-secondary">Go to projects</button></div>
+
+  <h3>Composite components</h3>
+  <p>Defined in the prototype and specified in <a href="blueprint.html#m2">the blueprint</a>: app shell (sidebar, icon rail, phone top bar and tab bar), brand switcher, format card, creation flow, quick create, project card and row, template card, brand tile, brand editor with live preview, Studio panel and pairing card, settings row, editor top bar and tools, export menu.</p>
+
+  <h2 id="layout">Layout and breakpoints</h2>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Width</th><th>Shell</th><th>Grids</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1200 and up</td><td>Sidebar 248, gutter 40, content up to 1200</td><td>Formats 4 across, projects 5, recent 4 plus the Studio panel</td></tr>
+      <tr><td class="num">1024 to 1199</td><td>Sidebar 232, gutter 32</td><td>Auto-fill columns</td></tr>
+      <tr><td class="num">768 to 1023</td><td>Icon rail 84, gutter 28</td><td>Formats 2 across</td></tr>
+      <tr><td class="num">360 to 767</td><td>Top bar and five-tab bar, gutter 16</td><td>Formats 2 across, projects 2; filters scroll sideways; dialogs become bottom sheets; the editor uses Preview and Chat tabs</td></tr>
+      <tr><td class="num">Below 360</td><td>As phones</td><td>Format cards one per row with their export line</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="a11y">Accessibility</h2>
+  <ul>
+    <li><b>Contrast:</b> every text and control pair on this page passes WCAG 2.1 AA, measured above.</li>
+    <li><b>Focus:</b> a 2-pixel brand ring outside a 2-pixel surface gap, visible on any background, shown for keyboard focus only.</li>
+    <li><b>Keyboard:</b> a skip link; project and template cards are links; menus open on Enter, move with the arrow keys, close on Escape and return focus to their trigger; dialogs trap Tab and return focus when closed.</li>
+    <li><b>Semantics:</b> navigation landmarks, <code>aria-current</code> on the current page, radio groups for size and format choices, pressed state on filters, live regions for toasts and chat.</li>
+    <li><b>Targets:</b> at least 32 by 32 pixels everywhere and 48 pixels tall in the phone tab bar, above the 24-pixel WCAG 2.2 minimum.</li>
+    <li><b>Motion:</b> reduced motion is respected; nothing flashes.</li>
+    <li><b>Words:</b> no meaning by colour alone; status always has a word, and the Early tag is text.</li>
+  </ul>
+
+  <h2 id="studio">The Video Studio's stage</h2>
+  <p>Today the Studio is light, like the rest of the app, with a black stage behind the video preview, because video is judged against black. That stays. The <code>--studio-*</code> tokens name that stage and the Studio's illustrations, in the same warm neutrals inverted, so the stage and any later dark Studio surface share one palette. No milestone here restyles the Studio.</p>
+  <div class="specimen dark">
+    <span style="font-weight:600">Studio tour reel</span>
+    <span style="color:var(--studio-muted);font-size:13px">Revision 14 · 5 hours ago</span>
+    <span style="display:inline-block;width:3px;height:28px;background:var(--brand);border-radius:2px"></span>
+    <span class="tag-early">Early</span>
+  </div>
+
+  <h2 id="migration">From today's tokens</h2>
+  <p>Milestone 2 changes token values and adds a few names. Old names stay as aliases, so existing Tailwind utilities keep working, and components change only where they need the identity colour.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Today</th><th>2.0</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>--background</code> #fafafa</td><td><code>--canvas</code> #f7f5f2</td><td>Warmer page; white cards separate from it.</td></tr>
+      <tr><td><code>--muted</code> #f5f5f5</td><td><code>--sunken</code> #f1eee9</td><td>Chips, segmented controls, hovers.</td></tr>
+      <tr><td><code>--foreground</code> #171717</td><td><code>--ink</code> #1c1917</td><td>Warm near-black.</td></tr>
+      <tr><td><code>--muted-foreground</code> #737373</td><td><code>--ink-muted</code> #6b645d</td><td>Passes on every surface, including chips.</td></tr>
+      <tr><td><code>--border</code> #e5e5e5</td><td><code>--line</code> #e7e2db and <code>--line-strong</code> #8a8279</td><td>Decorative dividers stay light; inputs get a 3:1 boundary.</td></tr>
+      <tr><td><code>--accent</code> #e94560</td><td><code>--brand</code> #e94560 and <code>--accent</code> #bf394f</td><td><code>bg-accent</code> and <code>text-accent</code> become AA without edits. The mark, focus rings and indicators, and the <code>border-accent</code> uses that should stay bright, are edited to use <code>brand</code>.</td></tr>
+      <tr><td><code>--ring</code> #1a1a2e</td><td><code>--focus</code></td><td>Brand ring with a surface gap.</td></tr>
+      <tr><td><code>--destructive</code> #ef4444</td><td><code>--danger</code> #b42318</td><td>Closes <a href="https://github.com/mk-global/creatorbrio/issues/169">#169</a>. The old name stays as an alias, so the many existing <code>destructive</code> utilities keep working.</td></tr>
+      <tr><td><code>--warning</code> #b45309</td><td><code>--warning</code> #9a5208</td><td>Passes on its tint with room to spare.</td></tr>
+      <tr><td>none</td><td><code>--success</code>, <code>--info</code>, their tints and lines; <code>--studio-*</code></td><td>States the app now draws ad hoc; the Studio canvas.</td></tr>
+    </tbody>
+  </table></div>
+</main>
+
+<script>
+(function () {
+  var root = getComputedStyle(document.documentElement);
+  function tok(name) { return root.getPropertyValue("--" + name).trim().toLowerCase(); }
+  function lum(hex) {
+    var h = hex.replace("#", "");
+    return [0, 2, 4].map(function (i) {
+      var c = parseInt(h.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }).reduce(function (acc, c, i) { return acc + c * [0.2126, 0.7152, 0.0722][i]; }, 0);
+  }
+  function ratio(a, b) {
+    var x = lum(a), y = lum(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+
+  var groups = [
+    ["Surfaces", [["canvas", "Page background"], ["surface", "Cards, inputs, menus"], ["sunken", "Chips, segments, hover"]]],
+    ["Text", [["ink", "Primary text"], ["ink-muted", "Secondary text, placeholders"], ["ink-inverse", "Text on filled colour"]]],
+    ["Lines", [["line", "Dividers, card borders"], ["line-strong", "Input and control boundaries"]]],
+    ["Accent", [["brand", "Identity, focus, indicators"], ["accent", "Buttons, links, active chip"], ["accent-hover", "Pressed and hover"], ["accent-tint", "Selected backgrounds"]]],
+    ["Status", [["success", "Connected, done"], ["warning", "Early, attention"], ["warning-tint", "Warning banner"], ["danger", "Errors, delete"], ["danger-tint", "Error banner"], ["info", "Information"], ["info-tint", "Info banner"]]],
+    ["Studio and inverse", [["studio-canvas", "Video working canvas"], ["studio-ink", "Text on the canvas"], ["studio-muted", "Secondary on the canvas"], ["inverse-action", "Action in a toast"], ["illus", "Illustrative toast (prototype)"], ["illus-ink", "Illustrative tag (prototype)"]]]
+  ];
+  var out = "";
+  groups.forEach(function (g) {
+    out += "<h3>" + g[0] + "</h3><div class=\"swatches\">";
+    g[1].forEach(function (t) {
+      out += "<div class=\"swatch\"><div class=\"sw\" style=\"background:var(--" + t[0] + ")\"></div><div class=\"meta\"><b>" + t[1] + "</b><code>--" + t[0] + "</code> <code>" + tok(t[0]) + "</code></div></div>";
+    });
+    out += "</div>";
+  });
+  document.getElementById("swatches").innerHTML = out;
+
+  var pairs = [
+    ["Body text on the page", "ink", "canvas", "text"],
+    ["Body text on cards", "ink", "surface", "text"],
+    ["Text on chips", "ink", "sunken", "text"],
+    ["Secondary text on the page", "ink-muted", "canvas", "text"],
+    ["Secondary text and placeholders on cards", "ink-muted", "surface", "text"],
+    ["Secondary text on chips", "ink-muted", "sunken", "text"],
+    ["Primary button label", "ink-inverse", "accent", "text"],
+    ["Primary button label, hover", "ink-inverse", "accent-hover", "text"],
+    ["Links on the page", "accent", "canvas", "text"],
+    ["Links on cards", "accent", "surface", "text"],
+    ["Active chip text", "accent", "accent-tint", "text"],
+    ["Pressed filter chip, toast text", "ink-inverse", "ink", "text"],
+    ["Danger button label", "ink-inverse", "danger", "text"],
+    ["Danger text in menus", "danger", "surface", "text"],
+    ["Text on the error banner", "ink", "danger-tint", "text"],
+    ["Success status", "success", "surface", "text"],
+    ["Warning status", "warning", "surface", "text"],
+    ["Early tag", "warning", "warning-tint", "text"],
+    ["Text on the warning banner", "ink", "warning-tint", "text"],
+    ["Text on the info banner", "ink", "info-tint", "text"],
+    ["Info text on cards", "info", "surface", "text"],
+    ["Toast action", "inverse-action", "ink", "text"],
+    ["Illustrative tag", "illus-ink", "illus", "text"],
+    ["Illustrative toast text", "ink-inverse", "illus", "text"],
+    ["Text on the Studio canvas", "studio-ink", "studio-canvas", "text"],
+    ["Secondary text on the Studio canvas", "studio-muted", "studio-canvas", "text"],
+    ["Prototype bar text", "studio-ink", "proto-bar", "text"],
+    ["Input boundary on cards", "line-strong", "surface", "ui"],
+    ["Input boundary on the page", "line-strong", "canvas", "ui"],
+    ["Focus ring on cards", "brand", "surface", "ui"],
+    ["Focus ring on the page", "brand", "canvas", "ui"],
+    ["Active navigation marker", "brand", "canvas", "ui"],
+    ["Selected slide outline", "brand", "surface", "ui"],
+    ["Selected choice outline", "ink", "surface", "ui"]
+  ];
+  var need = { text: 4.5, ui: 3 };
+  var passed = 0;
+  var rows = pairs.map(function (p) {
+    var fg = tok(p[1]), bg = tok(p[2]);
+    var r = ratio(fg, bg);
+    var ok = r >= need[p[3]];
+    if (ok) passed++;
+    return "<tr><td>" + p[0] + "</td><td><code>--" + p[1] + "</code> " + fg + "</td><td><code>--" + p[2] + "</code> " + bg + "</td><td class=\"num\">" + r.toFixed(2) + "</td><td class=\"num\">" + need[p[3]].toFixed(1) + "</td><td class=\"" + (ok ? "pass\">Passes" : "fail\">Fails") + "</td></tr>";
+  });
+  document.querySelector("#contrast-table tbody").innerHTML = rows.join("");
+  document.getElementById("contrast-summary").textContent = passed + " of " + pairs.length + " pairs pass.";
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CreatorBrio 2.0 UX audit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="prototype/app.css">
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+<header class="doc-top"><div class="doc-top-inner">
+  <a class="doc-mark" href="index.html"><span class="logo"><span></span></span>CreatorBrio 2.0 review</a>
+  <nav class="doc-nav" aria-label="Review package">
+    <a href="index.html">Overview</a><a href="audit.html" aria-current="page">Audit</a><a href="architecture.html">Architecture</a><a href="design-system.html">Design system</a><a href="blueprint.html">Blueprint</a><a href="decisions.html">Decisions</a><a href="prototype/index.html">Prototype</a>
+  </nav>
+</div></header>
+
+<main class="doc" id="main">
+  <header class="lead">
+    <div class="eyebrow">Part 1 · Evidence</div>
+    <h1 class="t-display">UX audit of CreatorBrio today</h1>
+    <p>What a person meets when they open the app on main at <code>3fc7f2e</code>, what already works, and what stands between CreatorBrio and a coherent creative studio. Each finding names its evidence, a severity and the milestone that resolves it.</p>
+  </header>
+
+  <nav class="toc" aria-label="On this page">
+    <a href="#method">Method</a><a href="#inventory">What ships today</a><a href="#findings">Ranked findings</a><a href="#contrast">Measured contrast</a><a href="#journeys">Journeys today</a><a href="#strengths">Strengths to keep</a><a href="#screens">Current screenshots</a>
+  </nav>
+
+  <h2 id="method">Method</h2>
+  <p>The app was run as its own isolated instance, from a separate git worktree on a separate port, with its own data folder seeded with synthetic content through the app's public API: three brands, eight carousels and one template. The founder's checkout, data and running app on port 3000 were not touched.</p>
+  <p>Every screen was captured at 1440, 1280, 768, 390 and 320 pixels wide where it applies, and the source of each screen was read to confirm what the captures show. Colour contrast was computed with the WCAG 2.x formula from the tokens in <code>src/app/globals.css</code>.</p>
+  <div class="callout gate">
+    <h4>Two things were deliberately not exercised</h4>
+    <p>No design run was started, because each one is a paid Claude run; the chat was read, not used. The Video Studio editor was not opened. Pairing needs a one-time code from <code>npm run studio:pair</code>; the script also documents a non-interactive option, <code>--no-tty-check</code>, that the repository's own tests use, but this session's permission policy refused it and it was not worked around. Studio findings come from its source and from the screenshot the README already publishes; a live Studio pass is listed under <a href="decisions.html#risks">risks</a>.</p>
+  </div>
+
+  <h2 id="inventory">What ships today</h2>
+  <p>CreatorBrio already does far more than its first screen suggests. Nothing here may be lost in 2.0; <a href="architecture.html#matrix">the capability matrix</a> maps each line to its place in the new structure.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Capability</th><th>Status</th><th>Where a person finds it today</th></tr></thead>
+    <tbody>
+      <tr><td>Design a carousel by chatting, with a plan first and a saved Creative Brief</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Editor chat. Needs Claude Code; a five-slide design takes a few minutes.</td></tr>
+      <tr><td>Brands: five colours, heading and body fonts, logo, style keywords, several brands</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Brand selector and pencil on the dashboard; the gear icon. Brands cannot be deleted.</td></tr>
+      <tr><td>Sizes 1:1, 4:5 and 9:16</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Create dialog and the editor's ratio menu. Changing size does not reflow slides.</td></tr>
+      <tr><td>Reference images and up to three pasted links</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Editor chat.</td></tr>
+      <tr><td>Generated and edited images through a local image service</td><td class="nw"><span class="status warn"><span class="dot"></span>Optional</span></td><td>Inside a design run, when the separate service is installed. No screen says whether it is.</td></tr>
+      <tr><td>Preview, safe zones, full window, drag to reorder, five undo steps per slide, delete, rename, duplicate</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Editor toolbar and filmstrip; duplicate on hover over a dashboard card.</td></tr>
+      <tr><td>Recover an unfinished design: keep saved slides, accept them, or Continue</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Editor notices; Export waits for acceptance.</td></tr>
+      <tr><td>Templates: save a carousel, start from one</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Dashboard tab and editor toolbar.</td></tr>
+      <tr><td>Captions and hashtags, shown with Copy</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Below the editor preview, when the agent wrote them.</td></tr>
+      <tr><td>Instagram PNG ZIP, single PNG, LinkedIn PDF with real text</td><td class="nw"><span class="status ok"><span class="dot"></span>Works</span></td><td>Only inside the editor's Export menu.</td></tr>
+      <tr><td>Video Studio: import by path, timeline, trim, split, titles, captions, undo, verified MP4</td><td class="nw"><span class="tag-early">Early</span></td><td>Only by typing <code>/studio</code>. No link exists anywhere else in the app.</td></tr>
+      <tr><td>AI-assisted video editing</td><td class="nw"><span class="status off"><span class="dot"></span>Not built</span></td><td>Nowhere, correctly.</td></tr>
+      <tr><td>Custom font uploads and style presets</td><td class="nw"><span class="status off"><span class="dot"></span>Unusable</span></td><td>API only (<a href="https://github.com/mk-global/creatorbrio/issues/159">#159</a>).</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="findings">Ranked findings</h2>
+  <p>P1 blocks the 2.0 goal or excludes people. P2 costs time or trust every session. P3 is polish. The milestone column refers to <a href="blueprint.html">the blueprint</a>.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>#</th><th>Finding</th><th>Evidence</th><th>Sev.</th><th>Fixed in</th></tr></thead>
+    <tbody>
+      <tr><td>A1</td><td><b>The Video Studio is unreachable.</b> No page, menu or link leads to <code>/studio</code>; a person has to know the URL. The product's main work in progress is invisible.</td><td>No reference outside <code>src/app/studio</code> and <code>src/components/studio</code>; <a href="screenshots/current/dashboard-1440.png">dashboard-1440</a></td><td><span class="sev p1">P1</span></td><td>M2</td></tr>
+      <tr><td>A2</td><td><b>CreatorBrio presents itself as a carousel tool.</b> The only call to action is "New Carousel" under "Create Instagram carousels with AI". The LinkedIn PDF appears only inside the editor's Export menu, and a Reel cover is a one-slide 9:16 carousel that no screen names.</td><td><a href="screenshots/current/dashboard-1440.png">dashboard-1440</a>, <a href="screenshots/current/create-dialog-1440.png">create-dialog-1440</a>, <a href="screenshots/current/editor-export-menu-1440.png">editor-export-menu-1440</a>; <code>src/lib/export-formats.ts</code></td><td><span class="sev p1">P1</span></td><td>M2</td></tr>
+      <tr><td>A3</td><td><b>Projects cannot be opened by keyboard.</b> A card is a <code>div</code> with a click handler and no role or tab stop. Tab lands only on each card's Duplicate and Delete buttons, which stay invisible while focused, so a keyboard user can neither open a project nor see where focus is.</td><td><code>src/components/dashboard/CarouselCard.tsx</code></td><td><span class="sev p1">P1</span></td><td>M2, M3</td></tr>
+      <tr><td>A4</td><td><b>Primary buttons and accent text fail WCAG AA.</b> White on <code>#e94560</code> is 3.83:1, accent text on the page background 3.67:1, red error text 3.76:1, and input borders 1.26:1 against the 3:1 that control boundaries need. See <a href="#contrast">measurements</a>.</td><td><code>src/app/globals.css</code>; <a href="https://github.com/mk-global/creatorbrio/issues/169">#169</a></td><td><span class="sev p1">P1</span></td><td>M2</td></tr>
+      <tr><td>A5</td><td><b>Phones get a desktop layout.</b> The dashboard's brand row runs off the right edge at 390 and 320 pixels and clips "Add brand"; the editor squeezes chat, canvas and filmstrip side by side until the canvas is a sliver.</td><td><a href="screenshots/current/dashboard-390.png">dashboard-390</a>, <a href="screenshots/current/dashboard-320.png">dashboard-320</a>, <a href="screenshots/current/editor-390.png">editor-390</a>; <a href="https://github.com/mk-global/creatorbrio/issues/170">#170</a></td><td><span class="sev p1">P1</span></td><td>M2, M4</td></tr>
+      <tr><td>A6</td><td><b>Card actions appear only on hover.</b> Duplicate and Delete sit at zero opacity until the pointer is over the card, so touch and keyboard users cannot find them. Save as template exists only in the editor.</td><td><code>CarouselCard.tsx</code></td><td><span class="sev p2">P2</span></td><td>M3</td></tr>
+      <tr><td>A7</td><td><b>Deleting a template is immediate.</b> One click on the bin removes it with no confirmation and no undo.</td><td><code>src/components/templates/TemplateCard.tsx</code></td><td><span class="sev p2">P2</span></td><td>M3</td></tr>
+      <tr><td>A8</td><td><b>Save as template says nothing.</b> The editor gives no confirmation or error.</td><td><a href="https://github.com/mk-global/creatorbrio/issues/158">#158</a></td><td><span class="sev p2">P2</span></td><td>M4</td></tr>
+      <tr><td>A9</td><td><b>The first visit opens a five-step brand modal.</b> It can be closed, but it opens again on every visit until the brand has a name, and it stands between a new person and seeing what the product does.</td><td><a href="screenshots/current/first-run-1440.png">first-run-1440</a>, <a href="screenshots/current/first-run-390.png">first-run-390</a></td><td><span class="sev p2">P2</span></td><td>M2</td></tr>
+      <tr><td>A10</td><td><b>The empty state promises "beautiful slides in seconds".</b> The README says a five-slide design takes a few minutes. The first promise a person reads is wrong.</td><td><a href="screenshots/current/empty-dashboard-1440.png">empty-dashboard-1440</a>; README</td><td><span class="sev p2">P2</span></td><td>M2</td></tr>
+      <tr><td>A11</td><td><b>The gear labelled Settings edits the brand.</b> There is no settings page, so Claude Code status, Studio pairing and where data lives have no home.</td><td><code>src/components/layout/TopBar.tsx</code></td><td><span class="sev p2">P2</span></td><td>M2</td></tr>
+      <tr><td>A12</td><td><b>Names do not match what people make.</b> Everything is a "Carousel", 9:16 is labelled "Story" in places, the page heading repeats the product name, and the Studio speaks of "productions".</td><td><a href="screenshots/current/dashboard-1440.png">dashboard-1440</a>, <a href="screenshots/current/create-dialog-1440.png">create-dialog-1440</a></td><td><span class="sev p2">P2</span></td><td>M2 to M4</td></tr>
+      <tr><td>A13</td><td><b>The library will not scale.</b> No search, filter, sort or pagination; the list request returns every slide's HTML and undo history for every carousel; every card mounts a live iframe.</td><td><code>src/app/page.tsx</code>, <code>GET /api/carousels</code></td><td><span class="sev p2">P2</span></td><td>M2, M3</td></tr>
+      <tr><td>A14</td><td><b>Cards say little about the work.</b> A card shows the first slide, the size and a date; not the format, slide count or brand, and the date carries no time.</td><td><a href="screenshots/current/dashboard-1440.png">dashboard-1440</a></td><td><span class="sev p2">P2</span></td><td>M2, M3</td></tr>
+      <tr><td>A15</td><td><b>The editor toolbar is a row of icons without visible labels.</b> They have screen-reader names and most have tooltips, but a sighted person has to hover to learn them. Delete sits beside Save as template; the size menu is prominent, yet changing it does not adapt the slides.</td><td><a href="screenshots/current/editor-1440.png">editor-1440</a></td><td><span class="sev p2">P2</span></td><td>M4</td></tr>
+      <tr><td>A16</td><td><b>Nothing explains the Studio before its pairing wall.</b> The pairing panel clearly says to run <code>npm run studio:pair</code>, but nothing outside <code>/studio</code> says what the Studio is, that it is early, or why a browser must be paired. The page also logs 401 responses before pairing.</td><td><a href="screenshots/current/studio-pairing-1440.png">studio-pairing-1440</a>; <code>src/components/studio/PairingPanel.tsx</code></td><td><span class="sev p2">P2</span></td><td>M2</td></tr>
+      <tr><td>A17</td><td><b>The product name appears twice</b> at the top of the dashboard, in the top bar and as the page heading.</td><td><a href="screenshots/current/dashboard-1440.png">dashboard-1440</a></td><td><span class="sev p3">P3</span></td><td>M2</td></tr>
+      <tr><td>A18</td><td><b>Loading placeholders do not match what loads.</b> The dashboard shows three and Templates two grey blocks of one fixed height, whatever the content; the editor shows a centred spinner.</td><td><code>src/app/page.tsx</code>, <code>TemplateGallery.tsx</code>, <code>src/app/carousel/[id]/page.tsx</code></td><td><span class="sev p3">P3</span></td><td>M2, M3</td></tr>
+      <tr><td>A19</td><td><b>Template failures are silent.</b> A failed load is shown as "no templates", and a failed "Use template" does nothing at all.</td><td><code>src/components/templates/TemplateGallery.tsx</code></td><td><span class="sev p3">P3</span></td><td>M3</td></tr>
+      <tr><td>A20</td><td><b>Create dialog labels are not tied to their inputs</b>, so a screen reader announces the name and size fields without their labels.</td><td><code>src/components/ui/create-carousel-dialog.tsx</code></td><td><span class="sev p3">P3</span></td><td>M2</td></tr>
+      <tr><td>A21</td><td><b>Custom fonts and style presets are API-only</b> and cannot be used from any screen.</td><td><a href="https://github.com/mk-global/creatorbrio/issues/159">#159</a></td><td><span class="sev p3">P3</span></td><td>Tracked in #159</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="contrast">Measured contrast of today's tokens</h2>
+  <p>Ratios from the WCAG 2.x relative-luminance formula. Since #168, the chat and run notices draw their text in the ink colour and use red only for icons and borders. Text needs 4.5:1; large text and the boundaries of controls need 3:1. The proposed tokens and their measurements are on <a href="design-system.html#contrast">the design system page</a>.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>Pair</th><th>Foreground</th><th>Background</th><th>Ratio</th><th>Needs</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Primary button label</td><td><code>#ffffff</code></td><td><code>#e94560</code></td><td class="num">3.83</td><td class="num">4.5</td><td class="fail">Fails</td></tr>
+      <tr><td>Accent text on page background</td><td><code>#e94560</code></td><td><code>#fafafa</code></td><td class="num">3.67</td><td class="num">4.5</td><td class="fail">Fails</td></tr>
+      <tr><td>Accent text on cards</td><td><code>#e94560</code></td><td><code>#ffffff</code></td><td class="num">3.83</td><td class="num">4.5</td><td class="fail">Fails</td></tr>
+      <tr><td>Error text on cards</td><td><code>#ef4444</code></td><td><code>#ffffff</code></td><td class="num">3.76</td><td class="num">4.5</td><td class="fail">Fails</td></tr>
+      <tr><td>Dashboard load-error heading on its tint (<code>bg-destructive/5</code> over the page)</td><td><code>#ef4444</code></td><td><code>#f9f1f1</code></td><td class="num">3.38</td><td class="num">4.5</td><td class="fail">Fails</td></tr>
+      <tr><td>Input border on cards</td><td><code>#e5e5e5</code></td><td><code>#ffffff</code></td><td class="num">1.26</td><td class="num">3.0</td><td class="fail">Fails</td></tr>
+      <tr><td>Input border on page background</td><td><code>#e5e5e5</code></td><td><code>#fafafa</code></td><td class="num">1.21</td><td class="num">3.0</td><td class="fail">Fails</td></tr>
+      <tr><td>Muted text on cards</td><td><code>#737373</code></td><td><code>#ffffff</code></td><td class="num">4.74</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Notice error icon and border on its tint (text there is ink)</td><td><code>#ef4444</code></td><td><code>#fef2f2</code></td><td class="num">3.44</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+      <tr><td>Notice warning icon on its tint</td><td><code>#b45309</code></td><td><code>#fffbeb</code></td><td class="num">4.84</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="journeys">Journeys today</h2>
+  <h3>Make a LinkedIn document</h3>
+  <p>Nothing on the dashboard mentions LinkedIn. A person creates a "carousel", designs it, opens Export and discovers the PDF option there. Four steps in, they learn the product could do what they came for.</p>
+  <h3>Make a Reel cover</h3>
+  <p>A person has to know that a cover is a 9:16 carousel with one slide, pick "9:16", ask the agent for one slide, then choose the single PNG export, which appears only when the carousel has exactly one slide. No screen names the outcome.</p>
+  <h3>Edit a video</h3>
+  <p>A person has to know that <code>/studio</code> exists, type it, then pair the browser from a terminal. Nothing in the app leads there.</p>
+  <h3>First visit</h3>
+  <p>A five-step brand modal opens before anything else. The product's purpose is behind it.</p>
+
+  <h2 id="strengths">Strengths to keep</h2>
+  <ul>
+    <li><b>The editor's core loop is sound.</b> Chat on the left, a true-size sandboxed preview, a filmstrip with drag, undo and delete. 2.0 reorganises around it rather than replacing it.</li>
+    <li><b>Honest recovery.</b> Interrupted runs keep their slides, Export waits for acceptance, and Continue makes only what is missing. Few tools are this careful.</li>
+    <li><b>Brand as a fixed property of a project.</b> A carousel keeps its brand for life, which keeps every project consistent and makes "Creating for Brand X" a truthful promise.</li>
+    <li><b>Exports at exact sizes</b>, including a LinkedIn PDF with real, selectable text.</li>
+    <li><b>Existing components</b>: Button, Badge, ConfirmDialog, Notice, SlideRenderer, CarouselPreview, SlideFilmstrip, ExportButton, ChatPanel, CaptionPanel and the brand editors all carry into 2.0. See <a href="blueprint.html#reuse">reuse</a>.</li>
+  </ul>
+
+  <h2 id="screens">Current screenshots</h2>
+  <p>Captured from the isolated instance with synthetic data. Select any image to open it at full size.</p>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/current/first-run-1440.png"><img src="screenshots/current/first-run-1440.png" alt="First visit: a five-step brand setup modal over the empty dashboard" loading="lazy"></a><figcaption><b>First visit</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/empty-dashboard-1440.png"><img src="screenshots/current/empty-dashboard-1440.png" alt="Empty dashboard promising beautiful slides in seconds" loading="lazy"></a><figcaption><b>Empty dashboard</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/dashboard-1440.png"><img src="screenshots/current/dashboard-1440.png" alt="Dashboard with My Carousels and Templates tabs and a grid of carousel cards" loading="lazy"></a><figcaption><b>Dashboard</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/dashboard-1280.png"><img src="screenshots/current/dashboard-1280.png" alt="Dashboard at 1280 pixels" loading="lazy"></a><figcaption><b>Dashboard</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/dashboard-768.png"><img src="screenshots/current/dashboard-768.png" alt="Dashboard at 768 pixels" loading="lazy"></a><figcaption><b>Dashboard</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/templates-1440.png"><img src="screenshots/current/templates-1440.png" alt="Templates tab" loading="lazy"></a><figcaption><b>Templates</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/create-dialog-1440.png"><img src="screenshots/current/create-dialog-1440.png" alt="New carousel dialog with name and aspect ratio" loading="lazy"></a><figcaption><b>Create dialog</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/editor-1440.png"><img src="screenshots/current/editor-1440.png" alt="Carousel editor with chat, preview and icon toolbar" loading="lazy"></a><figcaption><b>Editor</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/editor-export-menu-1440.png"><img src="screenshots/current/editor-export-menu-1440.png" alt="Editor export menu with PNG ZIP and LinkedIn PDF" loading="lazy"></a><figcaption><b>Export menu</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/editor-768.png"><img src="screenshots/current/editor-768.png" alt="Editor at 768 pixels" loading="lazy"></a><figcaption><b>Editor</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/studio-pairing-1440.png"><img src="screenshots/current/studio-pairing-1440.png" alt="Video Studio pairing screen" loading="lazy"></a><figcaption><b>Studio pairing</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/studio-workspace-readme.png"><img src="screenshots/current/studio-workspace-readme.png" alt="The Video Studio editor as published in the README" loading="lazy"></a><figcaption><b>Studio editor</b> · from the README, not captured here</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/current/first-run-390.png"><img src="screenshots/current/first-run-390.png" alt="First visit modal on a phone" loading="lazy"></a><figcaption><b>First visit</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/first-run-320.png"><img src="screenshots/current/first-run-320.png" alt="First visit modal at 320 pixels" loading="lazy"></a><figcaption><b>First visit</b> · 320</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/empty-dashboard-390.png"><img src="screenshots/current/empty-dashboard-390.png" alt="Empty dashboard on a phone" loading="lazy"></a><figcaption><b>Empty dashboard</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/dashboard-390.png"><img src="screenshots/current/dashboard-390.png" alt="Dashboard on a phone, with the brand row clipped at the right edge" loading="lazy"></a><figcaption><b>Dashboard</b> · 390, brand row clipped</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/dashboard-320.png"><img src="screenshots/current/dashboard-320.png" alt="Dashboard at 320 pixels" loading="lazy"></a><figcaption><b>Dashboard</b> · 320</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/editor-390.png"><img src="screenshots/current/editor-390.png" alt="Editor on a phone with a squeezed canvas" loading="lazy"></a><figcaption><b>Editor</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/current/studio-pairing-390.png"><img src="screenshots/current/studio-pairing-390.png" alt="Studio pairing on a phone" loading="lazy"></a><figcaption><b>Studio pairing</b> · 390</figcaption></figure>
+  </div>
+</main>
+</body>
+</html>

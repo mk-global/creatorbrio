@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CreatorBrio 2.0 review</title>
+  <meta name="description" content="Founder review package for the CreatorBrio 2.0 product experience: audit, architecture, design system, prototype and blueprint.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="prototype/app.css">
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+<header class="doc-top"><div class="doc-top-inner">
+  <a class="doc-mark" href="index.html"><span class="logo"><span></span></span>CreatorBrio 2.0 review</a>
+  <nav class="doc-nav" aria-label="Review package">
+    <a href="index.html" aria-current="page">Overview</a><a href="audit.html">Audit</a><a href="architecture.html">Architecture</a><a href="design-system.html">Design system</a><a href="blueprint.html">Blueprint</a><a href="decisions.html">Decisions</a><a href="prototype/index.html">Prototype</a>
+  </nav>
+</div></header>
+
+<main class="doc" id="main">
+  <header class="lead">
+    <div class="eyebrow">Founder review · issue #172</div>
+    <h1 class="t-display">From a carousel dashboard to a creative studio</h1>
+    <p>CreatorBrio already makes Instagram carousels, LinkedIn documents, Reel covers and Reels. Its first screen shows only carousels, and its Video Studio has no link at all. This proposal reorganises the product around what people make, keeps every capability it has, and is honest about what is early.</p>
+  </header>
+
+  <div class="callout gate">
+    <h4>Your approval is the gate</h4>
+    <p>Nothing here is implemented, and no application code was changed. Milestone 2 starts only after you approve the visual direction and the decisions it depends on. The pull request carrying this package stays a draft and is not merged without that approval.</p>
+  </div>
+
+  <div class="cards-2">
+    <a class="pane" href="prototype/index.html">
+      <h3>Open the prototype</h3>
+      <p>Click through Home, Projects, the creation flow, Templates, Brands, the Video Studio entry, Settings and the editor, on desktop or at phone width. Synthetic data; nothing is saved.</p>
+      <span class="go">prototype/index.html</span>
+    </a>
+    <div class="pane">
+      <h3>How to open this package</h3>
+      <p>Open <code>docs/design/creatorbrio-2/index.html</code> from a local checkout in any browser; no server is needed. GitHub shows these files as source, not as pages. Fonts load from Google; offline, system fonts stand in.</p>
+    </div>
+  </div>
+
+  <nav class="toc" aria-label="On this page">
+    <a href="#brief">The proposal in brief</a><a href="#before-after">Before and after</a><a href="#package">The package</a><a href="#decisions">Decisions</a><a href="#states">Prototype states</a><a href="#screenshots">Screenshots</a><a href="#process">Process and checks</a>
+  </nav>
+  <p class="t-small muted" style="margin-top:10px">Jump to: <a href="audit.html#findings">audit findings</a> · <a href="architecture.html#model">information architecture</a> · <a href="architecture.html#journeys">creation journeys</a> · <a href="architecture.html#matrix">capability matrix</a> · <a href="design-system.html#contrast">contrast measurements</a> · <a href="blueprint.html#m2">milestones</a> · <a href="decisions.html#risks">risks and limitations</a> · <a href="audit.html#screens">current-app screenshots</a></p>
+
+  <h2 id="brief">The proposal in brief</h2>
+  <ol>
+    <li><b>A studio, not a dashboard.</b> A persistent sidebar with Home, Projects, Templates, Brands and Video Studio, Settings at its foot, and the active brand at the top. Phones get a five-tab bar.</li>
+    <li><b>Start from what you are making.</b> Home asks "What would you like to create?" and offers Instagram Carousel, LinkedIn Document, Reel Cover and Video Studio, each saying what it exports. All three slide formats run on today's carousel engine and editor.</li>
+    <li><b>Formats with sensible defaults.</b> A Reel cover is one 9:16 slide exported as one PNG; a LinkedIn document is portrait and exports a searchable PDF. The format is one optional field on a carousel; existing projects open unchanged.</li>
+    <li><b>A library that scales.</b> Projects searches, filters by format and brand, sorts and pages, with real first-slide previews and actions people can reach without a mouse.</li>
+    <li><b>An honest Video Studio.</b> Linked from everywhere, tagged Early, with a plain list of what works today and what is not built.</li>
+    <li><b>A warm, accessible look.</b> Warm neutrals, Geist and the existing coral kept as the identity colour, with a deeper shade for buttons and text so every pair passes WCAG AA.</li>
+  </ol>
+
+  <h2 id="before-after">Before and after</h2>
+  <div class="compare">
+    <figure><a href="screenshots/current/dashboard-1440.png"><img src="screenshots/current/dashboard-1440.png" alt="Today: the dashboard with a single New Carousel button"></a><figcaption><b>Today.</b> One action, "New Carousel"; no route to LinkedIn, covers or the Studio.</figcaption></figure>
+    <figure><a href="screenshots/prototype/home-1440.png"><img src="screenshots/prototype/home-1440.png" alt="Proposed: Home with four format cards, quick create and recent projects"></a><figcaption><b>Proposed.</b> Four formats, an idea box, recent work with real previews, the Studio and the brand.</figcaption></figure>
+  </div>
+  <div class="compare">
+    <figure><a href="screenshots/current/first-run-1440.png"><img src="screenshots/current/first-run-1440.png" alt="Today: first visit opens a five-step brand modal"></a><figcaption><b>Today.</b> A five-step modal that reopens until the brand has a name.</figcaption></figure>
+    <figure><a href="screenshots/prototype/home-first-run-1440.png"><img src="screenshots/prototype/home-first-run-1440.png" alt="Proposed: first visit shows formats and an inline brand card"></a><figcaption><b>Proposed.</b> What CreatorBrio makes, with brand setup as an inline step.</figcaption></figure>
+  </div>
+  <div class="compare">
+    <figure><a href="screenshots/current/editor-1440.png"><img src="screenshots/current/editor-1440.png" alt="Today: editor with an icon-only toolbar"></a><figcaption><b>Today.</b> Tools without visible labels; delete beside save as template.</figcaption></figure>
+    <figure><a href="screenshots/prototype/editor-carousel-1440.png"><img src="screenshots/prototype/editor-carousel-1440.png" alt="Proposed: editor with labelled tools and a format-aware export"></a><figcaption><b>Proposed.</b> The same editor, labelled, with format and brand shown and Export by format.</figcaption></figure>
+  </div>
+  <div class="compare">
+    <figure><a href="screenshots/current/dashboard-390.png"><img src="screenshots/current/dashboard-390.png" alt="Today: dashboard on a phone with a clipped brand row"></a><figcaption><b>Today, 390 pixels.</b> The brand row runs off the screen.</figcaption></figure>
+    <figure><a href="screenshots/prototype/home-390.png"><img src="screenshots/prototype/home-390.png" alt="Proposed: Home on a phone with a tab bar"></a><figcaption><b>Proposed, 390 pixels.</b> A phone layout with a tab bar.</figcaption></figure>
+  </div>
+  <div class="compare">
+    <figure><a href="screenshots/current/studio-pairing-1440.png"><img src="screenshots/current/studio-pairing-1440.png" alt="Today: Video Studio pairing screen, reachable only by typing its address"></a><figcaption><b>Today.</b> Reachable only by typing <code>/studio</code>.</figcaption></figure>
+    <figure><a href="screenshots/prototype/studio-not-paired-1440.png"><img src="screenshots/prototype/studio-not-paired-1440.png" alt="Proposed: Video Studio entry with what works and what is not built"></a><figcaption><b>Proposed.</b> In the sidebar, tagged Early, saying what works and what does not.</figcaption></figure>
+  </div>
+
+  <h2 id="package">The package</h2>
+  <div class="cards-3">
+    <a class="pane" href="audit.html"><h3>Audit</h3><p>What ships today and 21 ranked findings, each with evidence, severity and the milestone that fixes it. Measured contrast.</p><span class="go">audit.html</span></a>
+    <a class="pane" href="architecture.html"><h3>Architecture</h3><p>Navigation, each destination's spec and states, routes, formats, nine journeys and the capability matrix.</p><span class="go">architecture.html</span></a>
+    <a class="pane" href="design-system.html"><h3>Design system</h3><p>Tokens, type, spacing, components and accessibility, read live from the prototype.</p><span class="go">design-system.html</span></a>
+    <a class="pane" href="blueprint.html"><h3>Blueprint</h3><p>Milestones 2, 3 and 4: scope, reuse, data, API, risks, acceptance criteria, tests and size.</p><span class="go">blueprint.html</span></a>
+    <a class="pane" href="decisions.html"><h3>Decisions</h3><p>Fifteen choices for you, each with a recommendation and the milestone it blocks.</p><span class="go">decisions.html</span></a>
+    <a class="pane" href="prototype/index.html"><h3>Prototype</h3><p>Eight screens and their states, working at every width.</p><span class="go">prototype/index.html</span></a>
+  </div>
+
+  <h2 id="decisions">Decisions at a glance</h2>
+  <p>Approving with no notes accepts every recommendation. Details and alternatives are on <a href="decisions.html">the decisions page</a>.</p>
+  <div class="table-wrap"><table class="t">
+    <thead><tr><th>#</th><th>Decision</th><th>Recommendation</th><th>Blocks</th></tr></thead>
+    <tbody>
+      <tr><td><a href="decisions.html#d1">D1</a></td><td>Visual direction</td><td>Warm, light, Geist, one accent</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d2">D2</a></td><td>The accent's two jobs</td><td><code>#e94560</code> for identity, <code>#bf394f</code> for buttons and text</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d3">D3</a></td><td>How a project knows its format</td><td>An optional stored <code>format</code>; absent means carousel</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d4">D4</a></td><td>Changing a format later</td><td>Fixed at creation for now</td><td>M4</td></tr>
+      <tr><td><a href="decisions.html#d5">D5</a></td><td>Keeping a Reel cover to one slide</td><td>Visible words in the prefilled message; verify with one live run</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d6">D6</a></td><td>First run</td><td>Inline brand card, no modal</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d7">D7</a></td><td>Settings page</td><td>Yes, at the sidebar's foot</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d8">D8</a></td><td>Templates as a destination</td><td>Yes</td><td>M3</td></tr>
+      <tr><td><a href="decisions.html#d9">D9</a></td><td>Videos inside Projects</td><td>A filter for paired browsers</td><td>M3</td></tr>
+      <tr><td><a href="decisions.html#d10">D10</a></td><td>Quick create</td><td>Fill the composer; never send automatically</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d11">D11</a></td><td>Thumbnails</td><td>Lazy live previews first</td><td>M3</td></tr>
+      <tr><td><a href="decisions.html#d12">D12</a></td><td>Menu primitive</td><td>Add the Radix dropdown menu</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d13">D13</a></td><td>Editor address</td><td>Keep <code>/carousel/[id]</code></td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d14">D14</a></td><td>Studio on phones</td><td>List and pairing only</td><td>M2</td></tr>
+      <tr><td><a href="decisions.html#d15">D15</a></td><td>Knowing whether a browser is paired</td><td>An additive status form of the session route, no 401</td><td>M2</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="states">Prototype states</h2>
+  <p>The dark bar at the top of the prototype switches these too. "Mark illustrative controls" outlines the few controls that only explain what the app would do.</p>
+  <ul>
+    <li><a href="prototype/index.html#/home">Home, populated</a> · <a href="prototype/index.html#/home?data=empty">first visit</a> · <a href="prototype/index.html#/home?data=loading">loading</a> · <a href="prototype/index.html#/home?data=error">failed to load</a> · <a href="prototype/index.html#/home?claude=0">Claude Code not connected</a></li>
+    <li><a href="prototype/index.html#/projects">Projects</a> · <a href="prototype/index.html#/projects?data=empty">empty</a> · <a href="prototype/index.html#/projects?data=error">failed to load</a></li>
+    <li><a href="prototype/index.html#/templates">Templates</a> · <a href="prototype/index.html#/templates?data=empty">empty</a> · <a href="prototype/index.html#/templates?data=error">failed to load</a></li>
+    <li><a href="prototype/index.html#/brands">Brands</a> · <a href="prototype/index.html#/brands/northwind">brand editor</a></li>
+    <li><a href="prototype/index.html#/studio?paired=0">Video Studio, not paired</a> · <a href="prototype/index.html#/studio?paired=1">paired</a> · <a href="prototype/index.html#/studio/v-tour?paired=1">the existing workspace</a></li>
+    <li><a href="prototype/index.html#/settings">Settings</a></li>
+    <li>Editor: <a href="prototype/index.html#/editor/p-morning">carousel</a> · <a href="prototype/index.html#/editor/p-onboarding">LinkedIn document</a> · <a href="prototype/index.html#/editor/p-studio-cover">Reel cover</a> · <a href="prototype/index.html#/editor/p-draft">empty project</a></li>
+  </ul>
+
+  <h2 id="screenshots">Screenshots of the prototype</h2>
+  <p>Captured from the prototype opened from disk, with illustrative markers off except in the one shot that shows them. Select any image to open it at full size. <a href="audit.html#screens">Screenshots of the current app</a> are on the audit page.</p>
+  <!-- GALLERY:START -->
+  <h3>Home</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/home-1440.png"><img src="screenshots/prototype/home-1440.png" alt="Home at 1440 pixels" loading="lazy"></a><figcaption><b>Home</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-1280.png"><img src="screenshots/prototype/home-1280.png" alt="Home at 1280 pixels" loading="lazy"></a><figcaption><b>Home</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-768.png"><img src="screenshots/prototype/home-768.png" alt="Home at 768 pixels" loading="lazy"></a><figcaption><b>Home</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-first-run-1440.png"><img src="screenshots/prototype/home-first-run-1440.png" alt="Home, first visit at 1440 pixels" loading="lazy"></a><figcaption><b>Home, first visit</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-loading-1440.png"><img src="screenshots/prototype/home-loading-1440.png" alt="Home, loading at 1440 pixels" loading="lazy"></a><figcaption><b>Home, loading</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-load-error-1440.png"><img src="screenshots/prototype/home-load-error-1440.png" alt="Home, projects failed to load at 1440 pixels" loading="lazy"></a><figcaption><b>Home, projects failed to load</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-claude-not-connected-1440.png"><img src="screenshots/prototype/home-claude-not-connected-1440.png" alt="Home, Claude Code not connected at 1440 pixels" loading="lazy"></a><figcaption><b>Home, Claude Code not connected</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/brand-switcher-1440.png"><img src="screenshots/prototype/brand-switcher-1440.png" alt="Brand switcher at 1440 pixels" loading="lazy"></a><figcaption><b>Brand switcher</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-kettle-1440.png"><img src="screenshots/prototype/home-kettle-1440.png" alt="Home after switching brand at 1440 pixels" loading="lazy"></a><figcaption><b>Home after switching brand</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/quick-create-document-1440.png"><img src="screenshots/prototype/quick-create-document-1440.png" alt="Start from an idea, LinkedIn Document at 1440 pixels" loading="lazy"></a><figcaption><b>Start from an idea, LinkedIn Document</b> · 1440</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/home-390.png"><img src="screenshots/prototype/home-390.png" alt="Home at 390 pixels" loading="lazy"></a><figcaption><b>Home</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-320.png"><img src="screenshots/prototype/home-320.png" alt="Home at 320 pixels" loading="lazy"></a><figcaption><b>Home</b> · 320</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/home-first-run-390.png"><img src="screenshots/prototype/home-first-run-390.png" alt="Home, first visit at 390 pixels" loading="lazy"></a><figcaption><b>Home, first visit</b> · 390</figcaption></figure>
+  </div>
+  <h3>Creation flow</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/create-step1-1440.png"><img src="screenshots/prototype/create-step1-1440.png" alt="Create, choose a format at 1440 pixels" loading="lazy"></a><figcaption><b>Create, choose a format</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step1-1280.png"><img src="screenshots/prototype/create-step1-1280.png" alt="Create, choose a format at 1280 pixels" loading="lazy"></a><figcaption><b>Create, choose a format</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step1-768.png"><img src="screenshots/prototype/create-step1-768.png" alt="Create, choose a format at 768 pixels" loading="lazy"></a><figcaption><b>Create, choose a format</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step2-carousel-1440.png"><img src="screenshots/prototype/create-step2-carousel-1440.png" alt="Create, Instagram Carousel at 1440 pixels" loading="lazy"></a><figcaption><b>Create, Instagram Carousel</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step2-carousel-1280.png"><img src="screenshots/prototype/create-step2-carousel-1280.png" alt="Create, Instagram Carousel at 1280 pixels" loading="lazy"></a><figcaption><b>Create, Instagram Carousel</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step2-carousel-768.png"><img src="screenshots/prototype/create-step2-carousel-768.png" alt="Create, Instagram Carousel at 768 pixels" loading="lazy"></a><figcaption><b>Create, Instagram Carousel</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step2-document-1440.png"><img src="screenshots/prototype/create-step2-document-1440.png" alt="Create, LinkedIn Document at 1440 pixels" loading="lazy"></a><figcaption><b>Create, LinkedIn Document</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step2-reel-cover-1440.png"><img src="screenshots/prototype/create-step2-reel-cover-1440.png" alt="Create, Reel Cover at 1440 pixels" loading="lazy"></a><figcaption><b>Create, Reel Cover</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-new-reel-cover-1440.png"><img src="screenshots/prototype/editor-new-reel-cover-1440.png" alt="New Reel cover, composer prefilled at 1440 pixels" loading="lazy"></a><figcaption><b>New Reel cover, composer prefilled</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-new-carousel-1440.png"><img src="screenshots/prototype/editor-new-carousel-1440.png" alt="New carousel, composer prefilled at 1440 pixels" loading="lazy"></a><figcaption><b>New carousel, composer prefilled</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-from-template-1440.png"><img src="screenshots/prototype/create-from-template-1440.png" alt="Create from a template at 1440 pixels" loading="lazy"></a><figcaption><b>Create from a template</b> · 1440</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/create-step1-390.png"><img src="screenshots/prototype/create-step1-390.png" alt="Create, choose a format at 390 pixels" loading="lazy"></a><figcaption><b>Create, choose a format</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step1-320.png"><img src="screenshots/prototype/create-step1-320.png" alt="Create, choose a format at 320 pixels" loading="lazy"></a><figcaption><b>Create, choose a format</b> · 320</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step2-carousel-390.png"><img src="screenshots/prototype/create-step2-carousel-390.png" alt="Create, Instagram Carousel at 390 pixels" loading="lazy"></a><figcaption><b>Create, Instagram Carousel</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/create-step2-carousel-320.png"><img src="screenshots/prototype/create-step2-carousel-320.png" alt="Create, Instagram Carousel at 320 pixels" loading="lazy"></a><figcaption><b>Create, Instagram Carousel</b> · 320</figcaption></figure>
+  </div>
+  <h3>Projects</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/projects-1440.png"><img src="screenshots/prototype/projects-1440.png" alt="Projects at 1440 pixels" loading="lazy"></a><figcaption><b>Projects</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-1280.png"><img src="screenshots/prototype/projects-1280.png" alt="Projects at 1280 pixels" loading="lazy"></a><figcaption><b>Projects</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-768.png"><img src="screenshots/prototype/projects-768.png" alt="Projects at 768 pixels" loading="lazy"></a><figcaption><b>Projects</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-list-all-brands-1440.png"><img src="screenshots/prototype/projects-list-all-brands-1440.png" alt="Projects, list of all brands at 1440 pixels" loading="lazy"></a><figcaption><b>Projects, list of all brands</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-videos-1440.png"><img src="screenshots/prototype/projects-videos-1440.png" alt="Projects, Videos at 1440 pixels" loading="lazy"></a><figcaption><b>Projects, Videos</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-videos-not-paired-1440.png"><img src="screenshots/prototype/projects-videos-not-paired-1440.png" alt="Projects, Videos when not paired at 1440 pixels" loading="lazy"></a><figcaption><b>Projects, Videos when not paired</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-load-error-1440.png"><img src="screenshots/prototype/projects-load-error-1440.png" alt="Projects, failed to load at 1440 pixels" loading="lazy"></a><figcaption><b>Projects, failed to load</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-empty-1440.png"><img src="screenshots/prototype/projects-empty-1440.png" alt="Projects, empty at 1440 pixels" loading="lazy"></a><figcaption><b>Projects, empty</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-no-match-1440.png"><img src="screenshots/prototype/projects-no-match-1440.png" alt="Projects, no match at 1440 pixels" loading="lazy"></a><figcaption><b>Projects, no match</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-card-menu-1440.png"><img src="screenshots/prototype/projects-card-menu-1440.png" alt="Projects, card menu at 1440 pixels" loading="lazy"></a><figcaption><b>Projects, card menu</b> · 1440</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/projects-390.png"><img src="screenshots/prototype/projects-390.png" alt="Projects at 390 pixels" loading="lazy"></a><figcaption><b>Projects</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/projects-320.png"><img src="screenshots/prototype/projects-320.png" alt="Projects at 320 pixels" loading="lazy"></a><figcaption><b>Projects</b> · 320</figcaption></figure>
+  </div>
+  <h3>Editor</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/editor-carousel-1440.png"><img src="screenshots/prototype/editor-carousel-1440.png" alt="Editor, carousel at 1440 pixels" loading="lazy"></a><figcaption><b>Editor, carousel</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-carousel-1280.png"><img src="screenshots/prototype/editor-carousel-1280.png" alt="Editor, carousel at 1280 pixels" loading="lazy"></a><figcaption><b>Editor, carousel</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-carousel-768.png"><img src="screenshots/prototype/editor-carousel-768.png" alt="Editor, carousel at 768 pixels" loading="lazy"></a><figcaption><b>Editor, carousel</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-size-menu-1440.png"><img src="screenshots/prototype/editor-size-menu-1440.png" alt="Editor, size menu at 1440 pixels" loading="lazy"></a><figcaption><b>Editor, size menu</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-document-1440.png"><img src="screenshots/prototype/editor-document-1440.png" alt="Editor, LinkedIn document at 1440 pixels" loading="lazy"></a><figcaption><b>Editor, LinkedIn document</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-document-export-1440.png"><img src="screenshots/prototype/editor-document-export-1440.png" alt="Editor, document export at 1440 pixels" loading="lazy"></a><figcaption><b>Editor, document export</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-reel-cover-export-1440.png"><img src="screenshots/prototype/editor-reel-cover-export-1440.png" alt="Editor, Reel cover export at 1440 pixels" loading="lazy"></a><figcaption><b>Editor, Reel cover export</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-empty-project-1440.png"><img src="screenshots/prototype/editor-empty-project-1440.png" alt="Editor, empty project at 1440 pixels" loading="lazy"></a><figcaption><b>Editor, empty project</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/illustrative-markers-1440.png"><img src="screenshots/prototype/illustrative-markers-1440.png" alt="Illustrative controls marked at 1440 pixels" loading="lazy"></a><figcaption><b>Illustrative controls marked</b> · 1440</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/editor-carousel-390.png"><img src="screenshots/prototype/editor-carousel-390.png" alt="Editor, carousel at 390 pixels" loading="lazy"></a><figcaption><b>Editor, carousel</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-carousel-320.png"><img src="screenshots/prototype/editor-carousel-320.png" alt="Editor, carousel at 320 pixels" loading="lazy"></a><figcaption><b>Editor, carousel</b> · 320</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/editor-chat-390.png"><img src="screenshots/prototype/editor-chat-390.png" alt="Editor, chat tab at 390 pixels" loading="lazy"></a><figcaption><b>Editor, chat tab</b> · 390</figcaption></figure>
+  </div>
+  <h3>Templates</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/templates-1440.png"><img src="screenshots/prototype/templates-1440.png" alt="Templates at 1440 pixels" loading="lazy"></a><figcaption><b>Templates</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/templates-1280.png"><img src="screenshots/prototype/templates-1280.png" alt="Templates at 1280 pixels" loading="lazy"></a><figcaption><b>Templates</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/templates-768.png"><img src="screenshots/prototype/templates-768.png" alt="Templates at 768 pixels" loading="lazy"></a><figcaption><b>Templates</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/templates-empty-1440.png"><img src="screenshots/prototype/templates-empty-1440.png" alt="Templates, empty at 1440 pixels" loading="lazy"></a><figcaption><b>Templates, empty</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/templates-error-1440.png"><img src="screenshots/prototype/templates-error-1440.png" alt="Templates, failed to load at 1440 pixels" loading="lazy"></a><figcaption><b>Templates, failed to load</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/templates-filter-empty-1440.png"><img src="screenshots/prototype/templates-filter-empty-1440.png" alt="Templates, no match for a format at 1440 pixels" loading="lazy"></a><figcaption><b>Templates, no match for a format</b> · 1440</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/templates-390.png"><img src="screenshots/prototype/templates-390.png" alt="Templates at 390 pixels" loading="lazy"></a><figcaption><b>Templates</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/templates-320.png"><img src="screenshots/prototype/templates-320.png" alt="Templates at 320 pixels" loading="lazy"></a><figcaption><b>Templates</b> · 320</figcaption></figure>
+  </div>
+  <h3>Brands</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/brands-1440.png"><img src="screenshots/prototype/brands-1440.png" alt="Brands at 1440 pixels" loading="lazy"></a><figcaption><b>Brands</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/brands-1280.png"><img src="screenshots/prototype/brands-1280.png" alt="Brands at 1280 pixels" loading="lazy"></a><figcaption><b>Brands</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/brands-768.png"><img src="screenshots/prototype/brands-768.png" alt="Brands at 768 pixels" loading="lazy"></a><figcaption><b>Brands</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/brand-editor-1440.png"><img src="screenshots/prototype/brand-editor-1440.png" alt="Brand editor at 1440 pixels" loading="lazy"></a><figcaption><b>Brand editor</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/brand-editor-768.png"><img src="screenshots/prototype/brand-editor-768.png" alt="Brand editor at 768 pixels" loading="lazy"></a><figcaption><b>Brand editor</b> · 768</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/brands-390.png"><img src="screenshots/prototype/brands-390.png" alt="Brands at 390 pixels" loading="lazy"></a><figcaption><b>Brands</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/brands-320.png"><img src="screenshots/prototype/brands-320.png" alt="Brands at 320 pixels" loading="lazy"></a><figcaption><b>Brands</b> · 320</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/brand-editor-390.png"><img src="screenshots/prototype/brand-editor-390.png" alt="Brand editor at 390 pixels" loading="lazy"></a><figcaption><b>Brand editor</b> · 390</figcaption></figure>
+  </div>
+  <h3>Video Studio</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/studio-paired-1440.png"><img src="screenshots/prototype/studio-paired-1440.png" alt="Video Studio, paired at 1440 pixels" loading="lazy"></a><figcaption><b>Video Studio, paired</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/studio-paired-1280.png"><img src="screenshots/prototype/studio-paired-1280.png" alt="Video Studio, paired at 1280 pixels" loading="lazy"></a><figcaption><b>Video Studio, paired</b> · 1280</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/studio-paired-768.png"><img src="screenshots/prototype/studio-paired-768.png" alt="Video Studio, paired at 768 pixels" loading="lazy"></a><figcaption><b>Video Studio, paired</b> · 768</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/studio-not-paired-1440.png"><img src="screenshots/prototype/studio-not-paired-1440.png" alt="Video Studio, not paired at 1440 pixels" loading="lazy"></a><figcaption><b>Video Studio, not paired</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/studio-existing-workspace-1440.png"><img src="screenshots/prototype/studio-existing-workspace-1440.png" alt="The existing Studio workspace at 1440 pixels" loading="lazy"></a><figcaption><b>The existing Studio workspace</b> · 1440</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/studio-paired-390.png"><img src="screenshots/prototype/studio-paired-390.png" alt="Video Studio, paired at 390 pixels" loading="lazy"></a><figcaption><b>Video Studio, paired</b> · 390</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/studio-paired-320.png"><img src="screenshots/prototype/studio-paired-320.png" alt="Video Studio, paired at 320 pixels" loading="lazy"></a><figcaption><b>Video Studio, paired</b> · 320</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/studio-not-paired-390.png"><img src="screenshots/prototype/studio-not-paired-390.png" alt="Video Studio, not paired at 390 pixels" loading="lazy"></a><figcaption><b>Video Studio, not paired</b> · 390</figcaption></figure>
+  </div>
+  <h3>Settings</h3>
+  <div class="gallery">
+    <figure><a class="shot" href="screenshots/prototype/settings-1440.png"><img src="screenshots/prototype/settings-1440.png" alt="Settings at 1440 pixels" loading="lazy"></a><figcaption><b>Settings</b> · 1440</figcaption></figure>
+    <figure><a class="shot" href="screenshots/prototype/settings-768.png"><img src="screenshots/prototype/settings-768.png" alt="Settings at 768 pixels" loading="lazy"></a><figcaption><b>Settings</b> · 768</figcaption></figure>
+  </div>
+  <div class="gallery phones">
+    <figure><a class="shot" href="screenshots/prototype/settings-390.png"><img src="screenshots/prototype/settings-390.png" alt="Settings at 390 pixels" loading="lazy"></a><figcaption><b>Settings</b> · 390</figcaption></figure>
+  </div>
+  <!-- GALLERY:END -->
+
+  <h2 id="process">Process and checks</h2>
+  <ul>
+    <li><b>Issue</b> <a href="https://github.com/mk-global/creatorbrio/issues/172">#172</a>, validated with the repository's ticket validator; work on branch <code>docs/172-creatorbrio-2-product-experience</code> in its own worktree; a draft pull request.</li>
+    <li><b>Isolation.</b> The current app was audited from a separate instance with its own port and data folder. The founder's checkout, data and app were not touched.</li>
+    <li><b>Changes are confined to this folder.</b> No application code, API, data format or workflow changed.</li>
+    <li><b>Checks.</b> Every page and prototype screen at 1440, 1280, 768, 390 and 320 pixels with no sideways scrolling; keyboard paths; contrast measured; the repository's typecheck, lint, tests and build pass with the package in place.</li>
+  </ul>
+</main>
+</body>
+</html>
