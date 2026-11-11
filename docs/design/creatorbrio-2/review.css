@@ -22,6 +22,7 @@ body { height: auto; }
 .doc-nav a:hover { background: var(--sunken); color: var(--ink); }
 .doc-nav a[aria-current="page"] { color: var(--ink); background: var(--surface); box-shadow: var(--raised-shadow); }
 
+.doc [id] { scroll-margin-top: 80px; }
 .doc { max-width: 1120px; margin: 0 auto; padding: 40px 24px 96px; }
 .doc-narrow { max-width: 760px; }
 .doc header.lead { margin-bottom: 32px; }

@@ -294,7 +294,7 @@
         (p.format === "cover" ? "" : "<button data-action=\"ed-add\" aria-label=\"Add a slide through the chat\" style=\"height:80px;aspect-ratio:" + d[0] + "/" + d[1] + ";border:1.5px dashed var(--line-strong);border-radius:6px;display:grid;place-items:center;color:var(--ink-muted)\">" + icon("plus") + "</button>") + "</div>";
     }
 
-    var sizeLabel = icon(p.ratio === "9:16" ? "smartphone" : "square", "sm") + p.ratio + "<span class=\"hide-mobile\"> · " + d[0] + " × " + d[1] + "</span>";
+    var sizeLabel = icon(p.ratio === "9:16" ? "smartphone" : "square", "sm") + p.ratio + "<span class=\"hide-tablet\"> · " + d[0] + " × " + d[1] + "</span>";
     var tools = "<div class=\"ed-tools\" role=\"toolbar\" aria-label=\"Preview tools\">" +
       (p.format === "cover"
         ? "<span class=\"chip\" title=\"A Reel cover is always 9:16\">" + sizeLabel + "</span>"

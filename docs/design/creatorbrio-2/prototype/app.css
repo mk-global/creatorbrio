@@ -509,6 +509,10 @@ code.path { font-family: var(--mono); font-size: 12px; background: var(--sunken)
   .studio-hero { grid-template-columns: minmax(0, 1fr); }
   .studio-hero .sh-art { min-height: 250px; order: -1; }
   .ed-body { grid-template-columns: 300px minmax(0, 1fr); }
+  .hide-tablet { display: none !important; }
+  .ed-tools { padding: 8px 12px; }
+  .ed-tools .btn-sm { padding: 0 8px; }
+  .ed-preview .nav-arrow { display: none; }
 }
 @media (max-width: 767px) {
   :root { --gutter: 16px; }

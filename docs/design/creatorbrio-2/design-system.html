@@ -55,12 +55,47 @@
   </div>
 
   <h2 id="contrast">Measured contrast</h2>
-  <p>Computed in your browser from the tokens above with the WCAG 2.x formula. Text needs 4.5:1; large text, focus indicators and the boundaries of controls need 3:1. Disabled controls are exempt and use 50% opacity.</p>
+  <p>Recorded here from the prototype stylesheet's tokens with the WCAG 2.x formula, and recomputed in your browser when the page opens, so a token change shows here at once. Text needs 4.5:1; large text, focus indicators and the boundaries of controls need 3:1. Disabled controls are exempt and use 50% opacity.</p>
   <div class="table-wrap"><table class="t" id="contrast-table">
     <thead><tr><th>Use</th><th>Foreground</th><th>Background</th><th>Ratio</th><th>Needs</th><th>Result</th></tr></thead>
-    <tbody></tbody>
+    <tbody>
+      <tr><td>Body text on the page</td><td><code>--ink</code> #1c1917</td><td><code>--canvas</code> #f7f5f2</td><td class="num">16.07</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Body text on cards</td><td><code>--ink</code> #1c1917</td><td><code>--surface</code> #ffffff</td><td class="num">17.49</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Text on chips</td><td><code>--ink</code> #1c1917</td><td><code>--sunken</code> #f1eee9</td><td class="num">15.11</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Secondary text on the page</td><td><code>--ink-muted</code> #6b645d</td><td><code>--canvas</code> #f7f5f2</td><td class="num">5.35</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Secondary text and placeholders on cards</td><td><code>--ink-muted</code> #6b645d</td><td><code>--surface</code> #ffffff</td><td class="num">5.82</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Secondary text on chips</td><td><code>--ink-muted</code> #6b645d</td><td><code>--sunken</code> #f1eee9</td><td class="num">5.03</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Primary button label</td><td><code>--ink-inverse</code> #ffffff</td><td><code>--accent</code> #bf394f</td><td class="num">5.37</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Primary button label, hover</td><td><code>--ink-inverse</code> #ffffff</td><td><code>--accent-hover</code> #a83245</td><td class="num">6.55</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Links on the page</td><td><code>--accent</code> #bf394f</td><td><code>--canvas</code> #f7f5f2</td><td class="num">4.93</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Links on cards</td><td><code>--accent</code> #bf394f</td><td><code>--surface</code> #ffffff</td><td class="num">5.37</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Active chip text</td><td><code>--accent</code> #bf394f</td><td><code>--accent-tint</code> #fcebee</td><td class="num">4.67</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Pressed filter chip, toast text</td><td><code>--ink-inverse</code> #ffffff</td><td><code>--ink</code> #1c1917</td><td class="num">17.49</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Danger button label</td><td><code>--ink-inverse</code> #ffffff</td><td><code>--danger</code> #b42318</td><td class="num">6.57</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Danger text in menus</td><td><code>--danger</code> #b42318</td><td><code>--surface</code> #ffffff</td><td class="num">6.57</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Text on the error banner</td><td><code>--ink</code> #1c1917</td><td><code>--danger-tint</code> #fdeeec</td><td class="num">15.50</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Success status</td><td><code>--success</code> #1d7348</td><td><code>--surface</code> #ffffff</td><td class="num">5.84</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Warning status</td><td><code>--warning</code> #9a5208</td><td><code>--surface</code> #ffffff</td><td class="num">5.86</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Early tag</td><td><code>--warning</code> #9a5208</td><td><code>--warning-tint</code> #fdf3e3</td><td class="num">5.33</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Text on the warning banner</td><td><code>--ink</code> #1c1917</td><td><code>--warning-tint</code> #fdf3e3</td><td class="num">15.91</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Text on the info banner</td><td><code>--ink</code> #1c1917</td><td><code>--info-tint</code> #ecf2fb</td><td class="num">15.54</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Info text on cards</td><td><code>--info</code> #2457a8</td><td><code>--surface</code> #ffffff</td><td class="num">6.99</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Toast action</td><td><code>--inverse-action</code> #ffb3c0</td><td><code>--ink</code> #1c1917</td><td class="num">10.38</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Illustrative tag</td><td><code>--illus-ink</code> #f5c46b</td><td><code>--illus</code> #3a2a0f</td><td class="num">8.56</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Illustrative toast text</td><td><code>--ink-inverse</code> #ffffff</td><td><code>--illus</code> #3a2a0f</td><td class="num">13.83</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Text on the Studio canvas</td><td><code>--studio-ink</code> #f2efea</td><td><code>--studio-canvas</code> #16151a</td><td class="num">15.84</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Secondary text on the Studio canvas</td><td><code>--studio-muted</code> #a9a39b</td><td><code>--studio-canvas</code> #16151a</td><td class="num">7.26</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Prototype bar text</td><td><code>--studio-ink</code> #f2efea</td><td><code>--proto-bar</code> #2a2622</td><td class="num">13.09</td><td class="num">4.5</td><td class="pass">Passes</td></tr>
+      <tr><td>Input boundary on cards</td><td><code>--line-strong</code> #8a8279</td><td><code>--surface</code> #ffffff</td><td class="num">3.78</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+      <tr><td>Input boundary on the page</td><td><code>--line-strong</code> #8a8279</td><td><code>--canvas</code> #f7f5f2</td><td class="num">3.48</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+      <tr><td>Focus ring on cards</td><td><code>--brand</code> #e94560</td><td><code>--surface</code> #ffffff</td><td class="num">3.83</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+      <tr><td>Focus ring on the page</td><td><code>--brand</code> #e94560</td><td><code>--canvas</code> #f7f5f2</td><td class="num">3.52</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+      <tr><td>Active navigation marker</td><td><code>--brand</code> #e94560</td><td><code>--canvas</code> #f7f5f2</td><td class="num">3.52</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+      <tr><td>Selected slide outline</td><td><code>--brand</code> #e94560</td><td><code>--surface</code> #ffffff</td><td class="num">3.83</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+      <tr><td>Selected choice outline</td><td><code>--ink</code> #1c1917</td><td><code>--surface</code> #ffffff</td><td class="num">17.49</td><td class="num">3.0</td><td class="pass">Passes</td></tr>
+    </tbody>
   </table></div>
-  <p class="t-small muted" id="contrast-summary"></p>
+  <p class="t-small muted" id="contrast-summary">34 of 34 pairs pass.</p>
 
   <h2 id="type">Type</h2>
   <p>Geist for the interface, which the app already ships, and Geist Mono for paths and commands. Brand fonts appear only inside slides and brand previews. Sizes are few and steps are clear; letter spacing tightens as size grows.</p>
@@ -183,7 +218,7 @@
     <li><b>Focus:</b> a 2-pixel brand ring outside a 2-pixel surface gap, visible on any background, shown for keyboard focus only.</li>
     <li><b>Keyboard:</b> a skip link; project and template cards are links; menus open on Enter, move with the arrow keys, close on Escape and return focus to their trigger; dialogs trap Tab and return focus when closed.</li>
     <li><b>Semantics:</b> navigation landmarks, <code>aria-current</code> on the current page, radio groups for size and format choices, pressed state on filters, live regions for toasts and chat.</li>
-    <li><b>Targets:</b> at least 32 by 32 pixels everywhere and 48 pixels tall in the phone tab bar, above the 24-pixel WCAG 2.2 minimum.</li>
+    <li><b>Targets:</b> buttons and controls are at least 32 pixels in both directions (the phone logo is 28) and phone tab bar items are 48 pixels tall, above WCAG 2.2's 24-pixel minimum. Text links such as "Switch brand" are 21 pixels tall with clear space around them, which the same rule's spacing exception allows.</li>
     <li><b>Motion:</b> reduced motion is respected; nothing flashes.</li>
     <li><b>Words:</b> no meaning by colour alone; status always has a word, and the Early tag is text.</li>
   </ul>

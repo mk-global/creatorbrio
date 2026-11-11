@@ -46,7 +46,8 @@
     return list[0];
   }
   function activeBrand() { return brandById(state.brandId); }
-  function brandName(b) { return b.name.trim() || "Unnamed brand"; }
+  // A brand not yet set up is the default brand; it is never called "unnamed".
+  function brandName(b) { return b.name.trim() || "Default brand"; }
   function projectById(id) {
     var list = store().projects;
     for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];

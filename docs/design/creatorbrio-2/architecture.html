@@ -110,7 +110,7 @@
     <dt>Content</dt><dd>A tile per brand: name, colours, fonts and style words, marked Default and Active. A full-page editor: identity and logo, five colours, heading and body fonts, style words, and a sticky slide preview that updates as you edit.</dd>
     <dt>Primary action</dt><dd>Use this brand (makes it active for new work), or Edit.</dd>
     <dt>Secondary</dt><dd>New brand. Brands cannot be deleted today, and the page says so instead of offering a Delete that fails.</dd>
-    <dt>Phone</dt><dd>Tiles in one column; the editor's preview moves above the form.</dd>
+    <dt>Phone</dt><dd>Tiles in one column; in the editor, the preview follows the form instead of sitting beside it.</dd>
     <dt>Reuses</dt><dd><code>/api/brands</code>, <code>ColorPicker</code>, <code>FontSelector</code>, <code>LogoUpload</code>, <code>StyleKeywordPicker</code>, <code>CarouselBrandBadge</code>.</dd>
   </dl>
 
@@ -234,7 +234,7 @@
   </div>
 
   <h2 id="data">Data and API implications</h2>
-  <p>All additive. No existing field changes meaning, no route changes its response for existing callers, and nothing in the Video Studio changes. Details per milestone are in <a href="blueprint.html">the blueprint</a>.</p>
+  <p>All additive. No existing field changes meaning, no route changes its response for existing callers, and the Video Studio's Production API, store and media registry do not change; its session route gains one additive status form (D15). Details per milestone are in <a href="blueprint.html">the blueprint</a>.</p>
   <ul>
     <li><b>An optional <code>format</code> on a carousel</b>, set at creation. Absent means Instagram Carousel (<a href="decisions.html#d3">D3</a>).</li>
     <li><b>A summary view of the carousel list</b>: <code>GET /api/carousels?view=summary</code> returns the name, brand, format, size, slide count and first slide, without every slide's HTML and undo history. Search, filter, sort and paging parameters follow in M3.</li>
