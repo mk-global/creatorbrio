@@ -11,6 +11,12 @@
   --accent-foreground: #ffffff;
   --surface: #ffffff;
   --destructive: #ef4444;
+  /* Run notices (#168): pale surfaces under foreground text; the tone colour is
+     only for icons and borders. One light theme, so no OS dark-mode values. */
+  --destructive-surface: #fef2f2;
+  --warning: #b45309;
+  --warning-surface: #fffbeb;
+  --selection: #bfdbfe;
 
   /* Motion — Emil Kowalski easings (animations.dev) */
   --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
@@ -29,6 +35,10 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-surface: var(--surface);
   --color-destructive: var(--destructive);
+  --color-destructive-surface: var(--destructive-surface);
+  --color-warning: var(--warning);
+  --color-warning-surface: var(--warning-surface);
+  --color-selection: var(--selection);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }

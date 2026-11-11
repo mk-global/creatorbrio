@@ -16,6 +16,8 @@ import {
 import { MAX_PROMPT_CHARS } from "@/lib/image-service";
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
 import { TEN_PAGE_BRIEF } from "./fixtures/ten-page-brief";
+import { SIMPLE_REVISION_MESSAGE, simpleRevisionPlan } from "./fixtures/simple-revision-plan";
+import RESTYLE_PLANS from "./fixtures/simple-revision-plans.json";
 
 // ---------------------------------------------------------------------------
 // Builders. Every test starts from a plan the validator accepts and breaks one
@@ -42,8 +44,10 @@ function context(patch: Partial<PlanContext> = {}): PlanContext {
     currentSlideCount: 0,
     referenceIds: ["ref-1", "ref-2"],
     committedAssets: [
-      { id: "asset-ok", intact: true },
-      { id: "asset-bad", intact: false },
+      { id: "asset-ok", intact: true, origin: "generated" },
+      { id: "asset-bad", intact: false, origin: "generated" },
+      { id: "asset-edited", intact: true, origin: "edited" },
+      { id: "asset-edited-bad", intact: false, origin: "edited" },
     ],
     capabilities: capabilities(),
     ...patch,
@@ -634,6 +638,73 @@ describe("validatePlan: edits", () => {
     const p = withExecution({ slideCount: 6, slideCountBasis: "user-explicit", slides, assets: assets as never });
     const errors = errorsOf(p, editing({ message: "Make 6 slides of me on new backgrounds" })).join();
     expect(errors).toMatch(new RegExp(`at most ${MAX_IMAGE_TASKS} images`));
+  });
+});
+
+describe("validatePlan: a revision that keeps an earlier edited image (#168)", () => {
+  const revision = () => context({ message: SIMPLE_REVISION_MESSAGE, currentSlideCount: 1 });
+  const EDITED_RULE = /treatment: edited needs an edit task or a reuse of an earlier edited image/;
+
+  it("accepts the Director's plan for a one-word colour change on a cover that shows an edited portrait", () => {
+    const p = accepted(simpleRevisionPlan("asset-edited"), revision());
+    if (p.status !== "ready") throw new Error("unreachable");
+    expect(p.execution).toMatchObject({
+      requestType: "revision",
+      slideCount: 1,
+      slideCountBasis: "existing",
+      slides: [{ index: 1, treatment: "edited", assetRefs: ["a1"] }],
+      assets: [{ key: "a1", operation: "reuse", assetId: "asset-edited", required: true }],
+    });
+    expect(planSummary(p)).toMatchObject({ generate: 0, edit: 0, reuse: 1 });
+  });
+
+  // Plans the real Director returned on the final instructions for other
+  // restyles of the same cover; ASSET_ID stands for the edited asset it shows.
+  it.each(RESTYLE_PLANS.map((c) => [c.message, c.plan] as const))(
+    "accepts the Director's plan for %j as a revision that keeps the photo and makes no image",
+    (message, captured) => {
+      const p = accepted(JSON.parse(JSON.stringify(captured).replaceAll("ASSET_ID", "asset-edited")), context({ message, currentSlideCount: 1 }));
+      if (p.status !== "ready") throw new Error("unreachable");
+      expect(p.execution).toMatchObject({ requestType: "revision", slideCount: 1, slideCountBasis: "existing" });
+      expect(p.execution.slides).toEqual([expect.objectContaining({ treatment: "edited", assetRefs: ["a1"] })]);
+      expect(p.execution.assets).toEqual([expect.objectContaining({ operation: "reuse", assetId: "asset-edited" })]);
+    }
+  );
+
+  it("still accepts a kept edited image labelled generated, so stored plans stay valid", () => {
+    const p = simpleRevisionPlan("asset-edited");
+    p.execution.slides[0].treatment = "generated";
+    accepted(p, revision());
+  });
+
+  it.each([
+    ["reuses a generated image", "asset-ok", null],
+    ["reuses an edited image whose file changed", "asset-edited-bad", /no longer matches its recorded file/],
+    ["reuses an image this carousel does not have", "asset-elsewhere", /is not an asset of this carousel/],
+  ])("refuses an edited slide that %s", (_name, assetId, reuseProblem) => {
+    const errors = errorsOf(simpleRevisionPlan(assetId), revision()).join("\n");
+    expect(errors).toMatch(EDITED_RULE);
+    if (reuseProblem) expect(errors).toMatch(reuseProblem);
+  });
+
+  it.each([
+    ["places nothing", [] as string[]],
+    ["places only the original upload", ["ref-1"]],
+  ])("refuses an edited slide that %s", (_name, assetRefs) => {
+    const p = simpleRevisionPlan("asset-edited");
+    p.execution.slides[0].assetRefs = assetRefs;
+    p.execution.assets = [];
+    p.briefUpdate.assetRelationships = [];
+    expect(errorsOf(p, revision()).join("\n")).toMatch(EDITED_RULE);
+  });
+
+  it("keeps refusing a revision planned as a new carousel or with another count", () => {
+    const asNew = simpleRevisionPlan("asset-edited");
+    asNew.execution.requestType = "new";
+    expect(errorsOf(asNew, revision()).join()).toMatch(/requestType: must be "revision"/);
+    const twoSlides = simpleRevisionPlan("asset-edited");
+    twoSlides.execution.slideCount = 2;
+    expect(errorsOf(twoSlides, revision()).join()).toMatch(/slideCount: must equal the carousel's current count/);
   });
 });
 
