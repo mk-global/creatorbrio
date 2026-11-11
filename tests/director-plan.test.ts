@@ -17,6 +17,7 @@ import { MAX_PROMPT_CHARS } from "@/lib/image-service";
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
 import { TEN_PAGE_BRIEF } from "./fixtures/ten-page-brief";
 import { SIMPLE_REVISION_MESSAGE, simpleRevisionPlan } from "./fixtures/simple-revision-plan";
+import RESTYLE_PLANS from "./fixtures/simple-revision-plans.json";
 
 // ---------------------------------------------------------------------------
 // Builders. Every test starts from a plan the validator accepts and breaks one
@@ -656,6 +657,19 @@ describe("validatePlan: a revision that keeps an earlier edited image (#168)", (
     });
     expect(planSummary(p)).toMatchObject({ generate: 0, edit: 0, reuse: 1 });
   });
+
+  // Plans the real Director returned on the final instructions for other
+  // restyles of the same cover; ASSET_ID stands for the edited asset it shows.
+  it.each(RESTYLE_PLANS.map((c) => [c.message, c.plan] as const))(
+    "accepts the Director's plan for %j as a revision that keeps the photo and makes no image",
+    (message, captured) => {
+      const p = accepted(JSON.parse(JSON.stringify(captured).replaceAll("ASSET_ID", "asset-edited")), context({ message, currentSlideCount: 1 }));
+      if (p.status !== "ready") throw new Error("unreachable");
+      expect(p.execution).toMatchObject({ requestType: "revision", slideCount: 1, slideCountBasis: "existing" });
+      expect(p.execution.slides).toEqual([expect.objectContaining({ treatment: "edited", assetRefs: ["a1"] })]);
+      expect(p.execution.assets).toEqual([expect.objectContaining({ operation: "reuse", assetId: "asset-edited" })]);
+    }
+  );
 
   it("still accepts a kept edited image labelled generated, so stored plans stay valid", () => {
     const p = simpleRevisionPlan("asset-edited");

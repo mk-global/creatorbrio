@@ -140,7 +140,7 @@ Before #168 only a new edit task counted, so every revision of a slide that kept
 
 A plan that is malformed in any other way is refused, and its violations go to the server log only.
 The user is told that CreatorBrio could not use the plan it made, that nothing was changed, and to send the same message again, which plans it afresh.
-They are not asked to rephrase, because the plan, not the request, failed the checks.
+They are not asked to rephrase: planning is done afresh for each message, and a request with a problem of its own, such as too many slides or a capability this machine lacks, gets its own message instead.
 
 When a request depends on a page or document the Director was not given, such as "summarize my latest post" with no text or link, it returns `source-required` and asks the user to paste the text or share a public link.
 

@@ -1,0 +1,468 @@
+[
+  {
+    "message": "Make the word 'Never' red.",
+    "plan": {
+      "status": "ready",
+      "strategy": {
+        "objective": "Hook engineers into an episode about production AI agents with a bold reel cover.",
+        "audience": "Engineering leaders shipping AI agents.",
+        "intendedResponse": "Stop on the cover and watch the episode.",
+        "centralMessage": "Don't let failing define you. Never stop building.",
+        "contentType": "Reel cover, restyle revision",
+        "priorities": [
+          "Set the word 'Never' in the subline in red",
+          "Keep 'Don't' in signal orange and the rest of the layout unchanged",
+          "Keep the existing edited portrait low right, fading into graphite"
+        ],
+        "creativeDirection": "Only change the colour of the word 'Never' in the subline 'Never stop building.' to red. Use a clear, saturated red that reads as distinct from the signal-orange 'Don't' (pure-leaning red, not orange-red), so the two accents don't blur together on the graphite background. Keep its weight, size and position as they are. Everything else stays: headline, copy, layout, graphite background and the edited portrait low right fading into graphite.",
+        "treatmentStrategy": "Restyle-only revision: the existing edited portrait is reused exactly as it is, and the colour change is pure typography handled by the Design Agent. No new generation or edit is needed.",
+        "reasoning": [
+          {
+            "decision": "Reuse the existing edited portrait asset unchanged.",
+            "why": "The user only asked for a text colour change; the photo was not mentioned and must not be altered."
+          },
+          {
+            "decision": "Use red even though it is outside the brand palette.",
+            "why": "The user explicitly asked for red, and that more recent explicit request takes precedence over the brand palette for this one word."
+          },
+          {
+            "decision": "Keep 'Don't' in signal orange.",
+            "why": "The user didn't ask to change it, and the stored visual decision still applies."
+          }
+        ],
+        "successCriteria": [
+          "The word 'Never' in the subline is visibly red and clearly different from the orange 'Don't'",
+          "'Don't' is still signal orange; all other text, sizes and positions are unchanged",
+          "The same edited portrait sits low right, fading into graphite"
+        ],
+        "assumptions": [
+          "'Never' refers to the first word of the subline 'Never stop building.'",
+          "Only the colour changes; the weight and size stay as they are"
+        ]
+      },
+      "execution": {
+        "requestType": "revision",
+        "slideCount": 1,
+        "slideCountBasis": "existing",
+        "slides": [
+          {
+            "index": 1,
+            "visualIntent": "The same reel cover with the edited portrait low right fading into graphite; 'Don't' in signal orange and 'Never' now in red.",
+            "treatment": "edited",
+            "assetRefs": [
+              "a1"
+            ],
+            "styleReferenceIds": []
+          }
+        ],
+        "assets": [
+          {
+            "key": "a1",
+            "operation": "reuse",
+            "assetId": "ASSET_ID",
+            "required": true,
+            "targetSlides": [
+              1
+            ]
+          }
+        ]
+      },
+      "briefUpdate": {
+        "fields": {},
+        "addConstraints": [],
+        "retireConstraints": [],
+        "addVisualDecisions": [
+          {
+            "text": "'Never' in the subline set in red, distinct from the signal-orange 'Don't'.",
+            "source": "explicit"
+          }
+        ],
+        "retireVisualDecisions": [],
+        "assetRelationships": [
+          {
+            "id": "ASSET_ID",
+            "role": "The edited cover portrait (user's photo, background replaced); reused unchanged on the cover.",
+            "source": "inferred"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "message": "Change only the headline font.",
+    "plan": {
+      "status": "ready",
+      "strategy": {
+        "objective": "Hook engineers into an episode about production AI agents, now with a different headline font on the existing reel cover.",
+        "audience": "Engineering leaders shipping AI agents.",
+        "intendedResponse": "Stop on the cover and watch the episode.",
+        "centralMessage": "Do not switch models before fixing the production gap; on the cover: Don't let failing define you.",
+        "contentType": "Reel cover restyle",
+        "priorities": [
+          "Change only the headline's font family",
+          "Keep headline wording, 'Don't' in signal orange, subline, layout and colours exactly as they are",
+          "Keep the edited portrait low right fading into graphite, unchanged"
+        ],
+        "creativeDirection": "This is a single-property restyle. Swap the headline typeface only; everything else stays pixel-for-pixel as it is: wording, line breaks as far as the new font allows, size intent, 'Don't' in signal orange #ff6a1a, the subline 'Never stop building.' in its current font, graphite background and the edited portrait low right fading into graphite. The user did not name a font, so pick a headline face that is clearly different from the current Inter yet fits a technical, bold show: for example a heavy condensed grotesque or a bold monospace. It must stay highly legible at reel-cover size and keep the headline's weight and punch.",
+        "treatmentStrategy": "The only image on the cover is the earlier edited portrait, so it is reused exactly and placed again; no new generation or edit is needed for a font change.",
+        "reasoning": [
+          {
+            "decision": "Reuse the existing edited portrait asset unchanged",
+            "why": "The user asked to change only the headline font; the image must stay exactly as it is."
+          },
+          {
+            "decision": "No generate or edit tasks",
+            "why": "A typography-only change gains nothing from new imagery and must not alter the photo."
+          },
+          {
+            "decision": "Font choice left to the Design Agent with a technical, bold direction",
+            "why": "The user did not name a font; brand style keywords are technical and bold."
+          },
+          {
+            "decision": "Keep slide count at 1",
+            "why": "A revision keeps the carousel's current count."
+          }
+        ],
+        "successCriteria": [
+          "The headline uses a visibly different font than before",
+          "Headline wording is still 'Don't let failing define you.' with 'Don't' in signal orange",
+          "Subline 'Never stop building.' is unchanged in text, font and colour",
+          "The edited portrait is the same image, still low right fading into graphite",
+          "Background colour and layout are unchanged"
+        ],
+        "assumptions": [
+          "The user did not name a font, so a bold technical display face different from Inter is chosen",
+          "Only the headline changes; the subline keeps its current font",
+          "'Change only' means no other element of the cover should change"
+        ]
+      },
+      "execution": {
+        "requestType": "revision",
+        "slideCount": 1,
+        "slideCountBasis": "existing",
+        "slides": [
+          {
+            "index": 1,
+            "visualIntent": "Same reel cover with only the headline in a new bold technical font; edited portrait low right fading into graphite, unchanged.",
+            "treatment": "edited",
+            "assetRefs": [
+              "a1"
+            ],
+            "styleReferenceIds": []
+          }
+        ],
+        "assets": [
+          {
+            "key": "a1",
+            "operation": "reuse",
+            "assetId": "ASSET_ID",
+            "required": true,
+            "targetSlides": [
+              1
+            ]
+          }
+        ]
+      },
+      "briefUpdate": {
+        "fields": {},
+        "addConstraints": [
+          {
+            "text": "Font change applies to the headline only; keep every other element of the cover unchanged.",
+            "source": "explicit"
+          }
+        ],
+        "retireConstraints": [],
+        "addVisualDecisions": [
+          {
+            "text": "Headline set in a bold technical display font different from Inter; subline stays as before.",
+            "source": "inferred"
+          }
+        ],
+        "retireVisualDecisions": [],
+        "assetRelationships": [
+          {
+            "id": "ASSET_ID",
+            "role": "Edited cover portrait (from the user's photo), reused unchanged on the cover.",
+            "source": "inferred"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "message": "Make the word 'failing' bold.",
+    "plan": {
+      "status": "ready",
+      "strategy": {
+        "objective": "Hook engineers into an episode about production AI agents. This revision only sets the word 'failing' in bold on the existing reel cover.",
+        "audience": "Engineering leaders shipping AI agents.",
+        "intendedResponse": "Stop on the cover and watch the episode.",
+        "centralMessage": "Do not switch models before fixing the production gap; on the cover: Don't let failing define you. Never stop building.",
+        "contentType": "Reel cover, typography restyle",
+        "priorities": [
+          "Set 'failing' in a bold weight in the headline",
+          "Keep 'Don't' in signal orange as it is now",
+          "Keep the edited portrait, its position low right and its fade into graphite",
+          "Change nothing else in copy, layout or colour"
+        ],
+        "creativeDirection": "A typography-only tweak. Keep the cover exactly as it is: the graphite field, the headline 'Don't let failing define you.' with 'Don't' in signal orange, the subline 'Never stop building.' and the edited portrait low right fading into graphite. Set only 'failing' in a clearly heavier Inter weight so it stands out from the words around it. It stays in the same colour as the rest of the headline; only its weight changes. It should still read as one headline, so keep the same size and baseline. The portrait is not touched.",
+        "treatmentStrategy": "Slide 1 reuses the existing edited portrait, so no new image is made. The change is only in the type, which the Design Agent handles.",
+        "reasoning": [
+          {
+            "decision": "Reuse the edited portrait as it is, with no new generation or edit",
+            "why": "The request only restyles one word, so every existing image stays exactly as it is."
+          },
+          {
+            "decision": "Change only the weight of 'failing', not its colour",
+            "why": "The user asked for bold only, and 'Don't' stays the single orange accent from the earlier decision."
+          }
+        ],
+        "successCriteria": [
+          "'failing' is visibly bolder than the other words in the headline",
+          "'Don't' is still in signal orange",
+          "The headline and subline text are unchanged",
+          "The same edited portrait sits low right, fading into graphite",
+          "The slide is still a single 9:16 reel cover"
+        ],
+        "assumptions": [
+          "'Bold' means a heavier font weight, not a colour change or a larger size",
+          "Everything else on the cover stays as it is"
+        ]
+      },
+      "execution": {
+        "requestType": "revision",
+        "slideCount": 1,
+        "slideCountBasis": "existing",
+        "slides": [
+          {
+            "index": 1,
+            "visualIntent": "The existing cover is unchanged except that 'failing' is set bold; the edited portrait stays low right, fading into graphite.",
+            "treatment": "edited",
+            "assetRefs": [
+              "a1"
+            ],
+            "styleReferenceIds": []
+          }
+        ],
+        "assets": [
+          {
+            "key": "a1",
+            "operation": "reuse",
+            "assetId": "ASSET_ID",
+            "required": true,
+            "targetSlides": [
+              1
+            ]
+          }
+        ]
+      },
+      "briefUpdate": {
+        "fields": {},
+        "addConstraints": [],
+        "retireConstraints": [],
+        "addVisualDecisions": [
+          {
+            "text": "'failing' set in bold in the cover headline.",
+            "source": "explicit"
+          }
+        ],
+        "retireVisualDecisions": [],
+        "assetRelationships": [
+          {
+            "id": "ASSET_ID",
+            "role": "Edited cover portrait (the user's photo on a graphite backdrop); reused unchanged on slide 1.",
+            "source": "inferred"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "message": "Increase the title size slightly.",
+    "plan": {
+      "status": "ready",
+      "strategy": {
+        "objective": "Hook engineers into an episode about production AI agents with a reel cover.",
+        "audience": "Engineering leaders shipping AI agents.",
+        "intendedResponse": "Stop scrolling, read the headline and watch the episode.",
+        "centralMessage": "Do not switch models before fixing the production gap.",
+        "contentType": "Reel cover (restyle revision)",
+        "priorities": [
+          "Make the headline 'Don't let failing define you.' slightly larger",
+          "Keep 'Don't' in signal orange and the subline 'Never stop building.'",
+          "Keep the edited portrait low right fading into graphite exactly as it is"
+        ],
+        "creativeDirection": "This is a small typographic adjustment, not a redesign. Increase the headline size modestly (roughly 8 to 15 percent) so it reads a touch bolder, keeping its weight, colour treatment and position. Rebalance line breaks and spacing only as needed so the larger title does not collide with the portrait at the lower right or crowd the subline. Keep the graphite field, the signal-orange 'Don't' and the existing edited portrait unchanged; the portrait still fades into graphite.",
+        "treatmentStrategy": "The only change is title size, so the existing edited portrait is reused on the cover without any new generation or edit; typography carries the change.",
+        "reasoning": [
+          {
+            "decision": "Reuse the existing edited portrait asset instead of re-editing.",
+            "why": "The user only asked for a larger title; restyle revisions keep current images exactly as they are."
+          },
+          {
+            "decision": "Keep slide count at 1.",
+            "why": "Revision with no request to add or remove slides."
+          },
+          {
+            "decision": "Increase size slightly, not dramatically.",
+            "why": "The user said 'slightly'; the layout and hierarchy should stay recognisable."
+          }
+        ],
+        "successCriteria": [
+          "The headline is visibly but modestly larger than before",
+          "'Don't' is still signal orange and the subline still reads 'Never stop building.'",
+          "The portrait is the same edited image, still low right fading into graphite",
+          "The larger headline does not overlap the person's face or crowd the subline"
+        ],
+        "assumptions": [
+          "'Title' means the headline 'Don't let failing define you.'",
+          "'Slightly' means roughly a 8 to 15 percent size increase."
+        ]
+      },
+      "execution": {
+        "requestType": "revision",
+        "slideCount": 1,
+        "slideCountBasis": "existing",
+        "slides": [
+          {
+            "index": 1,
+            "visualIntent": "Reel cover with a slightly larger headline, 'Don't' in signal orange, subline below, and the existing edited portrait low right fading into graphite.",
+            "treatment": "edited",
+            "assetRefs": [
+              "a1"
+            ],
+            "styleReferenceIds": []
+          }
+        ],
+        "assets": [
+          {
+            "key": "a1",
+            "operation": "reuse",
+            "assetId": "ASSET_ID",
+            "required": true,
+            "targetSlides": [
+              1
+            ]
+          }
+        ]
+      },
+      "briefUpdate": {
+        "fields": {},
+        "addConstraints": [],
+        "retireConstraints": [],
+        "addVisualDecisions": [
+          {
+            "text": "Cover headline set slightly larger than the first version.",
+            "source": "explicit"
+          }
+        ],
+        "retireVisualDecisions": [],
+        "assetRelationships": [
+          {
+            "id": "ASSET_ID",
+            "role": "Background-replaced cover portrait of the user; reused on the cover.",
+            "source": "inferred"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "message": "Change the background color without changing anything else.",
+    "plan": {
+      "status": "ready",
+      "strategy": {
+        "objective": "Hook engineers into an episode about production AI agents, with the reel cover's slide background in a new colour.",
+        "audience": "Engineering leaders shipping AI agents.",
+        "intendedResponse": "Stop on the cover and watch the episode.",
+        "centralMessage": "Do not switch models before fixing the production gap; the cover hook stays \"Don't let failing define you.\"",
+        "contentType": "Reel cover restyle (revision)",
+        "priorities": [
+          "Change only the slide's own background colour",
+          "Keep the headline, subline, orange \"Don't\", layout and type exactly as they are",
+          "Keep the edited portrait unchanged in the same low-right position",
+          "Keep headline contrast strong against the new background"
+        ],
+        "creativeDirection": "Same cover, new ground. Swap the slide's graphite background for the brand off-white (#f5f5f0) and change nothing else: same headline, subline, hierarchy, Inter weights and position. \"Don't\" stays signal orange; the rest of the headline and subline switch to graphite only as needed to stay legible on the light ground. The portrait is reused untouched, low right. Its own backdrop is still graphite, so do not let it sit as a hard dark rectangle: frame it as a deliberate graphite panel or let its edges fade into a graphite block anchored to the bottom-right corner, so the portrait still reads as 'fading into graphite' while the slide around it is light. Keep it bold, technical and high-contrast.",
+        "treatmentStrategy": "A colour-only restyle needs no new imagery. The existing edited portrait is reused exactly as it is; the Design Agent changes the slide background and handles the transition around the photo's graphite backdrop with CSS.",
+        "reasoning": [
+          {
+            "decision": "Reuse the existing edited portrait; no new edit or generation",
+            "why": "The user said to change nothing else, and 'background colour' in a restyle means the slide's own background, not the photo's backdrop."
+          },
+          {
+            "decision": "New background colour: brand off-white #f5f5f0",
+            "why": "No colour was given. Off-white is the other brand neutral and a clear change. Orange would clash with the orange \"Don't\"."
+          },
+          {
+            "decision": "Frame or fade the portrait into a graphite panel instead of re-editing it",
+            "why": "The photo's graphite backdrop no longer matches the slide. Blending it in CSS keeps the image unchanged, and the user can ask for a new photo background later."
+          }
+        ],
+        "successCriteria": [
+          "The slide background is clearly a different colour from before (off-white)",
+          "Headline, subline and their wording, size and position are unchanged; \"Don't\" is still signal orange",
+          "The portrait is the same image, still low right, and is not altered",
+          "The portrait's dark backdrop reads as an intentional graphite panel or fade, not an awkward box",
+          "All text is clearly legible on the new background"
+        ],
+        "assumptions": [
+          "The user did not name a colour, so the brand off-white #f5f5f0 was chosen",
+          "\"Background\" means the slide's background, not the photo's backdrop",
+          "Text colour may change only where the light ground needs it for legibility"
+        ]
+      },
+      "execution": {
+        "requestType": "revision",
+        "slideCount": 1,
+        "slideCountBasis": "existing",
+        "slides": [
+          {
+            "index": 1,
+            "visualIntent": "The same reel cover on an off-white ground: the unchanged edited portrait low right, framed or faded into a graphite panel, with the headline and orange \"Don't\" unchanged.",
+            "treatment": "edited",
+            "assetRefs": [
+              "a1"
+            ],
+            "styleReferenceIds": []
+          }
+        ],
+        "assets": [
+          {
+            "key": "a1",
+            "operation": "reuse",
+            "assetId": "ASSET_ID",
+            "required": true,
+            "targetSlides": [
+              1
+            ]
+          }
+        ]
+      },
+      "briefUpdate": {
+        "fields": {},
+        "addConstraints": [
+          {
+            "text": "Background-colour change only: keep copy, layout, typography and the portrait unchanged.",
+            "source": "explicit"
+          }
+        ],
+        "retireConstraints": [],
+        "addVisualDecisions": [
+          {
+            "text": "Cover slide background is brand off-white #f5f5f0; the portrait sits in or fades into a graphite panel.",
+            "source": "inferred"
+          }
+        ],
+        "retireVisualDecisions": [],
+        "assetRelationships": [
+          {
+            "id": "ASSET_ID",
+            "role": "The background-replaced cover portrait made from the user's photo; reused unchanged on the cover.",
+            "source": "inferred"
+          }
+        ]
+      }
+    }
+  }
+]
