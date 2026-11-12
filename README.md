@@ -9,11 +9,11 @@
 [![CI](https://github.com/mk-global/creatorbrio/actions/workflows/ci.yml/badge.svg)](https://github.com/mk-global/creatorbrio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-1a1a2e.svg?style=flat-square)](./LICENSE)
 
-![The CreatorBrio editor: a chat request on the left, the first slide of a five-slide carousel in the centre, and the caption and hashtags the agent saved below it](./docs/screenshots/editor.png)
+![The CreatorBrio editor: the chat panel on the left, the first slide of a five-slide Instagram carousel in the centre, and the filmstrip of all five slides below it](./docs/screenshots/editor.png)
 
 </div>
 
-CreatorBrio designs carousels for Instagram and LinkedIn from a conversation.
+CreatorBrio designs Instagram carousels, LinkedIn documents and Reel covers from a conversation.
 You describe a post in the chat panel; a planning step decides what the post should say and which slides need imagery, and a Claude design agent writes each slide as HTML and CSS in your brand's colours and fonts.
 The slides render live in the editor, and you export them as Instagram PNGs or as a LinkedIn PDF whose text stays real, selectable text.
 
@@ -54,13 +54,13 @@ The same idea is being extended to video: one production that you can edit by ha
 |---|---|
 | Design a carousel by chatting | **Works.** Needs Claude Code. A Visual Director plans the message, the slide count and the imagery; the design agent then writes the slides. A request that cannot be done as planned stops before any slide changes and says why. |
 | Keep the intent across requests | **Works.** The plan's intent is saved as the carousel's Creative Brief, so "make it more dramatic" keeps the same subject and constraints. |
-| Brands | **Works.** Several brands, each with five colours, heading and body fonts from a curated Google Fonts list, a logo and style keywords. A carousel keeps the brand it was created in. Brands cannot be deleted yet. |
-| Formats | **Works.** 1:1 (1080×1080), 4:5 (1080×1350, the default) and 9:16 (1080×1920). Changing the format does not reflow existing slides. |
+| Brands | **Works.** Several brands, each with five colours, heading and body fonts from a curated Google Fonts list, a logo and style keywords. The brand for new work is chosen in the sidebar; a project keeps the brand it was created in. Brands cannot be deleted yet. |
+| Formats | **Works.** An **Instagram carousel** (4:5, 1:1 or 9:16, up to 20 slides), a **LinkedIn document** (4:5 or 1:1, exported first as one PDF) or a **Reel cover** (one 9:16 slide, exported as one PNG). All three are the same carousel engine; projects made before formats existed open as Instagram carousels. Changing the size does not reflow existing slides. |
 | Reference images and links | **Works.** Attach PNG, JPG or WebP images to show on a slide or to follow as a style; paste up to three public links to use as sources. |
 | Generated and edited images | **Optional.** With a separate local image service, which is not part of this repository, a plan can generate images or replace the background of your photo, up to five per message. Without it, everything else works. |
 | Review and arrange | **Works.** Live preview in a sandboxed frame, an Instagram safe-zone overlay, full-window preview, drag to reorder, five undo steps per slide, delete, rename and duplicate. |
 | Recover an unfinished design | **Works.** If a design stops, the slides it saved are kept, Export waits for you to accept them, and **Continue** makes only the missing ones. |
-| Templates | **Works.** Save a carousel as a template and start new carousels from it. |
+| Projects and templates | **Works.** Home shows recent work and templates for the current brand; Projects lists every project with search, a format filter and sorting. Save a project as a template and start new projects from it. |
 | Captions and hashtags | **Works.** The agent writes them on request; the editor shows them with copy buttons but does not edit them. |
 | Export | **Works.** **Instagram · PNG ZIP** at exact pixel sizes (or one PNG for a one-slide carousel) and **LinkedIn · PDF**, printed natively so its text can be selected and searched. A slide the PDF cannot print faithfully is refused with the reason, not flattened into a picture. |
 | Edit a Reel by hand (Video Studio) | **Early.** Import by file path, preview with sound, move, trim, split and delete clips, add titles, lower thirds and typed captions, undo and redo, and export an MP4 checked against Instagram's Reel requirements. Verified with synthetic media only. |
@@ -68,11 +68,11 @@ The same idea is being extended to video: one production that you can edit by ha
 
 <table>
 <tr>
-<td width="50%"><img src="./docs/screenshots/dashboard.png" alt="The dashboard: a brand selector and three carousels"></td>
+<td width="50%"><img src="./docs/screenshots/dashboard.png" alt="Home: the brand for new work in the sidebar, the four formats drawn at their real proportions, an idea field and recent projects"></td>
 <td width="50%"><img src="./docs/screenshots/studio.png" alt="The Video Studio: a media library, a vertical preview with a title and a caption, the caption Inspector and a five-track timeline"></td>
 </tr>
 <tr>
-<td>The dashboard: carousels and templates, one brand at a time.</td>
+<td>Home: the four things CreatorBrio makes, for the brand you are creating for.</td>
 <td>The Video Studio with synthetic footage and music, a title card and a caption.</td>
 </tr>
 </table>
@@ -123,12 +123,12 @@ If setup cannot find the Claude CLI, set `CLAUDE_CLI_PATH` in `.env.local` to th
 
 ### Make your first carousel
 
-1. On first launch the dashboard asks for your brand: a name, colours, fonts and a few style keywords.
-2. Click **New Carousel**, give it a name and pick a format.
-3. In the chat panel, describe the post, for example: *"Create a 5-slide carousel about three small habits for a calmer morning. End with a gentle invitation to save the post."*
+1. On first launch Home asks you to set up your brand: a name, colours, fonts and a few style keywords.
+2. Choose a format on Home, or click **New project**, then pick the size, a description or a template, and **Create and open editor**.
+3. In the chat panel, describe the post, for example: *"Create a 5-slide carousel about three small habits for a calmer morning. End with a gentle invitation to save the post."* What you wrote when creating the project is already there; nothing is designed until you press Send.
 4. The chat shows each stage (planning, preparing images, creating the design), and slides appear in the filmstrip as they are saved. A five-slide request takes a few minutes.
 5. Ask for changes in the same chat, such as *"make slide 3 more minimal"* or *"write the caption and hashtags"*.
-6. Open **Export** and choose **Instagram · PNG ZIP** or **LinkedIn · PDF**.
+6. Open **Export** and choose **Instagram · PNG ZIP** or **LinkedIn · PDF** (a Reel cover also offers its single PNG first).
 
 The design step has a 15-minute time limit (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600) and no spending cap unless you set `DESIGN_AGENT_MAX_BUDGET_USD` in `.env.local`.
 Planning has a 120-second time limit and no spending cap unless you set `DIRECTOR_MAX_BUDGET_USD`.
@@ -238,7 +238,7 @@ The full plan, with its workstreams, qualification gates and the 113 product req
 - **Planning separate from execution.** The Director decides what to communicate and the design agent decides how to lay it out, but code carries out the binding parts of a plan, so every count and placement is checked and every failure is a typed outcome rather than a silent substitution.
 - **Bounded agent authority.** The Director can only read copies of the carousel's images. The design agent has three tools. In the video API, an agent run gets its own token and scope, its edits are grouped so the whole run can be kept or discarded, and destructive commands must name the version they expect.
 - **People stay in control.** A slide's last five versions can be restored and every video edit can be undone and redone; an interrupted design is not exported until you accept it or continue it; the Studio page never applies an edit the server has not stored.
-- **Tests.** Vitest suites exercise API routes against the real stores, preview-to-export parity, the PDF's extracted text, crash recovery of the job runners, and a browser run of the whole Studio flow against a production build. Media-backed tests need FFmpeg, which CI does not have yet ([#142](https://github.com/mk-global/creatorbrio/issues/142)), so they run locally.
+- **Tests.** Vitest suites exercise API routes against the real stores, preview-to-export parity, the PDF's extracted text, crash recovery of the job runners, a browser run of the whole Studio flow against a production build, and a browser run of the app itself (formats, creation, brands, templates, exports, keyboard and five screen widths) that CI builds and runs on every change. Media-backed tests need FFmpeg, which CI does not have yet ([#142](https://github.com/mk-global/creatorbrio/issues/142)), so they run locally.
 - **Change process.** Every material change starts from an issue that passes a ticket validator. A pull request merges, by squash, only after CI (typecheck, lint, tests and build) and an independent automated AI reviewer pass on its exact final commit. Product direction and creative acceptance are the maintainer's decisions.
 
 ## Known limitations
@@ -324,8 +324,8 @@ If Chromium is installed but fails to launch, setup prints the cached Chromium f
 On Linux you may need Chromium's system libraries, such as `libnss3`, `libatk1.0-0` and `libxss1`.
 
 **Generated slides ignore my brand.**
-The design agent uses the brand shown next to the carousel's name in the editor, not the one selected on the dashboard.
-Select that brand on the dashboard, open its settings with the pencil button, and check that a brand name, colours and style keywords are saved; brand details reach the agent only when a brand name is set.
+The design agent uses the brand shown next to the project's name in the editor, not the brand for new work chosen in the sidebar.
+Open **Brands**, choose **Edit** on that brand, and check that a brand name, colours and style keywords are saved; brand details reach the agent only when a brand name is set.
 
 **Something else.**
 Run `/doctor` or `npm run doctor`, and [open an issue](https://github.com/mk-global/creatorbrio/issues) if the problem persists.
@@ -346,8 +346,8 @@ creatorbrio/
 ├── public/uploads/     Your uploads (ignored by Git)
 ├── scripts/            Setup, doctor, server control, Studio pairing, gate experiments
 ├── src/
-│   ├── app/            Pages (dashboard, editor, /studio) and API routes
-│   ├── components/     Brand, chat, dashboard, editor, Studio, template and UI components
+│   ├── app/            Pages (Home, Projects, Templates, Brands, Settings, the editor, /studio) and API routes
+│   ├── components/     The app shell, Home, library, creation flow, brand, chat, editor, Studio and UI components
 │   ├── lib/            Storage, planning, the design agent, rendering, export, and lib/video for the Studio
 │   └── types/          Shared TypeScript types
 └── tests/              Vitest suites

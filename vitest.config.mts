@@ -13,6 +13,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // In CI only, builds the app the browser tests start (tests/global-setup.ts).
+    globalSetup: ["tests/global-setup.ts"],
     // Storage tests redirect the data directory by changing the working
     // directory, which is only available in child processes, not worker
     // threads. Running one file at a time keeps that switch deterministic.

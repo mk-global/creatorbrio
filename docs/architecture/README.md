@@ -47,7 +47,8 @@ flowchart LR
 | Production store | Durable Video Studio productions: an append-only journal with content-addressed documents, committed by a compare-and-swap that holds across processes, with recovery | `src/lib/video/production/store/` |
 | Production API | The Video Studio's only write path: credential-based authority for a person and for agent runs, strict request parsing, typed errors | `src/lib/video/production/api/`, `src/app/api/video/` |
 | Media library | Imports media by path into read-only content-addressed copies and prepares preview files as durable jobs | `src/lib/video/media/` |
-| Video Studio page | The `/studio` editor: pairs a browser, imports media by path, previews a production against one clock, edits it one change set at a time with undo and redo, and exports a verified Reel; it owns no state and calls only the Production API | `src/app/studio/`, `src/components/studio/`, `src/lib/video/studio/` |
+| App shell and screens | The persistent sidebar and the Home, Projects, Templates, Brands, Settings and New project screens; project formats over one carousel engine; brands loaded once for every screen | `src/app/(app)/`, `src/components/app/`, `src/lib/formats.ts` |
+| Video Studio page | The `/studio` editor: pairs a browser, imports media by path, previews a production against one clock, edits it one change set at a time with undo and redo, and exports a verified Reel; it owns no state and calls only the Production API | `src/app/(app)/studio/`, `src/components/studio/`, `src/lib/video/studio/` |
 | Video rendering | Compiles an admitted production revision into a render plan, captures its script-free caption and graphics overlay in hardened Chromium, cuts and mixes the originals in FFmpeg, and verifies the Instagram MP4 before publishing it, as durable render jobs | `src/lib/video/render/`, `src/lib/video/capabilities/` |
 
 ## How a request flows
@@ -83,6 +84,7 @@ The details are in [creative-workflow.md](creative-workflow.md).
 - [design-decisions.md](design-decisions.md): why the system is shaped this way, and the trade-offs.
 - [design-agent.md](design-agent.md): how the chat route runs the Design Agent, how it reaches the app, and the configuration it inherits.
 - [carousel-export.md](carousel-export.md): carousel export formats and availability, how slides become PNGs and a native PDF, and the native PDF's limits.
+- [app-shell.md](app-shell.md): the app shell and its screens, project formats, the path from an idea to the editor, and their browser test; the visual language is [../design/design-c.md](../design/design-c.md).
 - [video-production-store.md](video-production-store.md): the Video Studio production store: layout, commit protocol, concurrency and crash guarantees, recovery.
 - [video-media-registry.md](video-media-registry.md): the Video Studio media registry and asset ledger: import by path, derived preview files and their jobs, HDR proxies.
 - [video-rendering.md](video-rendering.md): Video Studio rendering and export: the render plan, caption and graphics capabilities, the overlay document and its security boundary, the executor, verification, the manifest and render jobs.

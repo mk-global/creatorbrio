@@ -215,7 +215,7 @@ describe.skipIf(!BROWSER)(`chat run notices in a real browser${BROWSER ? "" : " 
 
       it("leaves an ordinary assistant reply as it was", async () => {
         const reply = await measure(page, "reply", ".whitespace-pre-wrap");
-        expect(reply).toMatchObject({ fg: "#171717" });
+        expect(reply).toMatchObject({ fg: "#1c1b29" });
         expect(reply.ratio).toBeGreaterThanOrEqual(4.5);
       });
     });

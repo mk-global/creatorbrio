@@ -14,9 +14,9 @@ function colour(value: string, fallback: string): string {
   return HEX.test(value) ? value : fallback;
 }
 
-/** A font family name safe inside a CSS string: no quotes, backslashes or markup. */
+/** A font family name safe inside a CSS string: letters, digits, spaces, hyphens and dots only. */
 function family(name: string): string {
-  return name.replace(/["'\\<>;{}]/g, "").trim() || "Inter";
+  return name.replace(/[^\p{L}\p{N} .-]/gu, "").trim() || "Inter";
 }
 
 export function sampleSlideHtml(format: ProjectFormat, brand: Pick<BrandConfig, "colors" | "fonts">): string {

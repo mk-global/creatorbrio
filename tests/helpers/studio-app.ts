@@ -8,7 +8,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -64,8 +64,12 @@ async function waitForReady(url: string, child: ChildProcess, log: () => string)
  * `chromium` is the browser the overlay renderer uses for exports, given the
  * way an operator would (`PUPPETEER_EXECUTABLE_PATH`): the server's HOME is
  * empty, so it has no browser cache of its own.
+ *
+ * `claudeStub` gives the server a Claude CLI (`CLAUDE_CLI_PATH`) that refuses
+ * every call, so screens look as they do on a set-up computer while no design
+ * run can ever start or cost anything.
  */
-export async function startBuiltApp(port: number, options: { chromium?: string } = {}): Promise<BuiltApp> {
+export async function startBuiltApp(port: number, options: { chromium?: string; claudeStub?: boolean } = {}): Promise<BuiltApp> {
   const workdir = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-studio-e2e-")));
   const appDir = path.join(workdir, "app");
   const scratch = path.join(workdir, "media");
@@ -84,6 +88,12 @@ export async function startBuiltApp(port: number, options: { chromium?: string }
   const home = path.join(workdir, "home");
   await mkdir(home);
   const env: NodeJS.ProcessEnv = { PATH: bin, HOME: home, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", ...(options.chromium ? { PUPPETEER_EXECUTABLE_PATH: options.chromium } : {}) };
+  if (options.claudeStub) {
+    const stub = path.join(workdir, "claude-stub");
+    await writeFile(stub, '#!/bin/sh\necho "test stub: no design runs in tests" >&2\nexit 97\n');
+    await chmod(stub, 0o755);
+    env.CLAUDE_CLI_PATH = stub;
+  }
 
   const url = `http://127.0.0.1:${port}`;
   let child: ChildProcess | null = null;

@@ -68,6 +68,7 @@ Pairing gives a browser a session without the human key ever reaching it.
 |---|---|
 | `POST /api/video/session` `{ code }` | Pair: 201 and the cookie. 401 `invalid_pairing_code` for a wrong, expired or used code. 429 `rate_limited` (with `Retry-After`) after 5 failures in a minute. |
 | `GET /api/video/session` | 200 `{ authenticated, expiresAt }`, or 401 `not_paired` |
+| `GET /api/video/session?status=1` | 200 `{ paired: true, expiresAt }` or 200 `{ paired: false }`: whether this browser is paired, for pages outside the Studio, so an unpaired visit logs no error. The same browser checks apply, and it grants nothing |
 | `DELETE /api/video/session` | Sign out: the session record is deleted and the cookie cleared, so a copied cookie stops working too |
 | `npm run studio:pair -- --revoke-all` | Sign out every paired browser and cancel unused codes |
 

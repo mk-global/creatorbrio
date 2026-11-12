@@ -253,7 +253,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         {workspace ? (
           <div className="flex h-dvh min-w-0 flex-col">
             {studio && <PhoneHeader pathname={pathname} />}
-            <main id="main" className="flex min-h-0 flex-1 flex-col">
+            <main id="main" tabIndex={-1} className="flex min-h-0 flex-1 flex-col outline-none">
               {children}
             </main>
             {studio && <TabBar pathname={pathname} fixed={false} />}
@@ -261,7 +261,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         ) : (
           <div className="min-w-0">
             <PhoneHeader pathname={pathname} />
-            <main id="main" className="mx-auto max-w-[1240px] px-4 pt-6 pb-28 sm:px-6 md:px-10 md:pt-10 md:pb-20 xl:px-12">
+            <main id="main" tabIndex={-1} className="mx-auto max-w-[1240px] outline-none px-4 pt-6 pb-28 sm:px-6 md:px-10 md:pt-10 md:pb-20 xl:px-12">
               {children}
             </main>
           </div>

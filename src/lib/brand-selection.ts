@@ -1,11 +1,11 @@
 /**
- * The dashboard's selected brand.
+ * The brand for new work, chosen in the sidebar (#175).
  *
- * It is a view preference of this browser, nothing more: it filters what the
- * dashboard shows, preselects the brand for a new carousel and chooses which
- * brand the settings dialog edits. It is never sent to the chat and never
- * stored on a carousel, so changing it cannot alter an existing carousel or
- * the brand its generations use.
+ * It is a view preference of this browser, nothing more: it chooses what Home
+ * and the library show for "this brand" and preselects the brand of a new
+ * project. It is never sent to the chat and never stored on a carousel, so
+ * changing it cannot alter an existing project or the brand its generations
+ * use.
  */
 
 // Keeps the product's former name: renaming the key would reset every saved selection.
