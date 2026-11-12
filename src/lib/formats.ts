@@ -39,7 +39,7 @@ export interface FormatDefinition {
   /**
    * Visible words put at the start of the person's first message, which they
    * can read and edit before sending. The design agent's prompt is frozen, so
-   * this is how the format reaches it (decision D5).
+   * this is how the format reaches it (#175, docs/architecture/app-shell.md).
    */
   composerPrefix: string;
 }

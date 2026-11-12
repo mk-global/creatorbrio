@@ -76,7 +76,8 @@ export function StudioApp() {
     </div>
   );
 
-  // An open production is a workspace that fills the window; it needs a wide screen (decision D14).
+  // An open production is a workspace that fills the window; it needs a wide
+  // screen (#175, docs/architecture/app-shell.md).
   if (pairing.status === "paired" && productionId && wide) {
     return <StudioWorkspace key={productionId} productionId={productionId} onClose={() => open(null)} />;
   }

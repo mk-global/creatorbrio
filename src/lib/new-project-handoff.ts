@@ -2,8 +2,9 @@
  * Words handed from one screen to the next in this browser tab (#175): the
  * idea typed on Home goes to the New project form, and what the form
  * composes goes into the editor's message box. Nothing is ever sent from
- * here; the person reads it and presses Send (decision D10). Kept in
- * sessionStorage, so it never outlives the tab and never reaches the server.
+ * here; the person reads it and presses Send (#175,
+ * docs/architecture/app-shell.md). Kept in sessionStorage, so it never
+ * outlives the tab and never reaches the server.
  */
 const IDEA_KEY = "creatorbrio:idea";
 const draftKey = (projectId: string) => `creatorbrio:draft:${projectId}`;

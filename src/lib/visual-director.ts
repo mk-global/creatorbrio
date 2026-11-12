@@ -586,7 +586,8 @@ function parseResult(stdout: string): CliResult | null {
 
 /**
  * Plans one request. Never throws for a planning failure: every outcome is a
- * typed result, and there is no automatic re-plan (founder decision D8).
+ * typed result, and there is no automatic re-plan
+ * (docs/architecture/visual-director.md).
  */
 export async function runDirector(
   request: DirectorRequest,
