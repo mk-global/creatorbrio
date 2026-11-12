@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getTemplate } from "@/lib/templates";
-import { createCarousel, addSlide } from "@/lib/carousels";
+import { createCarousel, addSlide, getCarousel } from "@/lib/carousels";
 import { brandIdOf, getDefaultBrandId } from "@/lib/brand";
 import { dataErrorResponse } from "@/lib/api-errors";
 
@@ -38,7 +38,9 @@ export async function POST(
       await addSlide(carousel.id, slide.html, slide.notes);
     }
 
-    return NextResponse.json(carousel, { status: 201 });
+    // Answer with the project as stored, slides included, not as it was
+    // created before they were copied.
+    return NextResponse.json((await getCarousel(carousel.id)) ?? carousel, { status: 201 });
   } catch (err) {
     const dataError = dataErrorResponse(err);
     if (dataError) return dataError;

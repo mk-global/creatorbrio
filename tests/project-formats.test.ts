@@ -220,6 +220,9 @@ describe("templates carry the format", () => {
     const made = await named.json();
     expect(made).toMatchObject({ name: "Q3 guide", format: "linkedin-document" });
     expect((await getCarousel(made.id))!.slides).toHaveLength(1);
+    // The response is the project as stored, slides included, not as it was before they were copied.
+    expect(made.slides).toHaveLength(1);
+    expect(made.slides[0].html).toBe((await getCarousel(made.id))!.slides[0].html);
 
     // Without a body the project is named after the template, as before.
     const plain = await (await useTemplateRoute(json(`/api/templates/${saved.id}/use`, "POST"), idParams(saved.id))).json();
