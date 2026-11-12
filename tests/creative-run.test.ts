@@ -16,6 +16,7 @@ import { stubDirector, typographyPlanFor } from "./helpers/stub-director";
 import { SIMPLE_REVISION_MESSAGE, simpleRevisionPlan } from "./fixtures/simple-revision-plan";
 import { DIRECTOR_FAILURE_MESSAGES } from "@/lib/visual-director";
 import type { DirectorRequest } from "@/lib/visual-director";
+import type { ProjectFormat } from "@/lib/formats";
 
 // Through the real chat route, real storage and a real Design Agent
 // subprocess. The Director, the image generator and page retrieval are
@@ -175,8 +176,8 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 // Helpers.
 
-async function newCarousel(aspectRatio: "1:1" | "4:5" | "9:16" = "4:5") {
-  const carousel = await createCarousel("Creative", aspectRatio);
+async function newCarousel(aspectRatio: "1:1" | "4:5" | "9:16" = "4:5", format?: ProjectFormat) {
+  const carousel = await createCarousel("Creative", aspectRatio, undefined, format);
   await writeFile(path.join(fakeDir, "carousel"), carousel.id);
   return carousel;
 }
@@ -435,6 +436,17 @@ describe("a creative run through the chat route", () => {
     const { events } = await send({ carouselId: carousel.id, message: "Make 25 slides about pricing" });
     expect(of(events, "blocked")[0]).toMatchObject({ code: "too_many_slides", message: expect.stringContaining("at most 20") });
     expect(director.requests).toHaveLength(0);
+  });
+
+  it("ends blocked before planning when a Reel cover's message asks for more than one slide (#175)", async () => {
+    const carousel = await newCarousel("9:16", "reel-cover");
+    const { events } = await send({ carouselId: carousel.id, message: "A one-slide Reel cover. Actually make 3 slides about mornings" });
+    expect(of(events, "blocked")[0]).toMatchObject({
+      code: "too_many_slides",
+      message: "You asked for 3 slides, and a Reel cover has one slide. Nothing was changed; describe the one image you want.",
+    });
+    expect(director.requests).toHaveLength(0);
+    expect(await designSpawned()).toBe(false);
   });
 
   it("tells the user an unsupported edit is not available and makes no image", async () => {

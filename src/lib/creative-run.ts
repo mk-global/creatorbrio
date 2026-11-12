@@ -26,7 +26,8 @@ import type { BlockedCode, ChatStage } from "./chat-stream";
 import { mergeBrief } from "./creative-brief";
 import { capabilityStatus } from "./creative-capabilities";
 import { buildContinuationMessage, buildDesignMessage, type ResolvedImage } from "./creative-handoff";
-import { explicitCountOverLimit, imagePrompt, validatePlan, type PlanAsset, type ReadyPlan } from "./director-plan";
+import { explicitCountOverFormatLimit, explicitCountOverLimit, imagePrompt, validatePlan, type PlanAsset, type ReadyPlan } from "./director-plan";
+import { FORMATS, formatOf, slideLimitOf, withArticle } from "./formats";
 import {
   GENERATION_TIMEOUT_MS,
   ImageGenerationError,
@@ -226,6 +227,20 @@ export async function prepareCreativeRun(
   if (input.retryRunId) return retryRun(input, events, signal);
   if (input.continueRunId) return continueRun(input, events);
 
+  // A Reel cover is one slide (#175): a request that states more is refused
+  // here, before any call is made, in the same way as a request over 20.
+  const limit = slideLimitOf(input.carousel);
+  const overFormat = explicitCountOverFormatLimit(input.message, limit);
+  if (overFormat !== null) {
+    const name = withArticle(FORMATS[formatOf(input.carousel)].name);
+    return {
+      kind: "blocked",
+      code: "too_many_slides",
+      message: `You asked for ${overFormat} slides, and ${name.charAt(0).toLowerCase()}${name.slice(1)} has ${limit === 1 ? "one slide" : `at most ${limit}`}. Nothing was changed; describe the one image you want.`,
+      retryRunId: null,
+    };
+  }
+
   const count = explicitCountOverLimit(input.message, input.carousel.slides.length);
   if (count !== null) {
     return {
@@ -422,7 +437,7 @@ async function plan_(
     if (result.code === "cancelled") throw new Cancelled();
     throw new Blocked(
       result.code === "capability_unavailable" ? "capability_unavailable" : "plan_failed",
-      directorFailureMessage(result.code, result.unavailable)
+      directorFailureMessage(result.code, result.unavailable, slideLimitOf(input.carousel))
     );
   }
   if (result.plan.status === "source-required") throw new Blocked("source_required", result.plan.message);

@@ -57,6 +57,8 @@ export async function saveAsTemplate(
       })),
       tags: carousel.tags,
       brandId,
+      // A template made from a document or a cover makes documents or covers (#175).
+      ...(carousel.format ? { format: carousel.format } : {}),
       createdAt: now(),
     };
     data.templates.push(template);

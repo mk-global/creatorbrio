@@ -1,22 +1,30 @@
 @import "tailwindcss";
 
+/*
+ * CreatorBrio's interface (#175, Design C): a light table (ground) under white
+ * sheets, ink for actions and coral crop marks for "selected", and nothing
+ * else. The older role tokens below are kept, remapped onto that palette, so
+ * every existing component reads the same without being rewritten.
+ * One light theme, so no OS dark-mode values.
+ */
 :root {
-  --background: #fafafa;
-  --foreground: #171717;
-  --muted: #f5f5f5;
-  --muted-foreground: #737373;
-  --border: #e5e5e5;
-  --ring: #1a1a2e;
-  --accent: #e94560;
+  --background: #f1f2f4;
+  --foreground: #1c1b29;
+  --muted: #e6e8ec;
+  --muted-foreground: #585767;
+  --border: #d9dbe1;
+  --ring: #1c1b29;
+  /* Actions are ink. Coral is kept for selection only, as --color-crop. */
+  --accent: #1c1b29;
   --accent-foreground: #ffffff;
   --surface: #ffffff;
-  --destructive: #ef4444;
+  --destructive: #a3243b;
   /* Run notices (#168): pale surfaces under foreground text; the tone colour is
-     only for icons and borders. One light theme, so no OS dark-mode values. */
-  --destructive-surface: #fef2f2;
-  --warning: #b45309;
-  --warning-surface: #fffbeb;
-  --selection: #bfdbfe;
+     only for icons and borders. */
+  --destructive-surface: #fbe3e7;
+  --warning: #8a5a00;
+  --warning-surface: #fcf3dc;
+  --selection: #ffd2da;
 
   /* Motion — Emil Kowalski easings (animations.dev) */
   --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
@@ -39,14 +47,59 @@
   --color-warning: var(--warning);
   --color-warning-surface: var(--warning-surface);
   --color-selection: var(--selection);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-instrument), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), system-ui, sans-serif;
+@theme {
+  --color-ground: #f1f2f4;
+  --color-sheet: #ffffff;
+  --color-ink: #1c1b29;
+  --color-ink-soft: #33324a;
+  --color-graphite: #585767;
+  --color-rule: #d9dbe1;
+  --color-rule-strong: #a9acb8;
+  /* Edges of text fields and selects: 3.78:1 on sheet, 3.37:1 on ground (WCAG 1.4.11). */
+  --color-field: #80838f;
+  --color-crop: #e94560;
+  --color-early: #6b4300;
+  --color-early-bg: #fcebc4;
+  --color-ok: #1a6544;
+  --color-ok-bg: #dcf0e4;
+  --color-alert: #a3243b;
+  --color-alert-bg: #fbe3e7;
+  --color-hover: #e6e8ec;
+
+  --radius-paper: 2px;
+  --radius-control: 8px;
+  --radius-sheet: 14px;
+}
+
+@layer base {
+  html {
+    background: var(--color-ground);
+    color: var(--color-ink);
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--color-ground);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
+  /* On ink surfaces (toasts, the create summary) the ring turns white. */
+  .bg-ink :focus-visible {
+    outline-color: #fff;
+  }
+  ::selection {
+    background: var(--selection);
+  }
 }
 
 /* Scrollbar styling */
@@ -225,5 +278,288 @@ body {
   }
   .oc-press:active {
     transform: none;
+  }
+}
+
+@layer components {
+  /* Condensed display type: the slug on a print label. */
+  .display {
+    font-stretch: 75%;
+    font-variation-settings: "wdth" 75;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    line-height: 0.98;
+  }
+  .display-md {
+    font-stretch: 82%;
+    font-variation-settings: "wdth" 82;
+    font-weight: 600;
+    line-height: 1.1;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The work: paper with a short lift. Only the work casts a shadow. */
+  .paper {
+    border-radius: var(--radius-paper);
+    box-shadow: 0 0 0 1px rgb(28 27 41 / 0.06), 0 6px 14px -8px rgb(28 27 41 / 0.35);
+    overflow: hidden;
+  }
+
+  /* Crop marks mean "selected", and nothing else. */
+  .crop {
+    position: relative;
+  }
+  .crop::after {
+    content: "";
+    position: absolute;
+    inset: -9px;
+    pointer-events: none;
+    opacity: 0;
+    --c: var(--color-crop);
+    --l: 13px;
+    --t: 2px;
+    background:
+      linear-gradient(var(--c) 0 0) left top / var(--l) var(--t) no-repeat,
+      linear-gradient(var(--c) 0 0) left top / var(--t) var(--l) no-repeat,
+      linear-gradient(var(--c) 0 0) right top / var(--l) var(--t) no-repeat,
+      linear-gradient(var(--c) 0 0) right top / var(--t) var(--l) no-repeat,
+      linear-gradient(var(--c) 0 0) left bottom / var(--l) var(--t) no-repeat,
+      linear-gradient(var(--c) 0 0) left bottom / var(--t) var(--l) no-repeat,
+      linear-gradient(var(--c) 0 0) right bottom / var(--l) var(--t) no-repeat,
+      linear-gradient(var(--c) 0 0) right bottom / var(--t) var(--l) no-repeat;
+    transition: opacity 140ms ease, inset 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .crop[data-selected="true"]::after {
+    opacity: 1;
+    inset: -7px;
+  }
+  .crop-hover:hover .crop::after,
+  .crop-hover:focus-visible .crop::after {
+    opacity: 0.55;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 16px;
+    border-radius: var(--radius-control);
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: background-color 120ms ease, border-color 120ms ease;
+    cursor: pointer;
+  }
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  .btn-primary {
+    background: var(--color-ink);
+    color: #fff;
+  }
+  /* A disabled primary action reads as unavailable, not as a faded button: flat grey, readable text (5.9:1). */
+  .btn-primary:disabled {
+    opacity: 1;
+    background: var(--color-hover);
+    color: var(--color-graphite);
+    box-shadow: inset 0 0 0 1px var(--color-rule);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--color-ink-soft);
+  }
+  .btn-quiet {
+    background: var(--color-sheet);
+    color: var(--color-ink);
+    box-shadow: inset 0 0 0 1px var(--color-rule);
+  }
+  .btn-quiet:hover:not(:disabled) {
+    box-shadow: inset 0 0 0 1px var(--color-rule-strong);
+  }
+  .btn-ghost {
+    color: var(--color-ink);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--color-hover);
+  }
+  .btn-danger {
+    background: var(--color-alert);
+    color: #fff;
+  }
+  .btn-sm {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .btn-icon {
+    width: 40px;
+    padding: 0;
+  }
+  .btn-sm.btn-icon {
+    width: 32px;
+  }
+
+  .field {
+    width: 100%;
+    height: 44px;
+    padding: 0 14px;
+    border-radius: var(--radius-control);
+    background: var(--color-sheet);
+    box-shadow: inset 0 0 0 1px var(--color-field);
+    font-size: 15px;
+    color: var(--color-ink);
+  }
+  .field::placeholder {
+    color: #6c6b7a;
+  }
+  .field:hover {
+    box-shadow: inset 0 0 0 1px var(--color-ink);
+  }
+  textarea.field {
+    height: auto;
+    min-height: 96px;
+    padding: 10px 14px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+
+  .panel {
+    background: var(--color-sheet);
+    border-radius: var(--radius-sheet);
+    box-shadow: inset 0 0 0 1px var(--color-rule);
+  }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .tag-early {
+    background: var(--color-early-bg);
+    color: var(--color-early);
+  }
+  .tag-ok {
+    background: var(--color-ok-bg);
+    color: var(--color-ok);
+  }
+  .tag-alert {
+    background: var(--color-alert-bg);
+    color: var(--color-alert);
+  }
+  .tag-neutral {
+    background: var(--color-hover);
+    color: var(--color-ink);
+  }
+}
+
+/* The shell (#175): one width variable drives the sidebar; container queries
+   swap between the 248 px sidebar and the 76 px rail, so no script decides layout. */
+.app {
+  --side-w: 76px;
+  grid-template-columns: var(--side-w) minmax(0, 1fr);
+}
+@media (min-width: 80rem) {
+  .app[data-side="auto"] {
+    --side-w: 248px;
+  }
+}
+.app[data-side="expanded"] {
+  --side-w: 248px;
+}
+.side {
+  container: side / inline-size;
+  width: var(--side-w);
+  background: var(--color-ground);
+}
+@container side (max-width: 159px) {
+  .wide-only {
+    display: none;
+  }
+}
+@container side (min-width: 160px) {
+  .rail-only {
+    display: none;
+  }
+}
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--color-graphite);
+}
+.side-item:hover {
+  color: var(--color-ink);
+  background: var(--color-hover);
+}
+/* The current page is a sheet lying on the table: the same material as panels. */
+.side-item-active,
+.side-item-active:hover {
+  color: var(--color-ink);
+  font-weight: 600;
+  background: var(--color-sheet);
+  box-shadow: inset 0 0 0 1px var(--color-rule);
+}
+@container side (max-width: 159px) {
+  .side-item {
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    min-height: 54px;
+    padding: 6px 2px;
+    text-align: center;
+  }
+}
+
+/* The one orchestrated moment: format frames settle onto the baseline. */
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.settle {
+  animation: settle 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pop {
+  animation: pop 140ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settle,
+  .pop {
+    animation: none;
+  }
+  .crop::after {
+    transition: none;
   }
 }

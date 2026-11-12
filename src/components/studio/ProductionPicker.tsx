@@ -55,9 +55,9 @@ export function ProductionPicker({ onOpen }: { onOpen: (id: string | null) => vo
   }, [api]);
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-2xl px-6 py-10">
-        <h2 className="text-xl font-semibold text-foreground">Productions</h2>
+    <div>
+      <div className="w-full max-w-2xl">
+        <h2 className="display-md text-[28px]">Productions</h2>
         <p className="mt-1 text-sm text-muted-foreground">Open a production to edit it, or start a new one.</p>
         <div className="mt-6">
           <ProductionPickerCreate onCreated={(id) => onOpen(id)} />

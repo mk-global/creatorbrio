@@ -342,6 +342,32 @@ describe("validatePlan: slide-count precedence", () => {
   });
 });
 
+describe("validatePlan: a format's slide limit (#175)", () => {
+  const cover = { message: "A one-slide Reel cover. Morning routine", maxSlides: 1 };
+  const oneSlide = () =>
+    withExecution({
+      slideCount: 1,
+      slideCountBasis: "user-explicit",
+      slides: [{ index: 1, visualIntent: "Isolation and late-night pressure", treatment: "generated", assetRefs: ["a1"], styleReferenceIds: [] }],
+    });
+
+  it("accepts a one-slide plan for a Reel cover", () => {
+    const planned = accepted(oneSlide(), context(cover));
+    expect(planned.status === "ready" && planned.execution.slideCount).toBe(1);
+  });
+
+  it("refuses a plan with more slides than the format allows, whatever its basis", () => {
+    expect(errorsOf(plan(), context({ ...cover, message: "Morning routine" }))).toContain(
+      "execution.slideCount: must be at most 1 for this project's format"
+    );
+  });
+
+  it("changes nothing for a project without a lower limit", () => {
+    const planned = accepted(plan(), context());
+    expect(planned.status === "ready" && planned.execution.slideCount).toBe(BASELINE_DEFAULT_SLIDES);
+  });
+});
+
 describe("validatePlan: a length stated in pages (#124)", () => {
   const counts = (slideCount: number, slideCountBasis: string, requestType = "new") =>
     withExecution({ requestType, slideCount, slideCountBasis, slides: typographySlides(slideCount), assets: [] });

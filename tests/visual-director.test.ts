@@ -581,6 +581,25 @@ describe("buildDirectorInput", () => {
     expect(input).not.toContain("ref-gone");
   });
 
+  it("tells the Director a Reel cover has one slide, and nothing new for a carousel (#175)", async () => {
+    const cover = buildDirectorInput(
+      await request({ message: "Three stretches for desk workers", assets: [], references: [], carousel: carousel({ format: "reel-cover", aspectRatio: "9:16" }) }),
+      files
+    );
+    expect(cover).toContain("Project format: Reel cover. It has exactly one slide; plan 1 slide whatever the message says.");
+    expect(cover).toContain("Baseline default for a new request: 1 slide");
+
+    const plain = buildDirectorInput(await request({ message: "Three stretches for desk workers", assets: [], references: [] }), files);
+    expect(plain).not.toContain("Project format");
+    expect(plain).toContain("Baseline default for a new request: 8 slides");
+  });
+
+  it("gives a one-slide project advice that fits it when a plan has too many slides (#175)", () => {
+    expect(directorFailureMessage("slide_count_mismatch", [], 1)).toContain("a Reel cover has one");
+    expect(directorFailureMessage("slide_count_mismatch", [], 1)).not.toContain("from 1 to 20");
+    expect(directorFailureMessage("slide_count_mismatch")).toContain("from 1 to 20");
+  });
+
   it("tells the Director the length a request states in pages (#124)", async () => {
     const input = buildDirectorInput(await request({ message: TEN_PAGE_BRIEF, assets: [], references: [] }), files);
     // On main the Director was told only that the message stated no slide count.

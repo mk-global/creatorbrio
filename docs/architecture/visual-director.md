@@ -159,6 +159,10 @@ The first applicable rule wins, and the plan records which one it used:
 3. A new request for a cover is one slide (`single-cover`).
 4. Any other new request uses the Design Agent's own default arc of eight slides (`baseline-default`).
 
+A project format with a lower limit than a carousel's (a Reel cover has exactly one slide, #175) is stated in the Director's input with that limit, and the baseline default for it is that limit.
+A request that states more slides than the format allows is refused before planning, and a plan with more is refused with advice that fits the format.
+Every other project's input is unchanged.
+
 At most five images are generated per request, and never more than the slide count.
 
 ## Isolation and limits

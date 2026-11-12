@@ -36,6 +36,8 @@ interface ChatPanelProps {
   chatInputRef?: React.RefObject<HTMLTextAreaElement | null>;
   /** The carousel's unfinished design, if it can be continued. */
   continuation?: ContinuationOffer | null;
+  /** Words waiting in the message box when the editor opens (#175); the person sends them. */
+  initialDraft?: string;
 }
 
 /** What a Continue shows as the user's message; the server ignores the text. */
@@ -49,6 +51,7 @@ export function ChatPanel({
   onStreamEnd,
   chatInputRef,
   continuation = null,
+  initialDraft,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -323,6 +326,7 @@ export function ChatPanel({
         isStreaming={isStreaming}
         textareaRef={chatInputRef}
         onStop={handleStopGenerating}
+        initialValue={initialDraft}
       />
     </div>
   );

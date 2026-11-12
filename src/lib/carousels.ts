@@ -3,7 +3,8 @@ import { generateId, now } from "./utils";
 import { brandIdOf, getDefaultBrandId } from "./brand";
 import type { Carousel, CarouselAsset, CarouselsData, Slide, AspectRatio, ReferenceImage } from "@/types/carousel";
 import type { CreativeBrief } from "@/types/creative-brief";
-import { MAX_SLIDES, MAX_VERSIONS } from "@/types/carousel";
+import { MAX_VERSIONS } from "@/types/carousel";
+import { slideLimitOf, type ProjectFormat } from "./formats";
 
 const FILE = "carousels.json";
 
@@ -42,7 +43,8 @@ export async function getCarousel(id: string): Promise<Carousel | null> {
 export async function createCarousel(
   name: string,
   aspectRatio: AspectRatio,
-  brandId?: string
+  brandId?: string,
+  format?: ProjectFormat
 ): Promise<Carousel> {
   const owner = brandId ?? (await getDefaultBrandId());
   return mutate((data) => {
@@ -54,6 +56,9 @@ export async function createCarousel(
       referenceImages: [],
       chatSessionId: null,
       brandId: owner,
+      // Stored only when given, so a carousel created the old way is
+      // byte-for-byte what it was (#175).
+      ...(format ? { format } : {}),
       isTemplate: false,
       tags: [],
       createdAt: now(),
@@ -125,7 +130,8 @@ export async function addSlide(
   return mutate((data) => {
     const carousel = data.carousels.find((c) => c.id === carouselId);
     if (!carousel) return null;
-    if (carousel.slides.length >= MAX_SLIDES) return null;
+    // The format's limit: 20 for carousels and documents, one for a Reel cover (#175).
+    if (carousel.slides.length >= slideLimitOf(carousel)) return null;
 
     const slide: Slide = {
       id: generateId(),

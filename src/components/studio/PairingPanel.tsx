@@ -39,13 +39,13 @@ export function PairingPanel({ onPaired }: { onPaired: () => void }) {
   }
 
   return (
-    <div className="flex flex-1 items-center justify-center overflow-y-auto p-6">
-      <section aria-labelledby={`${id}-title`} className="w-full max-w-md rounded-xl border border-border bg-surface p-6 shadow-sm">
+    <div>
+      <section aria-labelledby={`${id}-title`} className="panel w-full max-w-[720px] p-6 lg:p-8">
         <div className="flex items-center gap-3">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted" aria-hidden>
             <KeyRound className="h-4 w-4 text-foreground" />
           </span>
-          <h2 id={`${id}-title`} className="text-base font-semibold text-foreground">
+          <h2 id={`${id}-title`} className="display-md text-[28px]">
             Pair this browser
           </h2>
         </div>
