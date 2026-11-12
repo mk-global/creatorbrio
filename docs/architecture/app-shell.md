@@ -29,6 +29,8 @@ Navigation is the same six destinations at every width, each shown once: Home, P
 At 768 px and wider it is a sidebar, 248 px wide or a 76 px rail; the rail is the default below 1280 px and in the editor, and the person's choice is kept per context in this browser.
 On phones it is a header with the brand and Settings plus a five-tab bar; the editor gives the phone's whole screen to the work and has a back link instead.
 A skip link moves focus to `main`, which takes focus without becoming a tab stop.
+The Next.js development indicator is off (`devIndicators: false` in `next.config.ts`, #177), because people run the app with `npm run dev` and no corner of the shell is free at every width.
+Next.js still shows compile and runtime errors without it.
 
 ## State and its owners
 

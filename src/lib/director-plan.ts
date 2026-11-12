@@ -41,7 +41,7 @@ export const PLAN_LIMITS = {
   ifUnavailable: 200,
 } as const;
 
-/** Founder decision D3: image tasks per request. */
+/** Image tasks per request (docs/architecture/visual-director.md). */
 export const MAX_IMAGE_TASKS = 5;
 
 /** The restored Design Agent's own default arc length. */

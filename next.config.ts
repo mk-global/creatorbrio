@@ -30,6 +30,11 @@ export const APP_PAGES_SOURCE = "/((?!studio(?:/|$)).*)";
 export const STUDIO_PAGES_SOURCE = "/studio/:path*";
 
 const nextConfig: NextConfig = {
+  // The development indicator would sit over the app shell in every corner
+  // (the sidebar footer, the editor rail's Settings button, the phone tab bar
+  // or the headers), and people run CreatorBrio with `npm run dev`. Off, Next.js
+  // still shows compile and runtime errors (#177).
+  devIndicators: false,
   serverExternalPackages: ["sharp", "archiver", "puppeteer"],
   async headers() {
     return [
