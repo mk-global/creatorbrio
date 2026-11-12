@@ -59,7 +59,7 @@ export function ColorFields({
                 {r.label}
               </label>
               <p id={`hex-${r.key}-hint`} className={`truncate text-[12.5px] ${HEX.test(shown) ? "text-graphite" : "text-alert"}`}>
-                {HEX.test(shown) ? COLOR_HINTS[r.key] : "Use # and six digits, like #1C1B29"}
+                {HEX.test(shown) ? COLOR_HINTS[r.key] : "Use # and six digits, like #1A1A2E"}
               </p>
             </div>
             <input

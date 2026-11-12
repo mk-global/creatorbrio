@@ -173,12 +173,12 @@ export function ColorField({ label, value, onChange, onSubmit, errors, hint }: {
   );
 }
 
-/** A label and a value in the clip summary. */
-export function Fact({ label, value }: { label: string; value: ReactNode }) {
+/** A label and a value in the clip summary; `meta` sets a technical value (a timecode) in the metadata face. */
+export function Fact({ label, value, meta = false }: { label: string; value: ReactNode; meta?: boolean }) {
   return (
     <>
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="truncate text-right tabular-nums text-foreground">{value}</dd>
+      <dd className={cn("truncate text-right tabular-nums text-foreground", meta && "meta")}>{value}</dd>
     </>
   );
 }

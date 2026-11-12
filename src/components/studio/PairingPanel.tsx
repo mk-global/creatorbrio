@@ -45,7 +45,7 @@ export function PairingPanel({ onPaired }: { onPaired: () => void }) {
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted" aria-hidden>
             <KeyRound className="h-4 w-4 text-foreground" />
           </span>
-          <h2 id={`${id}-title`} className="display-md text-[28px]">
+          <h2 id={`${id}-title`} className="type-section">
             Pair this browser
           </h2>
         </div>

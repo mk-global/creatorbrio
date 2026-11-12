@@ -16,7 +16,7 @@ export default function EditBrandPage() {
   if (!brand) {
     return (
       <div className="max-w-[56ch]">
-        <h1 className="display text-[44px]">Brand not found</h1>
+        <h1 className="type-title">Brand not found</h1>
         <p className="mt-2 text-graphite">It may have been removed from this computer&apos;s data.</p>
         <Link href="/brands" className="btn btn-primary mt-6">Back to brands</Link>
       </div>

@@ -340,12 +340,13 @@ creatorbrio/
 ├── data/               Your data (ignored by Git)
 ├── docs/
 │   ├── architecture/   How the carousel and video systems work
+│   ├── brand/          CreatorBrio's brand guide, specimen page and logo files
 │   ├── roadmap/        The Video Studio roadmap and gate records
 │   ├── research/       The research and specification behind the Video Studio
 │   └── screenshots/
 ├── eval/               Opt-in evaluations of the Visual Director and acceptance runs
 ├── public/uploads/     Your uploads (ignored by Git)
-├── scripts/            Setup, doctor, server control, Studio pairing, gate experiments
+├── scripts/            Setup, doctor, server control, Studio pairing, gate experiments, brand assets
 ├── src/
 │   ├── app/            Pages (Home, Projects, Templates, Brands, Settings, the editor, /studio) and API routes
 │   ├── components/     The app shell, Home, library, creation flow, brand, chat, editor, Studio and UI components

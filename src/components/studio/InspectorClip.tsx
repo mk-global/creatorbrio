@@ -45,13 +45,13 @@ export function InspectorClip({ facts, draft, updateDraft }: Props) {
 
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 border-b border-border px-4 py-3 text-xs">
         <Fact label="Track" value={trackLabel(facts.track.id)} />
-        <Fact label="Start" value={tc(facts.start)} />
-        <Fact label="End" value={tc(facts.end)} />
-        <Fact label="Length" value={`${tc(facts.length)} (${facts.length} frames)`} />
+        <Fact label="Start" value={tc(facts.start)} meta />
+        <Fact label="End" value={tc(facts.end)} meta />
+        <Fact label="Length" value={`${tc(facts.length)} (${facts.length} frames)`} meta />
         {facts.source && (
           <>
-            <Fact label="Source in" value={tc(facts.source.inFrame)} />
-            <Fact label="Source out" value={tc(facts.source.outFrame)} />
+            <Fact label="Source in" value={tc(facts.source.inFrame)} meta />
+            <Fact label="Source out" value={tc(facts.source.outFrame)} meta />
           </>
         )}
       </dl>

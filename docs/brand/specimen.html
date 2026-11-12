@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CreatorBrio Brand Identity v1.0</title>
+<meta name="description" content="The visual reference for CreatorBrio's own identity: palette, type, logo, actions and the boundary with the brands people create.">
+<link rel="icon" href="assets/creatorbrio-favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Instrument+Sans:wdth,wght@75..100,400..700&display=swap" rel="stylesheet">
+<!--
+  CreatorBrio Brand Identity v1.0 (#189). A static reference page: open it in a
+  browser from a checkout. The rules are in CREATORBRIO-BRAND-GUIDELINES.md.
+  The palette below must equal the --brand-* variables in src/app/globals.css;
+  tests/brand-identity.test.ts checks every data-hex value.
+-->
+<style>
+  :root {
+    --coral: #E94560; --deep: #BF394F; --ink: #1C1B29; --canvas: #F1F2F4;
+    --paper: #FFFFFF; --blush: #FFF0F3; --graphite: #585767; --rule: #D9DBE1;
+    --alert: #A3243B; --alert-bg: #FBE3E7;
+    --sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+    --mono: "Geist Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--canvas); color: var(--ink); }
+  body { font: 400 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: var(--ink); text-underline-offset: 4px; text-decoration-color: #a9acb8; }
+  a:hover { text-decoration-color: var(--ink); }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+  @media (min-width: 768px) { .wrap { padding: 0 40px; } }
+
+  .display { font-stretch: 75%; font-variation-settings: "wdth" 75; font-weight: 600; letter-spacing: -0.005em; line-height: 0.98; }
+  .display-md { font-stretch: 82%; font-variation-settings: "wdth" 82; font-weight: 600; line-height: 1.1; }
+  .meta { font: 400 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; word-spacing: -0.25em; }
+  .muted { color: var(--graphite); }
+
+  /* Hero: the logo on the table, framed by oversized crop marks. */
+  header { padding: 56px 0 64px; }
+  .frame { position: relative; display: inline-block; padding: 40px 48px; margin: 12px 0 32px; }
+  .frame::before, .frame::after, .frame > i::before, .frame > i::after {
+    content: ""; position: absolute; width: 28px; height: 28px; border: 0 solid var(--coral);
+  }
+  .frame::before { left: 0; top: 0; border-width: 3px 0 0 3px; }
+  .frame::after { right: 0; top: 0; border-width: 3px 3px 0 0; }
+  .frame > i::before { left: 0; bottom: 0; border-width: 0 0 3px 3px; }
+  .frame > i::after { right: 0; bottom: 0; border-width: 0 3px 3px 0; }
+  .frame img { display: block; width: min(440px, 70vw); height: auto; }
+  header h1 { font-size: clamp(40px, 7vw, 72px); margin: 0; max-width: 18ch; }
+  header p { max-width: 62ch; font-size: 17px; margin: 16px 0 0; }
+
+  section { padding: 48px 0; border-top: 1px solid var(--rule); }
+  h2 { font-size: clamp(28px, 4vw, 32px); margin: 0 0 6px; }
+  h3 { font-size: 20px; margin: 32px 0 12px; }
+  .lede { max-width: 64ch; margin: 0 0 28px; }
+
+  /* Palette */
+  .swatches { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); }
+  .swatch { background: var(--paper); border-radius: 14px; box-shadow: inset 0 0 0 1px var(--rule); overflow: hidden; }
+  .chip { height: 96px; border-bottom: 1px solid var(--rule); }
+  .swatch div.body { padding: 12px 14px 14px; }
+  .swatch b { display: block; font-weight: 600; }
+  .swatch p { margin: 4px 0 0; font-size: 13.5px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  .pair { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; height: 32px; padding: 0 10px; border-radius: 6px; font-weight: 600; box-shadow: inset 0 0 0 1px var(--rule); }
+  .fail { color: var(--alert); font-weight: 600; }
+
+  /* Type */
+  .type-row { display: grid; gap: 4px 24px; padding: 18px 0; border-bottom: 1px solid var(--rule); }
+  @media (min-width: 768px) { .type-row { grid-template-columns: 220px 1fr; align-items: baseline; } }
+  .t-hero { font-size: 48px; } .t-title { font-size: 32px; } .t-section { font-size: 24px; }
+  .t-body { font-size: 15px; } .t-btn { font-size: 14px; font-weight: 600; }
+
+  /* Logos */
+  .logos { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+  .logo-card { border-radius: 14px; padding: 28px; min-height: 180px; display: flex; flex-direction: column; justify-content: space-between; gap: 20px; box-shadow: inset 0 0 0 1px var(--rule); }
+  .logo-card img { display: block; max-width: 100%; height: 44px; width: auto; }
+  .logo-card img.tall { height: 96px; }
+  .logo-card figcaption { font-size: 13.5px; }
+  .on-dark { background: var(--ink); color: #fff; box-shadow: none; }
+  .on-dark figcaption { color: #c9c8d6; }
+  .on-coral { background: var(--deep); color: #fff; box-shadow: none; }
+  .sizes { display: flex; flex-wrap: wrap; align-items: end; gap: 20px; }
+  .sizes span { display: block; margin-top: 6px; text-align: center; }
+
+  /* Buttons, exactly as the app draws them */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; padding: 0 16px; border: 0; border-radius: 8px; font: 600 14px var(--sans); cursor: pointer; white-space: nowrap; }
+  .btn-create { background: var(--deep); color: var(--paper); }
+  .btn-create:hover { background: color-mix(in oklab, var(--deep) 86%, var(--ink)); }
+  .btn-primary { background: var(--ink); color: var(--paper); }
+  .btn-quiet { background: var(--paper); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule); }
+  .btn-ghost { background: transparent; color: var(--ink); }
+  .btn-ghost:hover { background: #e6e8ec; }
+  .btn-danger { background: var(--paper); color: var(--alert); box-shadow: inset 0 0 0 1.5px var(--alert); }
+  .btn-danger:hover { background: var(--alert-bg); }
+  .btn-disabled { background: #e6e8ec; color: var(--graphite); box-shadow: inset 0 0 0 1px var(--rule); cursor: not-allowed; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .levels { display: grid; gap: 0; }
+  .level { display: grid; gap: 8px 24px; padding: 16px 0; border-bottom: 1px solid var(--rule); }
+  @media (min-width: 768px) { .level { grid-template-columns: 200px 1fr; align-items: center; } }
+
+  /* Selected = coral */
+  .tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--rule); }
+  .tabs span { position: relative; padding: 0 0 10px; color: var(--graphite); font-weight: 500; }
+  .tabs span[aria-current] { color: var(--ink); font-weight: 600; }
+  .tabs span[aria-current]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--coral); }
+  .sheets { display: flex; gap: 28px; flex-wrap: wrap; padding: 14px 10px; }
+  .sheet { position: relative; width: 84px; height: 105px; background: var(--paper); border-radius: 2px; box-shadow: 0 0 0 1px rgb(28 27 41 / .06), 0 6px 14px -8px rgb(28 27 41 / .35); }
+  .sheet.selected::after {
+    content: ""; position: absolute; inset: -7px; --l: 13px; --t: 2px; --c: var(--coral);
+    background:
+      linear-gradient(var(--c) 0 0) left top / var(--l) var(--t) no-repeat, linear-gradient(var(--c) 0 0) left top / var(--t) var(--l) no-repeat,
+      linear-gradient(var(--c) 0 0) right top / var(--l) var(--t) no-repeat, linear-gradient(var(--c) 0 0) right top / var(--t) var(--l) no-repeat,
+      linear-gradient(var(--c) 0 0) left bottom / var(--l) var(--t) no-repeat, linear-gradient(var(--c) 0 0) left bottom / var(--t) var(--l) no-repeat,
+      linear-gradient(var(--c) 0 0) right bottom / var(--l) var(--t) no-repeat, linear-gradient(var(--c) 0 0) right bottom / var(--t) var(--l) no-repeat;
+  }
+  .invite { background: var(--blush); border-radius: 14px; padding: 24px; max-width: 560px; }
+
+  /* Product brand vs user brands */
+  .split { display: grid; gap: 16px; }
+  @media (min-width: 900px) { .split { grid-template-columns: 1fr 1fr; } }
+  .panel { background: var(--paper); border-radius: 14px; padding: 24px; box-shadow: inset 0 0 0 1px var(--rule); }
+  .brands { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 16px; }
+  .ubrand { width: 128px; aspect-ratio: 4 / 5; border-radius: 2px; padding: 12px; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 6px 14px -8px rgb(28 27 41 / .35); }
+  .ubrand b { font-size: 17px; line-height: 1.05; }
+  .ubrand i { display: block; height: 4px; width: 40px; font-style: normal; }
+  .dodont { display: grid; gap: 12px; }
+  @media (min-width: 768px) { .dodont { grid-template-columns: 1fr 1fr; } }
+  .do, .dont { border-radius: 14px; padding: 18px 20px; background: var(--paper); box-shadow: inset 0 0 0 1px var(--rule); }
+  .do h3, .dont h3 { margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+  .do ul, .dont ul { margin: 0; padding-left: 18px; }
+  .do li, .dont li { margin: 4px 0; }
+  .mark-ok { color: #1A6544; } .mark-no { color: var(--alert); }
+
+  footer { padding: 40px 0 64px; border-top: 1px solid var(--rule); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<a href="#palette" class="btn btn-ghost" style="position:absolute;left:-999px" onfocus="this.style.left='8px'" onblur="this.style.left='-999px'">Skip to the palette</a>
+<header class="wrap">
+  <p class="meta muted">Brand Identity v1.0, 2026-11-12</p>
+  <div class="frame"><i></i><img src="assets/creatorbrio-logo.svg" alt="CreatorBrio"></div>
+  <h1 class="display">A professional creative workspace, with personality.</h1>
+  <p class="muted">The interface stays calm so people's work is the loudest thing on screen. Coral marks what matters: the mark, what is selected, and the one action that starts something new.</p>
+</header>
+
+<main>
+<section id="palette" class="wrap" aria-labelledby="palette-h">
+  <h2 id="palette-h" class="display">Palette</h2>
+  <p class="lede muted">Eight colours, declared once in <code>src/app/globals.css</code>. Most of every screen is Canvas, Paper and Ink.</p>
+  <div class="swatches">
+    <div class="swatch" data-token="--brand-coral" data-hex="#E94560"><div class="chip" style="background:#E94560"></div><div class="body"><b>Brand Coral</b><span class="meta">#E94560</span><p class="muted">The mark, crop marks, selected states. A line or a mark, never under text.</p></div></div>
+    <div class="swatch" data-token="--brand-deep-coral" data-hex="#BF394F"><div class="chip" style="background:#BF394F"></div><div class="body"><b>Deep Coral</b><span class="meta">#BF394F</span><p class="muted">The action that starts new work. Accessible coral text.</p></div></div>
+    <div class="swatch" data-token="--brand-ink" data-hex="#1C1B29"><div class="chip" style="background:#1C1B29"></div><div class="body"><b>Midnight Ink</b><span class="meta">#1C1B29</span><p class="muted">Headings, text, controls, dark surfaces.</p></div></div>
+    <div class="swatch" data-token="--brand-canvas" data-hex="#F1F2F4"><div class="chip" style="background:#F1F2F4"></div><div class="body"><b>Studio Canvas</b><span class="meta">#F1F2F4</span><p class="muted">The application background: the table the work lies on.</p></div></div>
+    <div class="swatch" data-token="--brand-paper" data-hex="#FFFFFF"><div class="chip" style="background:#FFFFFF"></div><div class="body"><b>Pure Paper</b><span class="meta">#FFFFFF</span><p class="muted">Panels, cards, sheets, dialogs.</p></div></div>
+    <div class="swatch" data-token="--brand-blush" data-hex="#FFF0F3"><div class="chip" style="background:#FFF0F3"></div><div class="body"><b>Soft Blush</b><span class="meta">#FFF0F3</span><p class="muted">Rare: an invitation to make something.</p></div></div>
+    <div class="swatch" data-token="--brand-graphite" data-hex="#585767"><div class="chip" style="background:#585767"></div><div class="body"><b>Graphite</b><span class="meta">#585767</span><p class="muted">Secondary text.</p></div></div>
+    <div class="swatch" data-token="--brand-rule" data-hex="#D9DBE1"><div class="chip" style="background:#D9DBE1"></div><div class="body"><b>Fine Rule</b><span class="meta">#D9DBE1</span><p class="muted">Borders and separators; decorative only.</p></div></div>
+  </div>
+
+  <h3>Contrast, measured</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Sample</th><th scope="col">Pairing</th><th scope="col">Ratio</th><th scope="col">Use</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pair" style="background:#F1F2F4;color:#1C1B29">Aa</span></td><td>Midnight Ink on Studio Canvas</td><td class="meta">15.14:1</td><td>All text</td></tr>
+      <tr><td><span class="pair" style="background:#FFFFFF;color:#585767">Aa</span></td><td>Graphite on Pure Paper</td><td class="meta">7.06:1</td><td>Secondary text</td></tr>
+      <tr><td><span class="pair" style="background:#F1F2F4;color:#585767">Aa</span></td><td>Graphite on Studio Canvas</td><td class="meta">6.30:1</td><td>Secondary text</td></tr>
+      <tr><td><span class="pair" style="background:#BF394F;color:#FFFFFF">Aa</span></td><td>Pure Paper on Deep Coral</td><td class="meta">5.37:1</td><td>The create button</td></tr>
+      <tr><td><span class="pair" style="background:#F1F2F4;color:#BF394F">Aa</span></td><td>Deep Coral on Studio Canvas</td><td class="meta">4.79:1</td><td>Coral emphasis in text</td></tr>
+      <tr><td><span class="pair" style="background:#FFFFFF;color:#A3243B;box-shadow:inset 0 0 0 1.5px #A3243B">Aa</span></td><td>Alert on Pure Paper</td><td class="meta">7.31:1</td><td>The destructive button</td></tr>
+      <tr><td><span class="pair" style="background:#F1F2F4;box-shadow:inset 0 -3px 0 #E94560"></span></td><td>Brand Coral on Studio Canvas</td><td class="meta">3.42:1</td><td>Indicators and graphics only</td></tr>
+      <tr><td><span class="pair" style="background:#1C1B29;box-shadow:inset 0 -3px 0 #E94560"></span></td><td>Brand Coral on Midnight Ink</td><td class="meta">4.43:1</td><td>The dark logo, indicators</td></tr>
+      <tr><td><span class="pair" style="background:#E94560;color:#FFFFFF">Aa</span></td><td>Pure Paper on Brand Coral</td><td class="meta">3.83:1</td><td class="fail">Fails for normal text: never do this</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="wrap" aria-labelledby="type-h">
+  <h2 id="type-h" class="display">Type</h2>
+  <p class="lede muted">Instrument Sans for the interface, Geist Mono for technical values. A screen picks a role, never a size.</p>
+  <div class="type-row"><span class="meta muted">.type-hero, 48 / 40 px</span><span class="display t-hero">What do you want to make?</span></div>
+  <div class="type-row"><span class="meta muted">.type-title, 32 / 28 px</span><span class="display t-title">Projects</span></div>
+  <div class="type-row"><span class="meta muted">.type-section, 24 / 20 px</span><span class="display-md t-section">Continue creating</span></div>
+  <div class="type-row"><span class="meta muted">body, 15 px</span><span class="t-body">A project is one carousel, document or Reel cover, with its slides, chat and exports.</span></div>
+  <div class="type-row"><span class="meta muted">.btn, 14 px</span><span class="t-btn">Create and open editor</span></div>
+  <div class="type-row"><span class="meta muted">.meta, 12 px Geist Mono</span><span class="meta">1080 × 1350, 4:5, 3 of 20 slides, 00:00:04:00, #1C1B29</span></div>
+</section>
+
+<section class="wrap" aria-labelledby="logo-h">
+  <h2 id="logo-h" class="display">Logo</h2>
+  <p class="lede muted">A sheet of work inside four crop corners: the same marks the app draws around whatever is selected. Clear space is one corner arm on every side.</p>
+  <div class="logos">
+    <figure class="logo-card" style="background:#F1F2F4"><img src="assets/creatorbrio-logo.svg" alt="Primary horizontal logo"><figcaption class="muted">Primary horizontal, light backgrounds<br><span class="meta">creatorbrio-logo.svg</span></figcaption></figure>
+    <figure class="logo-card on-dark"><img src="assets/creatorbrio-logo-dark.svg" alt="Horizontal logo for dark backgrounds"><figcaption>Dark backgrounds<br><span class="meta">creatorbrio-logo-dark.svg</span></figcaption></figure>
+    <figure class="logo-card" style="background:#FFFFFF"><img class="tall" src="assets/creatorbrio-logo-compact.svg" alt="Compact stacked lockup"><figcaption class="muted">Compact lockup<br><span class="meta">creatorbrio-logo-compact.svg</span></figcaption></figure>
+    <figure class="logo-card on-dark"><img class="tall" src="assets/creatorbrio-logo-compact-dark.svg" alt="Compact lockup for dark backgrounds"><figcaption>Compact, dark<br><span class="meta">creatorbrio-logo-compact-dark.svg</span></figcaption></figure>
+    <figure class="logo-card" style="background:#FFFFFF"><img src="assets/creatorbrio-logo-mono.svg" alt="Monochrome logo"><figcaption class="muted">Monochrome<br><span class="meta">creatorbrio-logo-mono.svg</span></figcaption></figure>
+    <figure class="logo-card on-coral"><img src="assets/creatorbrio-logo-mono-white.svg" alt="Monochrome logo reversed"><figcaption>Reversed, on any colour<br><span class="meta">creatorbrio-logo-mono-white.svg</span></figcaption></figure>
+  </div>
+  <h3>Icons and small sizes</h3>
+  <div class="sizes">
+    <div><img src="assets/creatorbrio-app-icon.svg" width="120" height="120" alt="Application icon" style="border-radius:27px;display:block"><span class="meta muted">App icon</span></div>
+    <div><img src="assets/creatorbrio-app-icon.svg" width="48" height="48" alt="" style="border-radius:11px;display:block"><span class="meta muted">48</span></div>
+    <div><img src="assets/creatorbrio-mark.svg" width="30" height="30" alt="Mark at 30 pixels" style="display:block"><span class="meta muted">mark 30</span></div>
+    <div><img src="assets/creatorbrio-mark.svg" width="24" height="24" alt="" style="display:block"><span class="meta muted">mark 24</span></div>
+    <div><img src="assets/creatorbrio-favicon.svg" width="32" height="32" alt="Favicon at 32 pixels" style="display:block"><span class="meta muted">favicon 32</span></div>
+    <div><img src="assets/creatorbrio-favicon.svg" width="16" height="16" alt="Favicon at 16 pixels" style="display:block"><span class="meta muted">16</span></div>
+  </div>
+</section>
+
+<section class="wrap" aria-labelledby="actions-h">
+  <h2 id="actions-h" class="display">Actions</h2>
+  <p class="lede muted">Creating is Deep Coral and appears once per screen. Everything else is ink or quieter. Destroying is an outline, so it can never be mistaken for creating.</p>
+  <div class="levels">
+    <div class="level"><b>Create</b><div class="row"><button class="btn btn-create" type="button">+ New project</button><button class="btn btn-disabled" type="button" disabled>Set up project</button><span class="muted">Disabled: flat grey, never faded coral.</span></div></div>
+    <div class="level"><b>Primary</b><div class="row"><button class="btn btn-primary" type="button">Save brand</button><button class="btn btn-primary" type="button">Export</button></div></div>
+    <div class="level"><b>Secondary</b><div class="row"><button class="btn btn-quiet" type="button">Keep it</button><button class="btn btn-quiet" type="button">Use template</button></div></div>
+    <div class="level"><b>Tertiary</b><div class="row"><button class="btn btn-ghost" type="button">Full screen</button></div></div>
+    <div class="level"><b>Destructive</b><div class="row"><button class="btn btn-danger" type="button">Delete template</button><button class="btn btn-create" type="button">+ New project</button><span class="muted">Side by side: outline and fill, never two red blocks.</span></div></div>
+  </div>
+
+  <h3>Selected is coral</h3>
+  <div class="tabs" role="presentation"><span aria-current="true">All</span><span>Instagram carousels</span><span>LinkedIn documents</span></div>
+  <div class="sheets" role="img" aria-label="Three previews; the second is selected"><div class="sheet"></div><div class="sheet selected"></div><div class="sheet"></div></div>
+  <h3>Soft Blush invites</h3>
+  <div class="invite"><b class="display-md" style="font-size:24px;display:block">No projects yet</b><p class="muted" style="margin:6px 0 16px">A project is one carousel, document or Reel cover. Start one and it appears here.</p><button class="btn btn-create" type="button">Start a project</button></div>
+</section>
+
+<section class="wrap" aria-labelledby="sep-h">
+  <h2 id="sep-h" class="display">Your brand stays yours</h2>
+  <p class="lede muted">CreatorBrio's identity dresses the workspace. The brands people create dress their work. The two never mix: no product colour, font or logo reaches a slide, a preview or an export.</p>
+  <div class="split">
+    <div class="panel">
+      <b>CreatorBrio's identity</b>
+      <p class="muted" style="margin:6px 0 0">The interface, the logo, the icons, marketing.</p>
+      <div class="brands"><div class="ubrand" style="background:#F1F2F4;box-shadow:inset 0 0 0 1px #D9DBE1"><img src="assets/creatorbrio-mark.svg" width="28" height="28" alt=""><b class="display" style="color:#1C1B29">The workspace</b><i style="background:#E94560"></i></div></div>
+    </div>
+    <div class="panel">
+      <b>People's brands (examples, synthetic)</b>
+      <p class="muted" style="margin:6px 0 0">Their slides, previews and exports, in their colours and fonts.</p>
+      <div class="brands">
+        <div class="ubrand" style="background:#FBF6EF;color:#2B1D14;font-family:Georgia,serif"><span style="font-size:11px">Northwind Coffee</span><b>Spring is brewing</b><i style="background:#E0A458"></i></div>
+        <div class="ubrand" style="background:#120024;color:#F4F4FF;font-family:ui-monospace,monospace"><span style="font-size:11px;color:#39FF14">Neon Arcade</span><b>Level up</b><i style="background:#FF00A8"></i></div>
+        <div class="ubrand" style="background:#FFFFFF;color:#12355B;font-family:Georgia,serif;box-shadow:inset 0 0 0 1px #E8F1F8,0 6px 14px -8px rgb(28 27 41/.35)"><span style="font-size:11px">Harbor Yoga</span><b>Breathe in</b><i style="background:#FF7F50"></i></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" aria-labelledby="dd-h">
+  <h2 id="dd-h" class="display">Do and don't</h2>
+  <div class="dodont">
+    <div class="do"><h3><span class="mark-ok" aria-hidden="true">&#10003;</span> Do</h3><ul>
+      <li>Fill only the action that starts new work with Deep Coral.</li>
+      <li>Mark selection with Brand Coral lines, corners and icons.</li>
+      <li>Keep panels Paper and the background Canvas.</li>
+      <li>Set dimensions, ratios and timecodes in Geist Mono.</li>
+      <li>Draw previews and exports in the person's brand.</li>
+    </ul></div>
+    <div class="dont"><h3><span class="mark-no" aria-hidden="true">&#10007;</span> Don't</h3><ul>
+      <li>Make Save, Export or every button coral.</li>
+      <li>Put white text on Brand Coral.</li>
+      <li>Tint sidebars, menus or hovers Soft Blush.</li>
+      <li>Add purple, blue, cyan or yellow accents.</li>
+      <li>Put CreatorBrio's colours, fonts or logo in a person's work.</li>
+    </ul></div>
+  </div>
+</section>
+</main>
+
+<footer class="wrap muted">
+  The full rules, including marketing and writing, are in <a href="CREATORBRIO-BRAND-GUIDELINES.md">CREATORBRIO-BRAND-GUIDELINES.md</a>. Logo files are in <a href="assets/">assets/</a>.
+</footer>
+</body>
+</html>

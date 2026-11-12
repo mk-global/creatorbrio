@@ -137,7 +137,7 @@ export function ReferenceImages({
               {/* Remove button */}
               <button
                 onClick={() => handleRemove(img.id)}
-                className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-surface text-destructive shadow-[inset_0_0_0_1px_var(--color-destructive)] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                 aria-label={`Remove ${img.name}`}
               >
                 <X className="h-2.5 w-2.5" />

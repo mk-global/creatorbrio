@@ -22,7 +22,7 @@ export function FormatTabs<T extends string>({
         >
           {t.label}
           <span className="num text-[12.5px] text-graphite">{t.count}</span>
-          {value === t.id && <span className="absolute inset-x-3 -bottom-px h-[2px] bg-ink" aria-hidden="true" />}
+          {value === t.id && <span className="absolute inset-x-3 -bottom-px h-[2px] bg-crop" aria-hidden="true" />}
         </button>
       ))}
     </div>

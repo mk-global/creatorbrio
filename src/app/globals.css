@@ -1,23 +1,41 @@
 @import "tailwindcss";
 
 /*
- * CreatorBrio's interface (#175, Design C): a light table (ground) under white
- * sheets, ink for actions and coral crop marks for "selected", and nothing
- * else. The older role tokens below are kept, remapped onto that palette, so
- * every existing component reads the same without being rewritten.
+ * CreatorBrio's interface: Design C (#175) wearing Brand Identity v1.0 (#189).
+ * A light table (canvas) under paper sheets, ink for text and actions, Deep
+ * Coral only for the actions that start new work, and Brand Coral for the
+ * mark, the crop marks and every "selected" indicator.
+ *
+ * The eight approved brand colours are declared once, here, as --brand-*.
+ * Everything else refers to them: the Tailwind theme below, and the older
+ * role tokens the editor and the Studio use. The rules for using them are in
+ * docs/brand/CREATORBRIO-BRAND-GUIDELINES.md; tests/brand-identity.test.ts
+ * keeps the guide, the specimen and src/lib/brand-identity.ts equal to these.
+ *
+ * These are CreatorBrio's own colours. A person's brand (data/brands.json)
+ * never reads them, and slides and exports never contain them.
  * One light theme, so no OS dark-mode values.
  */
 :root {
-  --background: #f1f2f4;
-  --foreground: #1c1b29;
+  --brand-coral: #e94560; /* Brand Coral: the mark, crop marks, selected */
+  --brand-deep-coral: #bf394f; /* Deep Coral: create actions */
+  --brand-ink: #1c1b29; /* Midnight Ink: text, structure, actions */
+  --brand-canvas: #f1f2f4; /* Studio Canvas: the app's background */
+  --brand-paper: #ffffff; /* Pure Paper: panels, cards, sheets */
+  --brand-blush: #fff0f3; /* Soft Blush: invitations to make something */
+  --brand-graphite: #585767; /* Graphite: secondary text */
+  --brand-rule: #d9dbe1; /* Fine Rule: borders and dividers */
+
+  --background: var(--brand-canvas);
+  --foreground: var(--brand-ink);
   --muted: #e6e8ec;
-  --muted-foreground: #585767;
-  --border: #d9dbe1;
-  --ring: #1c1b29;
-  /* Actions are ink. Coral is kept for selection only, as --color-crop. */
-  --accent: #1c1b29;
-  --accent-foreground: #ffffff;
-  --surface: #ffffff;
+  --muted-foreground: var(--brand-graphite);
+  --border: var(--brand-rule);
+  --ring: var(--brand-ink);
+  /* Actions are ink; creating something new is --color-create. */
+  --accent: var(--brand-ink);
+  --accent-foreground: var(--brand-paper);
+  --surface: var(--brand-paper);
   --destructive: #a3243b;
   /* Run notices (#168): pale surfaces under foreground text; the tone colour is
      only for icons and borders. */
@@ -52,16 +70,24 @@
 }
 
 @theme {
-  --color-ground: #f1f2f4;
-  --color-sheet: #ffffff;
-  --color-ink: #1c1b29;
+  --color-ground: var(--brand-canvas);
+  --color-sheet: var(--brand-paper);
+  --color-ink: var(--brand-ink);
   --color-ink-soft: #33324a;
-  --color-graphite: #585767;
-  --color-rule: #d9dbe1;
+  --color-graphite: var(--brand-graphite);
+  --color-rule: var(--brand-rule);
   --color-rule-strong: #a9acb8;
   /* Edges of text fields and selects: 3.78:1 on sheet, 3.37:1 on ground (WCAG 1.4.11). */
   --color-field: #80838f;
-  --color-crop: #e94560;
+  /* Brand Coral: the mark, crop marks and selected indicators; never text, never a fill under text. */
+  --color-crop: var(--brand-coral);
+  /* Deep Coral: the one action that starts new work on a screen. */
+  --color-create: var(--brand-deep-coral);
+  --color-create-hover: color-mix(in oklab, var(--brand-deep-coral) 86%, var(--brand-ink));
+  /* Soft Blush: the places that invite someone to make something; sparingly. */
+  --color-blush: var(--brand-blush);
+  /* Placeholder text in fields. */
+  --color-placeholder: #6c6b7a;
   --color-early: #6b4300;
   --color-early-bg: #fcebc4;
   --color-ok: #1a6544;
@@ -95,7 +121,7 @@
   }
   /* On ink surfaces (toasts, the create summary) the ring turns white. */
   .bg-ink :focus-visible {
-    outline-color: #fff;
+    outline-color: var(--color-sheet);
   }
   ::selection {
     background: var(--selection);
@@ -282,14 +308,7 @@
 }
 
 @layer components {
-  /* Condensed display type: the slug on a print label. */
-  .display {
-    font-stretch: 75%;
-    font-variation-settings: "wdth" 75;
-    font-weight: 600;
-    letter-spacing: -0.005em;
-    line-height: 0.98;
-  }
+  /* Condensed display type for the shell's wordmark; headings use the type roles below. */
   .display-md {
     font-stretch: 82%;
     font-variation-settings: "wdth" 82;
@@ -300,10 +319,60 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /*
+   * The type hierarchy (Brand Identity v1.0). A screen picks a role, never a
+   * size: one Home headline, one title per page, section headings, and
+   * technical metadata. The display widths are Design C's (#175).
+   */
+  .type-hero {
+    font-stretch: 75%;
+    font-variation-settings: "wdth" 75;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    line-height: 0.98;
+    font-size: 40px;
+  }
+  .type-title {
+    font-stretch: 75%;
+    font-variation-settings: "wdth" 75;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    line-height: 1;
+    font-size: 28px;
+  }
+  .type-section {
+    font-stretch: 82%;
+    font-variation-settings: "wdth" 82;
+    font-weight: 600;
+    line-height: 1.1;
+    font-size: 20px;
+  }
+  @media (min-width: 40rem) {
+    .type-hero {
+      font-size: 48px;
+    }
+    .type-title {
+      font-size: 32px;
+    }
+    .type-section {
+      font-size: 24px;
+    }
+  }
+  /* Technical metadata: dimensions, ratios, positions, colour values, timecodes. Not prose. */
+  .meta {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    /* A monospace space is a full digit wide; "1080 × 1350" reads as one value with narrower gaps. */
+    word-spacing: -0.25em;
+  }
+
   /* The work: paper with a short lift. Only the work casts a shadow. */
   .paper {
     border-radius: var(--radius-paper);
-    box-shadow: 0 0 0 1px rgb(28 27 41 / 0.06), 0 6px 14px -8px rgb(28 27 41 / 0.35);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ink) 6%, transparent), 0 6px 14px -8px color-mix(in srgb, var(--color-ink) 35%, transparent);
     overflow: hidden;
   }
 
@@ -360,7 +429,7 @@
   }
   .btn-primary {
     background: var(--color-ink);
-    color: #fff;
+    color: var(--color-sheet);
   }
   /* A disabled primary action reads as unavailable, not as a faded button: flat grey, readable text (5.9:1). */
   .btn-primary:disabled {
@@ -380,15 +449,34 @@
   .btn-quiet:hover:not(:disabled) {
     box-shadow: inset 0 0 0 1px var(--color-rule-strong);
   }
+  /* Creating something new: Deep Coral, for the one action on a screen that starts new work. */
+  .btn-create {
+    background: var(--color-create);
+    color: var(--color-sheet);
+  }
+  .btn-create:hover:not(:disabled) {
+    background: var(--color-create-hover);
+  }
+  .btn-create:disabled {
+    opacity: 1;
+    background: var(--color-hover);
+    color: var(--color-graphite);
+    box-shadow: inset 0 0 0 1px var(--color-rule);
+  }
   .btn-ghost {
     color: var(--color-ink);
   }
   .btn-ghost:hover:not(:disabled) {
     background: var(--color-hover);
   }
+  /* Destroying something: an alert outline on paper, so it can never be mistaken for the filled create action. */
   .btn-danger {
-    background: var(--color-alert);
-    color: #fff;
+    background: var(--color-sheet);
+    color: var(--color-alert);
+    box-shadow: inset 0 0 0 1.5px var(--color-alert);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--color-alert-bg);
   }
   .btn-sm {
     height: 32px;
@@ -414,7 +502,7 @@
     color: var(--color-ink);
   }
   .field::placeholder {
-    color: #6c6b7a;
+    color: var(--color-placeholder);
   }
   .field:hover {
     box-shadow: inset 0 0 0 1px var(--color-ink);
@@ -513,6 +601,10 @@
   font-weight: 600;
   background: var(--color-sheet);
   box-shadow: inset 0 0 0 1px var(--color-rule);
+}
+/* Selected is coral: the current page's icon, as the crop marks are around selected work. */
+.side-item-active > svg:first-child {
+  color: var(--color-crop);
 }
 @container side (max-width: 159px) {
   .side-item {

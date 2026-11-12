@@ -86,7 +86,7 @@ export function SizeChoice({
         <p className="flex h-11 items-center gap-3 text-[15px]">
           <span className="h-7 w-4 rounded-[2px] bg-ink/80" aria-hidden="true" />
           <span>
-            {SIZE_NAMES[sizes[0]]} {sizes[0]}, <span className="num">{sizePixels(sizes[0])}</span>
+            {SIZE_NAMES[sizes[0]]} {sizes[0]}, <span className="meta">{sizePixels(sizes[0])}</span>
           </span>
         </p>
         <p className="text-[13px] text-graphite">{withArticle(FORMATS[format].name)} is always one {sizes[0]} image.</p>
@@ -102,7 +102,7 @@ export function SizeChoice({
           return (
             <label
               key={r}
-              className="flex cursor-pointer items-center gap-3 rounded-[10px] bg-sheet py-2 pr-4 pl-3 shadow-[inset_0_0_0_1px_var(--color-rule)] has-[:checked]:shadow-[inset_0_0_0_2px_var(--color-ink)] has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ink"
+              className="flex cursor-pointer items-center gap-3 rounded-[10px] bg-sheet py-2 pr-4 pl-3 shadow-[inset_0_0_0_1px_var(--color-rule)] has-[:checked]:shadow-[inset_0_0_0_2px_var(--color-crop)] has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ink"
             >
               <input type="radio" name="size" className="sr-only" checked={size === r} onChange={() => onPick(r)} disabled={locked} />
               <span className="flex h-8 w-8 items-end justify-center" aria-hidden="true">
@@ -112,7 +112,7 @@ export function SizeChoice({
                 <span className="block text-[14px] font-semibold">
                   {SIZE_NAMES[r]} {r}
                 </span>
-                <span className="num block text-[12.5px] text-graphite">{sizePixels(r)}</span>
+                <span className="meta block text-graphite">{sizePixels(r)}</span>
               </span>
             </label>
           );

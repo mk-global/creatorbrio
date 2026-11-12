@@ -11,7 +11,7 @@ export function StudioPanel() {
   const productions = status.state === "paired" ? (status.productions ?? []).flatMap((p) => (p.status === "ok" ? [p] : [])) : [];
   return (
     <section aria-labelledby="home-studio" className="panel flex flex-col p-5 sm:p-7">
-      <h2 id="home-studio" className="display-md flex flex-wrap items-center gap-2 text-[24px]">
+      <h2 id="home-studio" className="type-section flex flex-wrap items-center gap-2">
         Video Studio <span className="tag tag-early">Early</span>
       </h2>
       <p className="mt-1 text-[14px] text-graphite">Edit a Reel by hand. AI video editing is not built yet.</p>

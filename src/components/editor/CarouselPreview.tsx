@@ -38,7 +38,7 @@ export function CarouselPreview({
 
   if (!slide) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#f0f0f0]">
+      <div className="flex-1 flex items-center justify-center bg-ground">
         <div className="text-center text-muted-foreground p-8">
           <div className="w-16 h-20 border-2 border-dashed border-muted-foreground/30 rounded-lg mx-auto mb-4 flex items-center justify-center">
             <span className="text-2xl opacity-30">+</span>
@@ -53,7 +53,7 @@ export function CarouselPreview({
   }
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 min-w-0 bg-[#f0f0f0]">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 bg-ground">
       {/* Preview area with padding for arrows */}
       <div className="flex-1 relative min-h-0 p-8 px-14">
         {/* Left arrow */}
@@ -109,13 +109,13 @@ export function CarouselPreview({
               onClick={() => onActiveChange(i)}
               className={`h-2 rounded-full transition-[width,background-color] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] ${
                 i === activeIndex
-                  ? "w-6 bg-accent"
+                  ? "w-6 bg-crop"
                   : "w-2 bg-foreground/20 hover:bg-foreground/40"
               }`}
               aria-label={`Go to slide ${i + 1}`}
             />
           ))}
-          <span className="text-xs text-muted-foreground ml-2">
+          <span className="meta text-muted-foreground ml-2">
             {activeIndex + 1}/{slides.length}
           </span>
         </div>

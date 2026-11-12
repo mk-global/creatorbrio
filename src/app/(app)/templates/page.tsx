@@ -86,7 +86,7 @@ export default function TemplatesPage() {
 
   return (
     <div>
-      <h1 className="display text-[44px] lg:text-[56px]">Templates</h1>
+      <h1 className="type-title">Templates</h1>
       <p className="mt-2 max-w-[62ch] text-graphite">Layouts {name} has used before. Starting from one gives Claude the slides to work from.</p>
 
       <div className="mt-8">
@@ -112,7 +112,7 @@ export default function TemplatesPage() {
           </p>
         ) : mine.length === 0 ? (
           <div className="max-w-[58ch] py-6">
-            <h2 className="display-md text-[26px]">No templates for {name} yet</h2>
+            <h2 className="type-section">No templates for {name} yet</h2>
             <p className="mt-2 text-graphite">A template is a project you liked enough to start from again. Open any project and choose Save as template from its menu.</p>
             <Link href="/projects" className="btn btn-quiet mt-5">
               Go to projects

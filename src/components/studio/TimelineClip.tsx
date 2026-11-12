@@ -42,7 +42,7 @@ export function TimelineClip({ view, selected, onKeyDown }: TimelineClipProps) {
         "absolute inset-x-0 inset-y-[3px] flex cursor-grab select-none items-center overflow-hidden rounded-[5px] border px-2 text-[11px] font-medium leading-none outline-none active:cursor-grabbing",
         "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
         TONES[view.tone],
-        selected && "border-accent shadow-[inset_0_0_0_1px_var(--accent)]"
+        selected && "border-crop shadow-[inset_0_0_0_1px_var(--color-crop)]"
       )}
     >
       <span className="truncate">{view.label}</span>

@@ -21,6 +21,7 @@ Derived from the MIT-licensed Open Carrusel project and now independently mainta
 
 - `src/lib/chat-system-prompt.ts` — Dynamic system prompt (injects brand config + carousel context)
 - `src/lib/slide-html.ts` — `wrapSlideHtml()` wraps slide body HTML into full documents
+- `docs/brand/CREATORBRIO-BRAND-GUIDELINES.md`: CreatorBrio Brand Identity v1.0 (#189), the source of truth for the product's palette, type roles, logo and action hierarchy; `docs/brand/specimen.html` shows it. The palette is declared once as `--brand-*` in `src/app/globals.css`; components use tokens and roles (`.btn-create`, `.type-title`, `.meta`), never hex. It is the product's identity only: it never reaches user brands, slides, exports or the Design Agent (`tests/brand-identity.test.ts`)
 - `src/app/(app)/`, `src/components/app/`, `src/components/{home,library,create,brands,editor}/`: the Design C shell and screens (#175). `AppProvider` loads brands once; the brand for new work is a browser preference that never changes a project. `tests/app-design-c.test.ts` drives them in Chromium against the production build, and CI builds and runs it (`tests/global-setup.ts`)
 - `src/lib/data.ts` — JSON storage with proper async-mutex and atomic writes
 - `src/lib/carousels.ts` — Carousel and slide CRUD with version history

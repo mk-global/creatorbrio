@@ -58,7 +58,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className="pop pointer-events-auto flex w-full max-w-[420px] items-start gap-3 rounded-xl bg-ink px-4 py-3 text-[14px] text-white shadow-[0_18px_40px_-16px_rgb(28_27_41/0.6)]"
+            className="pop pointer-events-auto flex w-full max-w-[420px] items-start gap-3 rounded-xl bg-ink px-4 py-3 text-[14px] text-white shadow-[0_18px_40px_-16px_color-mix(in_srgb,var(--color-ink)_60%,transparent)]"
           >
             <p className="min-w-0 flex-1">{t.text}</p>
             <button

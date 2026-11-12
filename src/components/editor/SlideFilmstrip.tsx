@@ -92,11 +92,12 @@ function SortableSlideThumb({
         className={cn(
           "oc-press block rounded-lg overflow-hidden transition-[border-color,box-shadow,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] border-2",
           isActive
-            ? "border-accent shadow-md ring-2 ring-accent/20"
+            ? "border-crop shadow-md ring-2 ring-crop ring-offset-2 ring-offset-surface"
             : "border-border hover:border-muted-foreground/50"
         )}
         style={{ width: thumbWidth, height: thumbHeight }}
         aria-label={`Select slide ${index + 1}`}
+        aria-current={isActive ? "true" : undefined}
       >
         <SlideRenderer
           html={slide.html}
@@ -223,7 +224,7 @@ export function SlideFilmstrip({
 
         {isGenerating && (
           <div
-            className="shrink-0 rounded-lg border-2 border-dashed border-accent/50 flex items-center justify-center bg-accent/5"
+            className="shrink-0 rounded-lg border-2 border-dashed border-crop/60 flex items-center justify-center bg-blush"
             style={{ width: thumbWidth, height: thumbHeight }}
           >
             <div className="flex flex-col items-center gap-1">
@@ -236,7 +237,7 @@ export function SlideFilmstrip({
         {slides.length < maxSlides && !isGenerating && (
           <button
             onClick={onAddSlideRequest}
-            className="shrink-0 rounded-lg border-2 border-dashed border-border flex items-center justify-center hover:border-muted-foreground/50 hover:bg-muted/50 transition-colors cursor-pointer"
+            className="shrink-0 rounded-lg border-2 border-dashed border-crop/40 bg-blush flex items-center justify-center hover:border-crop/70 transition-colors cursor-pointer"
             style={{ width: thumbWidth, height: thumbHeight }}
             aria-label="Add slide via AI"
           >

@@ -106,7 +106,7 @@ export function CreateFlow({
 
   return (
     <form onSubmit={(e) => void submit(e)} className="max-w-[980px]">
-      <h1 className="display text-[44px] lg:text-[56px]">New project</h1>
+      <h1 className="type-title">New project</h1>
       <p className="mt-2 text-graphite">Two choices, then the editor. Nothing is designed until you press Send there.</p>
       <p className="mt-4 text-[13px] font-semibold text-graphite sm:hidden" aria-live="polite">
         Step {step} of 2
@@ -114,8 +114,8 @@ export function CreateFlow({
 
       <fieldset className={`mt-6 sm:mt-10 ${step === 1 ? "" : "max-sm:hidden"}`}>
         <legend className="flex items-baseline gap-3">
-          <span className="display num text-[26px] text-graphite">1</span>
-          <span className="display-md text-[24px]">Format</span>
+          <span className="type-section num text-graphite">1</span>
+          <span className="type-section">Format</span>
         </legend>
         <FormatChoice format={format} brand={brand} projects={projects} onPick={pickFormat} />
         <button
@@ -137,8 +137,8 @@ export function CreateFlow({
           <ArrowLeft className="size-4" aria-hidden="true" /> Format: {def.name}
         </button>
         <p className="flex items-baseline gap-3" aria-hidden="true">
-          <span className="display num text-[26px] text-graphite">2</span>
-          <span className="display-md text-[24px]">Details</span>
+          <span className="type-section num text-graphite">2</span>
+          <span className="type-section">Details</span>
         </p>
 
         <div className="mt-6 grid gap-8 lg:grid-cols-2">
@@ -175,7 +175,7 @@ export function CreateFlow({
             {(["description", "template"] as const).map((s) => (
               <label key={s} className="cursor-pointer">
                 <input type="radio" name="source" className="peer sr-only" checked={source === s} onChange={() => setSource(s)} />
-                <span className="flex h-9 items-center rounded-md px-4 text-[14px] font-medium text-graphite peer-checked:bg-sheet peer-checked:text-ink peer-checked:shadow-[0_1px_2px_rgb(28_27_41/0.15)] peer-focus-visible:outline-2 peer-focus-visible:outline-ink">
+                <span className="flex h-9 items-center rounded-md px-4 text-[14px] font-medium text-graphite peer-checked:bg-sheet peer-checked:text-ink peer-checked:shadow-[0_1px_2px_color-mix(in_srgb,var(--color-ink)_15%,transparent)] peer-focus-visible:outline-2 peer-focus-visible:outline-ink">
                   {s === "description" ? "A description" : `A template (${available.length})`}
                 </span>
               </label>
@@ -256,7 +256,7 @@ export function CreateFlow({
           {capitalFirst(withA(`${chosenSize} ${def.name}`))} for <span className="font-semibold text-white">{brandDisplayName(brand)}</span>
           {source === "template" && template ? <>, starting from &ldquo;{template.name}&rdquo;</> : null}.
         </p>
-        <button type="submit" className="btn bg-white text-ink hover:bg-white/90" disabled={busy || (source === "template" && !template)}>
+        <button type="submit" className="btn btn-create" disabled={busy || (source === "template" && !template)}>
           {busy ? "Creating…" : "Create and open editor"}
         </button>
       </div>

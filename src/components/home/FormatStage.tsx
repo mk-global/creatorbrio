@@ -37,11 +37,12 @@ function stageHeight(format: ProjectFormat, aspectRatio: keyof typeof DIMENSIONS
   return { "--fh": `min(268px, 96cqw, calc((100cqw - 32px) / ${widest.toFixed(3)}))` } as React.CSSProperties;
 }
 
+/** CreatorBrio's own drawing of a Reel being edited, in the product palette: footage, a coral title, sound. */
 function VideoArt() {
   return (
     <div className={`crop relative ${H}`} style={{ height: "var(--fh)", width: "calc(var(--fh) * 9 / 16)" }} aria-hidden="true">
-      <div className="paper absolute inset-0 bg-[#16151f]">
-        <div className="absolute inset-0 bg-[radial-gradient(120%_70%_at_30%_25%,#3b3a52_0%,#16151f_70%)]" />
+      <div className="paper absolute inset-0 bg-ink">
+        <div className="absolute inset-0 bg-[radial-gradient(120%_70%_at_30%_25%,var(--color-ink-soft)_0%,var(--color-ink)_70%)]" />
         <div className="absolute top-[38%] left-1/2 flex aspect-square w-[34%] -translate-x-1/2 items-center justify-center rounded-full bg-white/14 ring-1 ring-white/25">
           <svg viewBox="0 0 10 10" className="ml-[8%] w-[38%] fill-white">
             <path d="M2 1l7 4-7 4z" />
@@ -49,15 +50,15 @@ function VideoArt() {
         </div>
         <div className="absolute inset-x-[8%] bottom-[7%] space-y-[3px]">
           <div className="flex gap-[2px]">
-            <span className="h-[5px] flex-[3] rounded-[1px] bg-[#7fa7ff]" />
-            <span className="h-[5px] flex-[2] rounded-[1px] bg-[#7fa7ff]/70" />
-            <span className="h-[5px] flex-[4] rounded-[1px] bg-[#7fa7ff]" />
+            <span className="h-[5px] flex-[3] rounded-[1px] bg-white/60" />
+            <span className="h-[5px] flex-[2] rounded-[1px] bg-white/40" />
+            <span className="h-[5px] flex-[4] rounded-[1px] bg-white/60" />
           </div>
           <div className="flex gap-[2px]">
-            <span className="h-[4px] flex-[5] rounded-[1px] bg-[#f2b134]/80" />
+            <span className="h-[4px] flex-[5] rounded-[1px] bg-crop" />
             <span className="h-[4px] flex-[2] rounded-[1px] bg-transparent" />
           </div>
-          <div className="h-[4px] w-full rounded-[1px] bg-[#6fd3a6]/70" />
+          <div className="h-[4px] w-full rounded-[1px] bg-white/25" />
         </div>
       </div>
     </div>
