@@ -155,6 +155,11 @@ export interface PlanContext {
    */
   committedAssets: readonly { id: string; intact: boolean; origin: CarouselAsset["origin"] }[];
   capabilities: readonly CapabilityStatus[];
+  /**
+   * The project's slide limit when its format sets one below MAX_SLIDES: one
+   * for a Reel cover (#175). Absent means MAX_SLIDES, as for every carousel.
+   */
+  maxSlides?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +221,17 @@ export function mentionsCover(message: string): boolean {
 export function explicitCountOverLimit(message: string, currentSlideCount: number): number | null {
   if (currentSlideCount > 0) return null;
   const over = explicitSlideCounts(message).filter((n) => n > MAX_SLIDES);
+  return over.length > 0 ? over[over.length - 1] : null;
+}
+
+/**
+ * A count the message states that a format's lower limit cannot hold, for a
+ * new request or a revision alike: a Reel cover is one slide however it is
+ * asked for (#175). Null when the format has no lower limit or none is over it.
+ */
+export function explicitCountOverFormatLimit(message: string, maxSlides: number): number | null {
+  if (maxSlides >= MAX_SLIDES) return null;
+  const over = explicitSlideCounts(message).filter((n) => n > maxSlides);
   return over.length > 0 ? over[over.length - 1] : null;
 }
 
@@ -341,6 +357,11 @@ function validateSlideCount(
   }
   if (typeof slideCount !== "number" || !Number.isInteger(slideCount) || slideCount < 1 || slideCount > MAX_SLIDES) {
     e.add("execution.slideCount", `must be a whole number from 1 to ${MAX_SLIDES}`);
+    return;
+  }
+  const limit = context.maxSlides ?? MAX_SLIDES;
+  if (slideCount > limit) {
+    e.add("execution.slideCount", `must be at most ${limit} for this project's format`);
     return;
   }
   if (!SLIDE_COUNT_BASES.includes(basis as SlideCountBasis)) {

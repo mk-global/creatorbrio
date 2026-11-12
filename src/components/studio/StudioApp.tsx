@@ -31,8 +31,10 @@ export function StudioApp() {
 
   const check = useCallback(async () => {
     try {
-      await api.session();
-      setPairing({ status: "paired" });
+      // The status form answers "not paired" without a 401, so an unpaired
+      // visit no longer logs an error in the browser console (#175).
+      const status = await api.pairingStatus();
+      setPairing({ status: status.paired ? "paired" : "unpaired" });
     } catch (error) {
       if (error instanceof StudioApiError && error.status === 401) setPairing({ status: "unpaired" });
       else setPairing({ status: "unreachable", message: error instanceof Error ? error.message : "The app did not answer." });

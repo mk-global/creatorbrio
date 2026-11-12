@@ -6,7 +6,8 @@ import crossSpawn from "cross-spawn";
 import type { BrandConfig } from "@/types/brand";
 import type { Carousel, CarouselAsset, ReferenceImage } from "@/types/carousel";
 import type { StylePreset } from "@/types/style-preset";
-import { DIMENSIONS } from "@/types/carousel";
+import { DIMENSIONS, MAX_SLIDES } from "@/types/carousel";
+import { slideLimitOf } from "./formats";
 import { getClaudePath } from "./claude-path";
 import { briefForCarousel } from "./creative-brief";
 import type { CapabilityId, CapabilityStatus } from "./creative-capabilities";
@@ -165,6 +166,9 @@ export function planContextFor(request: DirectorRequest): PlanContext {
     referenceIds: request.references.map((r) => r.id),
     committedAssets: request.assets.map(({ asset, intact }) => ({ id: asset.id, intact, origin: asset.origin })),
     capabilities: request.capabilities,
+    // Only a format with a lower limit adds one, so every other plan is
+    // validated exactly as before (#175).
+    ...(slideLimitOf(request.carousel) < MAX_SLIDES ? { maxSlides: slideLimitOf(request.carousel) } : {}),
   };
 }
 

@@ -68,6 +68,13 @@ export function sessionStatus(request: Request): Promise<Response> {
     browserRequest(request, false);
     const token = sessionTokenFrom(request);
     const verified = typeof token === "string" && token !== "duplicate" ? await apiContext().authority.sessions.verify(token) : { ok: false as const };
+    // The status form, `?status=1` (#175): pages outside the Studio ask
+    // whether this browser is paired, and "not paired" is an answer, not a
+    // failure, so it is a 200 and no unpaired visit logs an error. It passes
+    // the same browser checks and grants nothing. Without the parameter the
+    // route answers exactly as it always has.
+    const statusForm = new URL(request.url).searchParams.get("status") === "1";
+    if (statusForm) return okResponse(verified.ok ? { paired: true, expiresAt: verified.expiresAt } : { paired: false });
     if (!verified.ok) return errorResponse(401, { code: "not_paired", message: "this browser has no valid Studio session; pair it with npm run studio:pair" });
     return okResponse({ authenticated: true, expiresAt: verified.expiresAt });
   });

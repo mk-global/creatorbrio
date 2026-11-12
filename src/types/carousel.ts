@@ -1,4 +1,5 @@
 import type { CreativeBrief } from "./creative-brief";
+import type { ProjectFormat } from "@/lib/formats";
 
 export type AspectRatio = "1:1" | "4:5" | "9:16";
 
@@ -61,6 +62,12 @@ export interface Carousel {
    * before brands existed have none and belong to the default brand.
    */
   brandId?: string;
+  /**
+   * What the project is for (#175): set at creation and never changed.
+   * Absent on projects made before formats existed, which are Instagram
+   * carousels; read it with `formatOf()`.
+   */
+  format?: ProjectFormat;
   isTemplate: boolean;
   tags: string[];
   createdAt: string;

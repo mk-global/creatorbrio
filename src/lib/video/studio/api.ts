@@ -19,6 +19,7 @@ import type {
   ProductionSummary,
   ProductionView,
   RenderView,
+  PairingStatusView,
   SessionView,
 } from "./types";
 
@@ -66,6 +67,11 @@ export class StudioApi {
 
   session(): Promise<SessionView> {
     return this.call("GET", "/api/video/session");
+  }
+
+  /** Whether this browser is paired, without a 401 when it is not (#175). */
+  pairingStatus(): Promise<PairingStatusView> {
+    return this.call("GET", "/api/video/session?status=1");
   }
 
   pair(code: string): Promise<{ status: "paired"; expiresAt: string }> {

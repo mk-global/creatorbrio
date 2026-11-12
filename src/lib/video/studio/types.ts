@@ -20,6 +20,9 @@ export interface SessionView {
   expiresAt: string;
 }
 
+/** The session route's status form: an answer either way, never a 401 (#175). */
+export type PairingStatusView = { paired: true; expiresAt: string } | { paired: false };
+
 export interface HistoryStepView {
   label: string;
   changeSetIds: string[];

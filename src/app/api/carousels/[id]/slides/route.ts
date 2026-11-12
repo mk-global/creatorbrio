@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { addSlide, reorderSlides, getCarousel } from "@/lib/carousels";
 import { dataErrorResponse } from "@/lib/api-errors";
+import { slideLimitOf, slideLimitRefusal } from "@/lib/formats";
 
 export async function POST(
   request: Request,
@@ -20,8 +21,14 @@ export async function POST(
 
     const slide = await addSlide(id, html, notes);
     if (!slide) {
+      // Same status as always; the message now says which limit applies, so
+      // the design agent and a person both learn that a Reel cover has one
+      // slide (#175). The limit itself is enforced inside addSlide, under the
+      // file's lock.
+      const carousel = await getCarousel(id);
+      const atLimit = carousel && carousel.slides.length >= slideLimitOf(carousel);
       return NextResponse.json(
-        { error: "Carousel not found or max slides reached" },
+        { error: atLimit ? slideLimitRefusal(carousel) : "Carousel not found or max slides reached" },
         { status: 400 }
       );
     }

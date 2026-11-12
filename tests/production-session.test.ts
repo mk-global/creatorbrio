@@ -389,3 +389,37 @@ describe("agents and other credentials cannot pass as a paired person", () => {
     expect(res.status).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+describe("the session route's status form (#175)", () => {
+  it("answers whether this browser is paired without a 401, and the plain route is unchanged", async () => {
+    const unpaired = await send(session.GET, "/api/video/session?status=1");
+    expect(unpaired.status).toBe(200);
+    expect(unpaired.body).toEqual({ paired: false });
+    // Without the parameter, an unpaired browser still gets exactly the old 401.
+    const plain = await send(session.GET, "/api/video/session");
+    expect(plain.status).toBe(401);
+    expect(plain.body.error.code).toBe("not_paired");
+
+    const cookie = await pairedCookie();
+    const paired = await send(session.GET, "/api/video/session?status=1", withSession(cookie));
+    expect(paired.status).toBe(200);
+    expect(paired.body).toEqual({ paired: true, expiresAt: expect.any(String) });
+    expect((await send(session.GET, "/api/video/session", withSession(cookie))).body).toMatchObject({ authenticated: true });
+  });
+
+  it("passes the same browser checks as the route, and grants nothing", async () => {
+    const cookie = await pairedCookie();
+    for (const [label, r] of [
+      ["no Studio header", { studioHeader: false }],
+      ["cross-site fetch", { fetchSite: "cross-site" }],
+      ["rebinding Host", { host: "rebound.evil.example:3000" }],
+    ] as [string, Req][]) {
+      const res = await send(session.GET, "/api/video/session?status=1", withSession(cookie, r));
+      expect(res.status, label).toBe(403);
+      expect(res.text, label).not.toContain("paired");
+    }
+    // An unrecognised value is the plain route, not the status form.
+    expect((await send(session.GET, "/api/video/session?status=yes")).status).toBe(401);
+  });
+});
