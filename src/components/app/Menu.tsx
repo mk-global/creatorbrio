@@ -116,7 +116,7 @@ export function Menu({
           role="menu"
           aria-label={label}
           onKeyDown={onKey}
-          className="pop fixed z-50 overflow-y-auto rounded-[14px] bg-sheet p-1.5 shadow-[0_0_0_1px_rgb(28_27_41/0.08),0_18px_40px_-12px_rgb(28_27_41/0.35)]"
+          className="pop fixed z-50 overflow-y-auto rounded-[14px] bg-sheet p-1.5 shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-ink)_8%,transparent),0_18px_40px_-12px_color-mix(in_srgb,var(--color-ink)_35%,transparent)]"
           style={pos}
         >
           {header && <div className="px-2.5 pt-1.5 pb-2 text-[13px] text-graphite">{header}</div>}

@@ -10,6 +10,7 @@ import { sampleSlideHtml } from "@/lib/format-samples";
 import type { Brand, BrandConfig } from "@/types/brand";
 import { DEFAULT_BRAND } from "@/types/brand";
 import { brandSaveTarget } from "@/lib/brand-save-target";
+import { cn } from "@/lib/utils";
 import { ColorFields, FontField, LogoField, StyleWords } from "./BrandFields";
 
 /**
@@ -59,14 +60,14 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
       <Link href="/brands" className="inline-flex min-h-8 items-center gap-1.5 text-[14px] font-medium text-graphite hover:text-ink">
         <ArrowLeft className="size-4" aria-hidden="true" /> Brands
       </Link>
-      <h1 className="display mt-3 text-[40px] break-words lg:text-[52px]">
+      <h1 className="type-title mt-3 break-words">
         {isNew ? "New brand" : existing.name.trim() ? `Edit ${existing.name.trim()}` : "Set up your brand"}
       </h1>
 
       <div className="mt-8 grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_380px]">
         <form className="space-y-9" onSubmit={(e) => void save(e)}>
           <section aria-labelledby="identity" className="space-y-4">
-            <h2 id="identity" className="display-md text-[22px]">
+            <h2 id="identity" className="type-section">
               Identity
             </h2>
             <div>
@@ -90,7 +91,7 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
           </section>
 
           <section aria-labelledby="colours">
-            <h2 id="colours" className="display-md text-[22px]">
+            <h2 id="colours" className="type-section">
               Colours
             </h2>
             <ColorFields
@@ -101,7 +102,7 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
           </section>
 
           <section aria-labelledby="type" className="space-y-4">
-            <h2 id="type" className="display-md text-[22px]">
+            <h2 id="type" className="type-section">
               Fonts
             </h2>
             <div className="grid max-w-[560px] gap-4 sm:grid-cols-2">
@@ -111,7 +112,7 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
           </section>
 
           <section aria-labelledby="style">
-            <h2 id="style" className="display-md text-[22px]">
+            <h2 id="style" className="type-section">
               Style words
             </h2>
             <p className="mt-1 text-[14px] text-graphite">A few words Claude reads before every design.</p>
@@ -125,7 +126,7 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
           )}
 
           <div className="flex flex-wrap items-center gap-3 border-t border-rule pt-6">
-            <button type="submit" className="btn btn-primary" disabled={!canSave}>
+            <button type="submit" className={cn("btn", isNew ? "btn-create" : "btn-primary")} disabled={!canSave}>
               {saving ? "Saving…" : isNew ? "Create brand" : "Save brand"}
             </button>
             <Link href="/brands" className="btn btn-ghost">

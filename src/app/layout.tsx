@@ -1,10 +1,13 @@
 import type { Metadata, Viewport } from "next";
 import { Geist_Mono, Instrument_Sans } from "next/font/google";
+import { PRODUCT_PALETTE } from "@/lib/brand-identity";
 import "./globals.css";
 
 // Fonts are downloaded at build time and served by the app itself (#175):
 // Instrument Sans, with its width axis for the condensed display type, is the
-// interface; Geist Mono is kept for commands and codes.
+// interface; Geist Mono sets technical metadata (the .meta class, #189).
+// The favicon, icon.svg and apple-icon.png beside this file are the brand's
+// icons (docs/brand/assets); Next.js links them from every page.
 const instrument = Instrument_Sans({
   variable: "--font-instrument",
   subsets: ["latin"],
@@ -26,7 +29,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#f1f2f4",
+  themeColor: PRODUCT_PALETTE.canvas,
 };
 
 export default function RootLayout({

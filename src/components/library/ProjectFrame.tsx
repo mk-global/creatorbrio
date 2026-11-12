@@ -43,7 +43,7 @@ export function ProjectFrame({
   const h = format === "linkedin-document" ? `calc(var(--fh) - ${stack} * ${off})` : "var(--fh)";
   const w = `calc(${h} * ${width} / ${height})`;
   const boxW = format === "instagram-carousel" ? `calc(${w} + ${stack} * ${off})` : w;
-  const [under, behind] = paperColors ?? ["#f5f5f5", "#ffffff"];
+  const [under, behind] = paperColors ?? ["var(--color-hover)", "var(--color-sheet)"];
 
   return (
     <div className={`relative shrink-0 ${heightClass}`} style={{ width: boxW, height: "var(--fh)" }}>

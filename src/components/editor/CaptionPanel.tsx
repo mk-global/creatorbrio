@@ -61,7 +61,7 @@ export function CaptionPanel({ caption, hashtags }: CaptionPanelProps) {
                   onClick={() => handleCopy(caption, "caption")}
                 >
                   {copiedCaption ? (
-                    <Check className="h-2.5 w-2.5 text-green-500" />
+                    <Check className="h-2.5 w-2.5 text-ok" />
                   ) : (
                     <Copy className="h-2.5 w-2.5" />
                   )}
@@ -90,7 +90,7 @@ export function CaptionPanel({ caption, hashtags }: CaptionPanelProps) {
                   }
                 >
                   {copiedHashtags ? (
-                    <Check className="h-2.5 w-2.5 text-green-500" />
+                    <Check className="h-2.5 w-2.5 text-ok" />
                   ) : (
                     <Copy className="h-2.5 w-2.5" />
                   )}

@@ -74,8 +74,9 @@ A screen reads a handoff while rendering and clears it once mounted, because Rea
 ## Tests
 
 - `tests/app-design-c.test.ts` runs the production build in Chromium over an empty data folder on port 3191, seeded through the API.
-  It checks Home's formats and navigation, no horizontal overflow on twelve screens at 1440, 1280, 768, 390 and 320 px, keyboard focus order and visible focus, brand switching and persistence, each format's sizes, Reel cover creation with the prefilled message and the refused second slide, the single PNG and PDF exports, starting from a template, an unpaired Studio visit without a 401, and an empty console.
+  It checks Home's formats and navigation, no horizontal overflow on twelve screens at 1440, 1280, 768, 390 and 320 px, keyboard focus order and visible focus, brand switching and persistence, each format's sizes, Reel cover creation with the prefilled message and the refused second slide, the single PNG and PDF exports, starting from a template, an unpaired Studio visit without a 401, the brand identity as rendered (the brand's icons, Deep Coral creation, the outlined delete, the type roles and Geist Mono metadata, #189), and an empty console.
   The server gets a Claude CLI stub that refuses every call, and the test fails if any request reaches `/api/chat`.
 - In CI, `tests/global-setup.ts` builds the app before the suite and the test uses the runner's Chrome; it fails rather than skips when either is missing.
   Locally a missing or stale build skips it with the reason.
+- `tests/brand-identity.test.ts` keeps the palette, its documentation, contrast, the action hierarchy and the icons consistent, and checks that CreatorBrio's identity never reaches a person's brand, slides or exports ([../brand/CREATORBRIO-BRAND-GUIDELINES.md](../brand/CREATORBRIO-BRAND-GUIDELINES.md)).
 - `tests/project-formats.test.ts` covers the format rules at the API, and `tests/design-c-helpers.test.ts` the pure helpers behind the screens.

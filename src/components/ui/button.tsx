@@ -10,10 +10,14 @@ const buttonVariants = cva(
       variant: {
         default: "bg-foreground text-background hover:bg-foreground/90",
         accent: "bg-accent text-accent-foreground hover:bg-accent/90",
+        // Starting new work: Deep Coral (Brand Identity v1.0, #189). One per screen.
+        // Disabled, it turns flat grey like .btn-create, never faded coral.
+        create: "bg-create text-white hover:bg-create-hover disabled:opacity-100 disabled:bg-hover disabled:text-graphite disabled:shadow-[inset_0_0_0_1px_var(--color-rule)]",
         outline:
           "border border-border bg-transparent hover:bg-muted text-foreground",
         ghost: "hover:bg-muted text-foreground",
-        destructive: "bg-destructive text-white hover:bg-destructive/90",
+        // An alert outline on paper, never a fill, so it cannot be mistaken for create.
+        destructive: "bg-surface text-destructive shadow-[inset_0_0_0_1.5px_var(--color-destructive)] hover:bg-destructive-surface",
         link: "text-foreground underline-offset-4 hover:underline",
       },
       size: {

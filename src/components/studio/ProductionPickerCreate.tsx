@@ -66,7 +66,7 @@ export function ProductionPickerCreate({ onCreated }: { onCreated: (id: string) 
           aria-describedby={error ? `${id}-help ${id}-error` : `${id}-help`}
           aria-invalid={error ? true : undefined}
         />
-        <Button type="submit" variant="accent" disabled={sending} className="shrink-0">
+        <Button type="submit" variant="create" disabled={sending} className="shrink-0">
           {sending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Plus className="h-4 w-4" aria-hidden />}
           Create
         </Button>

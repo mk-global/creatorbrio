@@ -32,7 +32,7 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <h1 className="display text-[44px] lg:text-[56px]">Settings</h1>
+      <h1 className="type-title">Settings</h1>
       <p className="mt-2 max-w-[62ch] text-graphite">Whether everything is working, and where your work is kept.</p>
 
       <div className="panel mt-8 px-6">

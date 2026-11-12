@@ -48,10 +48,10 @@ export function ConfirmDialog({
               el.focus();
             }
           }}
-          className="fixed top-1/2 left-1/2 z-[61] max-h-[calc(100dvh-32px)] w-[calc(100vw-32px)] max-w-[460px] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-[14px] bg-sheet p-6 shadow-[0_24px_60px_-20px_rgb(28_27_41/0.5)]"
+          className="fixed top-1/2 left-1/2 z-[61] max-h-[calc(100dvh-32px)] w-[calc(100vw-32px)] max-w-[460px] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-[14px] bg-sheet p-6 shadow-[0_24px_60px_-20px_color-mix(in_srgb,var(--color-ink)_50%,transparent)]"
         >
           <div className="flex items-start gap-4">
-            <Dialog.Title className="display-md flex-1 text-[24px]">{title}</Dialog.Title>
+            <Dialog.Title className="type-section flex-1">{title}</Dialog.Title>
             <Dialog.Close className="btn btn-ghost btn-sm btn-icon -mt-1 -mr-2" aria-label="Close">
               <X className="size-4" aria-hidden="true" />
             </Dialog.Close>

@@ -165,7 +165,7 @@ export function EditorHeader({
         >
           <MessageSquare className="size-4" aria-hidden="true" /> Chat
         </button>
-        <span className="num ml-auto hidden shrink-0 px-2 text-[13px] text-graphite sm:inline">
+        <span className="meta ml-auto hidden shrink-0 px-2 text-graphite sm:inline">
           {sizePixels(carousel.aspectRatio)}, {carousel.slides.length} of {def.maxSlides} {def.maxSlides === 1 ? def.unit.one : def.unit.many}
         </span>
       </div>
@@ -179,7 +179,7 @@ export function EditorHeader({
             className={`relative h-11 text-[14px] font-semibold ${pane === p ? "text-ink" : "text-graphite"}`}
           >
             {p === "preview" ? "Preview" : "Chat"}
-            {pane === p && <span className="absolute inset-x-6 bottom-0 h-[2px] bg-ink" aria-hidden="true" />}
+            {pane === p && <span className="absolute inset-x-6 bottom-0 h-[2px] bg-crop" aria-hidden="true" />}
           </button>
         ))}
       </div>

@@ -128,13 +128,13 @@ function Sidebar({ pathname, onToggle }: { pathname: string; onToggle: () => voi
 
       <div className="space-y-2 px-3">
         <BrandSwitcher variant="side" />
-        <button type="button" className="btn btn-primary wide-only w-full" onClick={() => router.push("/create")}>
+        <button type="button" className="btn btn-create wide-only w-full" onClick={() => router.push("/create")}>
           <Plus className="size-[18px]" aria-hidden="true" />
           New project
         </button>
         <button
           type="button"
-          className="btn btn-primary btn-icon rail-only mx-auto"
+          className="btn btn-create btn-icon rail-only mx-auto"
           onClick={() => router.push("/create")}
           aria-label="New project"
           title="New project"
@@ -180,7 +180,7 @@ function PhoneHeader({ pathname }: { pathname: string }) {
         <div className="min-w-0 flex-1">
           <BrandSwitcher variant="header" />
         </div>
-        <button type="button" className="btn btn-primary btn-icon shrink-0" onClick={() => router.push("/create")} aria-label="New project">
+        <button type="button" className="btn btn-create btn-icon shrink-0" onClick={() => router.push("/create")} aria-label="New project">
           <Plus className="size-[18px]" aria-hidden="true" />
         </button>
         <Link
@@ -216,7 +216,7 @@ function TabBar({ pathname, fixed }: { pathname: string; fixed: boolean }) {
               >
                 <Icon className="size-5" strokeWidth={active ? 2.25 : 1.75} aria-hidden="true" />
                 {n.short}
-                {active && <span className="absolute top-0 h-[2px] w-8 bg-ink" aria-hidden="true" />}
+                {active && <span className="absolute top-0 h-[2px] w-8 bg-crop" aria-hidden="true" />}
               </Link>
             </li>
           );

@@ -17,30 +17,13 @@ The prototypes were throwaway code and are not kept in the repository; the issue
 A local-first studio where one person makes branded social posts with Claude: Instagram carousels, LinkedIn documents, Reel covers and, early, Reels.
 Every screen's job is to get from an idea to finished, on-brand work, and the work itself is the most important thing on screen.
 
-## Colour
+## Colour and type
 
-The tokens are defined once, in `src/app/globals.css` (`@theme`), and the older token names used by the editor and the Studio are mapped onto them.
-
-| Token | Value | Use |
-|---|---|---|
-| Ground | `#F1F2F4` | The cool light table the work lies on |
-| Sheet | `#FFFFFF` | Panels and the active navigation item |
-| Ink | `#1C1B29` | Text and every action |
-| Graphite | `#585767` | Secondary text, 6.5:1 on ground |
-| Rule | `#D9DBE1` | Dividers and outlines |
-| Field | `#80838F` | Edges of inputs, 3.37:1 on ground |
-| Crop | `#E94560` | CreatorBrio's coral, used only for the mark and the crop marks around selected work |
-| Early | `#6B4300` on `#FCEBC4` | The Early label |
-| Alert | `#A3243B` on `#FBE3E7` | Errors and destructive actions |
-
-Brand colours appear only inside work and inside brand samples, never in the interface itself.
-
-## Type
-
-Instrument Sans for everything, self-hosted at build time, using its width axis.
-Display headings are condensed (75% width), section headings 82%, and body text is normal width at 15 px.
-Geist Mono is kept for commands and codes.
-Brand fonts appear only inside work and brand samples.
+Design C's colour and type now follow [CreatorBrio Brand Identity v1.0](../brand/CREATORBRIO-BRAND-GUIDELINES.md) ([#189](https://github.com/mk-global/creatorbrio/issues/189)), which is the source of truth for the palette, the type roles, the logo and the action hierarchy.
+In short: the cool light table (Studio Canvas) under white sheets (Pure Paper), Midnight Ink for text and actions, Deep Coral only for the action that starts new work, and Brand Coral for the mark, the crop marks and every selected indicator.
+Instrument Sans sets the interface with Design C's condensed display widths (75% for titles, 82% for section headings), and Geist Mono sets technical values.
+The tokens are defined once, in `src/app/globals.css`, and the older token names used by the editor and the Studio are mapped onto them.
+Brand colours and fonts, meaning the brands people create, appear only inside work and inside brand samples, never in the interface itself.
 
 ## Layout
 

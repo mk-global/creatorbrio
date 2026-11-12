@@ -57,7 +57,7 @@ export function MediaBin() {
   return (
     <section aria-labelledby="studio-media-title" className="flex min-h-0 flex-col border-r border-border bg-surface">
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-3">
-        <h2 id="studio-media-title" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <h2 id="studio-media-title" className="text-[13px] font-semibold text-foreground">
           Media
         </h2>
         {media.length > 0 && <span className="text-[11px] text-muted-foreground tabular-nums">{media.length} in library</span>}

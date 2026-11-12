@@ -19,13 +19,13 @@ export default function BrandsPage() {
     <div>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="display text-[44px] lg:text-[56px]">Brands</h1>
+          <h1 className="type-title">Brands</h1>
           <p className="mt-2 max-w-[62ch] text-graphite">
             A brand is the colours, fonts and style Claude designs with. New projects use the brand you choose here; a project keeps its brand for life.
           </p>
           <p className="mt-1 text-[14px] text-graphite">Brands can&apos;t be deleted yet.</p>
         </div>
-        <Link href="/brands/new" className="btn btn-primary">
+        <Link href="/brands/new" className="btn btn-create">
           New brand
         </Link>
       </div>
@@ -42,7 +42,7 @@ export default function BrandsPage() {
             const active = b.id === selectedBrandId;
             const count = counts?.filter((p) => p.brandId === b.id).length;
             return (
-              <li key={b.id} className={`panel flex min-w-0 flex-col p-6 ${active ? "shadow-[inset_0_0_0_2px_var(--color-ink)]" : ""}`}>
+              <li key={b.id} className={`panel flex min-w-0 flex-col p-6 ${active ? "shadow-[inset_0_0_0_2px_var(--color-crop)]" : ""}`}>
                 <div className="flex flex-wrap items-center gap-2">
                   {active && <span className="tag tag-neutral">Used for new work</span>}
                   {b.id === defaultBrandId && <span className="tag tag-neutral">Default</span>}

@@ -49,7 +49,7 @@ export default function ProjectsPage() {
 
   return (
     <div>
-      <h1 className="display text-[44px] lg:text-[56px]">Projects</h1>
+      <h1 className="type-title">Projects</h1>
       <p className="mt-2 text-graphite">
         {scope === "brand" ? <>Everything made for {brandDisplayName(selectedBrand)}.</> : <>Everything, across all brands.</>}
       </p>
@@ -70,7 +70,7 @@ export default function ProjectsPage() {
                 type="button"
                 aria-pressed={scope === s}
                 onClick={() => setScope(s)}
-                className={`h-8 rounded-md px-3 text-[13.5px] font-medium ${scope === s ? "bg-sheet shadow-[0_1px_2px_rgb(28_27_41/0.15)]" : "text-graphite"}`}
+                className={`h-8 rounded-md px-3 text-[13.5px] font-medium ${scope === s ? "bg-sheet shadow-[0_1px_2px_color-mix(in_srgb,var(--color-ink)_15%,transparent)]" : "text-graphite"}`}
               >
                 {s === "brand" ? "This brand" : "All brands"}
               </button>
@@ -116,16 +116,16 @@ export default function ProjectsPage() {
             Reading your projects…
           </p>
         ) : all.length === 0 ? (
-          <div className="max-w-[56ch] py-10">
-            <h2 className="display-md text-[26px]">No projects yet</h2>
+          <div className="max-w-[640px] rounded-[14px] bg-blush p-6 sm:p-8">
+            <h2 className="type-section">No projects yet</h2>
             <p className="mt-2 text-graphite">A project is one carousel, document or Reel cover, with its slides, chat and exports. Start one and it appears here.</p>
-            <Link href="/create" className="btn btn-primary mt-5">
+            <Link href="/create" className="btn btn-create mt-5">
               Start a project
             </Link>
           </div>
         ) : shown.length === 0 ? (
           <div className="max-w-[56ch] py-10">
-            <h2 className="display-md text-[26px]">No projects match</h2>
+            <h2 className="type-section">No projects match</h2>
             <p className="mt-2 text-graphite">{scope === "brand" ? "Try all brands, another format or a shorter search." : "Try another format or a shorter search."}</p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button

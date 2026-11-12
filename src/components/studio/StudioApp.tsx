@@ -64,7 +64,7 @@ export function StudioApp() {
   const header = (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="display text-[40px] lg:text-[52px]">Video Studio</h1>
+        <h1 className="type-title">Video Studio</h1>
         <span className="tag tag-early h-6 px-2.5 text-[13px]">Early</span>
       </div>
       {pairing.status === "paired" && (

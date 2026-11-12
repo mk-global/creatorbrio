@@ -122,7 +122,7 @@ function CueRow({ index, cue, fps, onChange, onRemove, onSubmit, errors }: CueRo
     <li className={cn("rounded-lg border border-border bg-background/60 p-2", invalid && "border-destructive/60")}>
       <div className="mb-1.5 flex items-center gap-2">
         <span className="text-[11px] font-medium text-foreground">Cue {n}</span>
-        <span className="text-[11px] tabular-nums text-muted-foreground">
+        <span className="meta text-muted-foreground">
           {tc(cue.start)} to {tc(cue.end)}
         </span>
         <Button type="button" variant="ghost" size="icon" className="ml-auto h-6 w-6 text-muted-foreground hover:text-destructive" onClick={onRemove} aria-label={`Remove cue ${n}`}>

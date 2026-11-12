@@ -17,7 +17,7 @@ export function StudioIntro() {
   return (
     <div className="grid gap-5 lg:grid-cols-2">
       <section aria-labelledby="studio-works" className="panel p-6">
-        <h2 id="studio-works" className="display-md text-[22px]">
+        <h2 id="studio-works" className="type-section">
           Works today
         </h2>
         <ul className="mt-4 space-y-2.5">
@@ -30,7 +30,7 @@ export function StudioIntro() {
         </ul>
       </section>
       <section aria-labelledby="studio-not-yet" className="rounded-[14px] p-6 shadow-[inset_0_0_0_1px_var(--color-rule)]">
-        <h2 id="studio-not-yet" className="display-md text-[22px]">
+        <h2 id="studio-not-yet" className="type-section">
           Not built yet
         </h2>
         <ul className="mt-4 space-y-2.5">

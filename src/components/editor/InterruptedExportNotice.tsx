@@ -75,7 +75,7 @@ export function InterruptedExportNotice({
   return (
     <div role="dialog" aria-label="Generation did not finish" className="p-2">
       <div className="flex items-start gap-2">
-        <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+        <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold text-foreground">{HEADLINE[reason]}</p>
           <p className="text-xs text-muted-foreground mt-1">{interruptedNoticeText(slideCount, plannedSlides)}</p>

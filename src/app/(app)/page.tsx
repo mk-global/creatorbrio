@@ -23,7 +23,7 @@ const linkCls =
 function SectionHead({ id, title, link }: { id: string; title: string; link?: React.ReactNode }) {
   return (
     <div className="flex items-end justify-between gap-4">
-      <h2 id={id} className="display-md text-[24px] sm:text-[28px] lg:text-[30px]">
+      <h2 id={id} className="type-section">
         {title}
       </h2>
       {link}
@@ -77,14 +77,14 @@ export default function Home() {
             </>
           )}
         </p>
-        <h1 id="make" className="display mt-2 text-[44px] sm:text-[56px] lg:text-[72px]">
+        <h1 id="make" className="type-hero mt-2">
           What do you want to make?
         </h1>
 
         {selectedBrand && !brandIsSetUp(selectedBrand) && (
           <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-4 rounded-[14px] bg-sheet p-5 shadow-[inset_0_0_0_1px_var(--color-rule)] sm:p-6">
             <div className="min-w-0 flex-[1_1_320px]">
-              <h2 className="display-md text-[24px]">Set up your brand first</h2>
+              <h2 className="type-section">Set up your brand first</h2>
               <p className="mt-1 max-w-[60ch] text-graphite">
                 A name, five colours, two fonts and a few words about your style. It takes about a minute, and every design uses it.
               </p>
@@ -110,7 +110,7 @@ export default function Home() {
           </label>
           <input
             id="idea"
-            className="h-11 w-full min-w-0 shrink-0 rounded-lg px-3 text-[15px] outline-none placeholder:text-[#6c6b7a] focus-visible:shadow-[inset_0_0_0_2px_var(--color-ink)] sm:w-auto sm:flex-1"
+            className="h-11 w-full min-w-0 shrink-0 rounded-lg px-3 text-[15px] outline-none placeholder:text-placeholder focus-visible:shadow-[inset_0_0_0_2px_var(--color-ink)] sm:w-auto sm:flex-1"
             placeholder="Or start from an idea: three small habits for a calmer morning"
             value={idea}
             maxLength={2000}
@@ -132,7 +132,7 @@ export default function Home() {
                 </option>
               ))}
             </select>
-            <button type="submit" className="btn btn-primary h-11 flex-[1_1_auto] sm:flex-none" disabled={!idea.trim()}>
+            <button type="submit" className="btn btn-create h-11 flex-[1_1_auto] sm:flex-none" disabled={!idea.trim()}>
               Set up project
             </button>
           </div>

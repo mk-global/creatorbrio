@@ -209,7 +209,7 @@ export default function CarouselEditorPage({ params }: PageProps) {
   if (notFound) {
     return (
       <div className="mx-auto max-w-[640px] overflow-y-auto px-6 py-24">
-        <h1 className="display text-[44px]">Project not found</h1>
+        <h1 className="type-title">Project not found</h1>
         <p className="mt-2 text-graphite">It may have been deleted.</p>
         <Link href="/projects" className="btn btn-primary mt-6">
           Back to projects
@@ -221,7 +221,7 @@ export default function CarouselEditorPage({ params }: PageProps) {
   if (!carousel && loadError) {
     return (
       <div className="mx-auto max-w-[640px] overflow-y-auto px-6 py-24">
-        <h1 className="display text-[44px]">Couldn&apos;t open this project</h1>
+        <h1 className="type-title">Couldn&apos;t open this project</h1>
         <p className="mt-2 break-words text-graphite">{loadError}</p>
         <p className="mt-1 text-[14px] text-graphite">Nothing was deleted. Your data files were left as they are.</p>
         <Link href="/projects" className="btn btn-primary mt-6">

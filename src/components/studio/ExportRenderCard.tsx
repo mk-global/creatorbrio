@@ -18,7 +18,7 @@ import { ExportDownloads } from "./ExportDownloads";
 const TONES: Record<RenderTone, string> = {
   neutral: "bg-muted text-muted-foreground",
   progress: "bg-accent/10 text-accent",
-  success: "bg-emerald-500/10 text-emerald-700",
+  success: "bg-ok-bg text-ok",
   danger: "bg-destructive/10 text-destructive",
 };
 
@@ -83,7 +83,7 @@ export function ExportRenderCard({ render, currentRevision, showVideo, act }: Pr
 
       {status.failure && <p className="mt-2 text-xs text-destructive">{status.failure}</p>}
       {status.verification && (
-        <p className={cn("mt-2 flex items-center gap-1.5 text-xs", status.verification.ok ? "text-emerald-700" : "text-destructive")}>
+        <p className={cn("mt-2 flex items-center gap-1.5 text-xs", status.verification.ok ? "text-ok" : "text-destructive")}>
           {status.verification.ok ? <CircleCheck className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <CircleX className="h-3.5 w-3.5 shrink-0" aria-hidden />}
           {status.verification.text}
         </p>

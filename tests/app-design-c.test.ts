@@ -142,6 +142,62 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     await page.close();
   }, 60_000);
 
+  it("wears the CreatorBrio identity: its icons, coral creation, outlined deletion, type roles and mono metadata (#189)", async () => {
+    // The browser and device icons are the brand's, linked from every page.
+    const html = await (await fetch(`${app.url}/`)).text();
+    const icons = [...html.matchAll(/<link rel="(icon|apple-touch-icon)" href="([^"?]+)[^>]*>/g)].map(([, rel, href]) => `${rel} ${href}`);
+    expect(icons).toEqual(["icon /favicon.ico", "icon /icon.svg", "apple-touch-icon /apple-icon.png"]);
+    expect(await (await fetch(`${app.url}/icon.svg`)).text()).toContain("M1 5V1h4");
+    const ico = await fetch(`${app.url}/favicon.ico`);
+    expect(ico.status).toBe(200);
+    expect(Buffer.from(await ico.arrayBuffer()).readUInt16LE(4)).toBe(3);
+
+    const page = await openPage();
+    const style = (selector: string, ...props: string[]) =>
+      page.$eval(selector, (el, names) => names.map((n) => getComputedStyle(el).getPropertyValue(n)), props);
+
+    await settled(page, "/");
+    await page.waitForSelector("aside .btn-create");
+    // Deep Coral fills the action that starts new work.
+    expect(await style("aside .btn-create", "background-color", "color")).toEqual(["rgb(191, 57, 79)", "rgb(255, 255, 255)"]);
+    const [heroSize, heroFamily] = await style("h1#make", "font-size", "font-family");
+    expect(heroSize).toBe("48px");
+    expect(heroFamily).toMatch(/Instrument Sans/);
+    // The current page is marked with Brand Coral.
+    expect(await style('aside a[aria-current="page"] svg', "color")).toEqual(["rgb(233, 69, 96)"]);
+
+    await settled(page, "/projects");
+    expect(await style("h1", "font-size")).toEqual(["32px"]);
+
+    // Technical values are Geist Mono; the interface is Instrument Sans.
+    await settled(page, `/carousel/${carouselId}`);
+    await page.waitForSelector("header .meta");
+    const meta = await page.$eval("header .meta", (el) => ({ text: el.textContent ?? "", family: getComputedStyle(el).fontFamily }));
+    expect(meta.text).toContain("1080 × 1350");
+    expect(meta.family).toMatch(/Geist Mono/);
+    expect((await style("body", "font-family"))[0]).toMatch(/Instrument Sans/);
+
+    // The current slide is named to assistive technology and outlined twice in coral, so it never depends on colour alone.
+    const current = () => page.$$eval('button[aria-current="true"][aria-label^="Select slide"]', (els) => els.map((el) => [el.getAttribute("aria-label"), getComputedStyle(el).boxShadow]));
+    const first = await current();
+    expect(first.map(([name]) => name)).toEqual(["Select slide 1"]);
+    expect(first[0][1]).toContain("rgb(233, 69, 96)");
+    await (await page.waitForSelector('::-p-aria([name="Select slide 2"][role="button"])'))!.click();
+    await page.waitForFunction(() => document.querySelector('button[aria-current="true"]')?.getAttribute("aria-label") === "Select slide 2");
+    expect((await current()).map(([name]) => name)).toEqual(["Select slide 2"]);
+
+    // Deleting is an alert outline on paper: never a fill that could read as the create action.
+    await settled(page, "/templates");
+    await (await page.waitForSelector('::-p-aria([name="Delete template Menu launch"][role="button"])'))!.click();
+    const confirm = await page.waitForSelector('::-p-aria([name="Delete template"][role="button"])');
+    const [bg, color] = await confirm!.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]);
+    expect([bg, color]).toEqual(["rgb(255, 255, 255)", "rgb(163, 36, 59)"]);
+    await page.keyboard.press("Escape");
+    const kept = await api<{ templates: { id: string }[] }>(`/api/templates`);
+    expect(kept.body.templates.map((t) => t.id)).toContain(templateId);
+    await page.close();
+  }, 120_000);
+
   it("has no horizontal overflow on any page at 1440, 1280, 768, 390 and 320 px", async () => {
     const page = await openPage();
     const overflow: string[] = [];

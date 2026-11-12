@@ -15,7 +15,7 @@ export function BrandPalette({ brand, height = "h-16" }: { brand: Pick<Brand, "c
           <li
             key={r.key}
             className="relative flex-1"
-            style={{ background: brand.colors[r.key], boxShadow: i ? "inset 1px 0 0 rgb(28 27 41 / 0.1)" : undefined }}
+            style={{ background: brand.colors[r.key], boxShadow: i ? "inset 1px 0 0 color-mix(in srgb, var(--color-ink) 10%, transparent)" : undefined }}
             title={`${r.label} ${brand.colors[r.key].toUpperCase()}`}
           >
             <span className="sr-only">
@@ -28,7 +28,7 @@ export function BrandPalette({ brand, height = "h-16" }: { brand: Pick<Brand, "c
         {COLOR_ROLES.map((r) => (
           <span key={r.key} className="min-w-0 truncate pr-1">
             <span className="block font-medium">{r.label}</span>
-            <span className="num block text-graphite">{brand.colors[r.key].toUpperCase()}</span>
+            <span className="meta block text-graphite">{brand.colors[r.key].toUpperCase()}</span>
           </span>
         ))}
       </div>
