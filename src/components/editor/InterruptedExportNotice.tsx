@@ -12,9 +12,35 @@ const HEADLINE: Record<InterruptionReason, string> = {
   "server-stopped": "The server stopped while slides were being generated",
 };
 
+/**
+ * What the notice says about the slides: how many of the planned ones exist
+ * when the plan is known, so a carousel with every planned slide is never
+ * said to be missing any (#187).
+ */
+export function interruptedNoticeText(slideCount: number, plannedSlides: number | null): string {
+  if (plannedSlides !== null && plannedSlides > 0) {
+    if (slideCount >= plannedSlides) {
+      return plannedSlides === 1
+        ? "The planned slide is saved, but the design agent stopped before it finished working on it. Select Continue in the chat to let it finish, or use the slide as it is."
+        : `All ${plannedSlides} planned slides are saved, but the design agent stopped before it finished working on them. Select Continue in the chat to let it finish, or use the slides as they are.`;
+    }
+    if (slideCount === 0) {
+      return plannedSlides === 1
+        ? "The planned slide was not saved. Select Continue in the chat to make it."
+        : `None of the ${plannedSlides} planned slides were saved. Select Continue in the chat to make them.`;
+    }
+    const missing = plannedSlides - slideCount;
+    return `${slideCount} of ${plannedSlides} planned slides are saved. Select Continue in the chat to make only the ${missing} missing ${missing === 1 ? "slide" : "slides"}, or use the slides as they are.`;
+  }
+  if (slideCount === 0) return "No slides were saved. Select Continue in the chat to make them.";
+  return `The ${slideCount === 1 ? "slide is" : `${slideCount} slides are`} saved, but the carousel may be incomplete. Select Continue in the chat to finish it, or use the slides as they are.`;
+}
+
 interface InterruptedExportNoticeProps {
   reason: InterruptionReason;
   slideCount: number;
+  /** How many slides the unfinished design planned, when its Continue offer says; null when unknown. */
+  plannedSlides?: number | null;
   /** Confirms the slides as they are; export opens once it resolves. */
   onAccept: () => Promise<void>;
 }
@@ -28,6 +54,7 @@ interface InterruptedExportNoticeProps {
 export function InterruptedExportNotice({
   reason,
   slideCount,
+  plannedSlides = null,
   onAccept,
 }: InterruptedExportNoticeProps) {
   const [accepting, setAccepting] = useState(false);
@@ -51,12 +78,7 @@ export function InterruptedExportNotice({
         <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold text-foreground">{HEADLINE[reason]}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {slideCount === 0
-              ? "No slides were saved."
-              : `The ${slideCount} slide${slideCount === 1 ? " is" : "s are"} saved, but the carousel may be incomplete.`}{" "}
-            Select Continue in the chat to make only the missing slides, or use the slides as they are.
-          </p>
+          <p className="text-xs text-muted-foreground mt-1">{interruptedNoticeText(slideCount, plannedSlides)}</p>
           {error && (
             <p role="alert" className="text-xs text-destructive mt-1 break-words">
               {error}

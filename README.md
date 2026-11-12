@@ -130,7 +130,8 @@ If setup cannot find the Claude CLI, set `CLAUDE_CLI_PATH` in `.env.local` to th
 5. Ask for changes in the same chat, such as *"make slide 3 more minimal"* or *"write the caption and hashtags"*.
 6. Open **Export** and choose **Instagram · PNG ZIP** or **LinkedIn · PDF** (a Reel cover also offers its single PNG first).
 
-The design step has a 15-minute time limit (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600) and no spending cap unless you set `DESIGN_AGENT_MAX_BUDGET_USD` in `.env.local`.
+The design step has a 30-minute time limit (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600) and no spending cap unless you set `DESIGN_AGENT_MAX_BUDGET_USD` in `.env.local`.
+It is also stopped after 5 minutes without output (`DESIGN_AGENT_INACTIVITY_SECONDS`, 60 to 900 and shorter than the time limit), so a stuck run ends early; either way the saved slides are kept and **Continue** carries on from them.
 Planning has a 120-second time limit and no spending cap unless you set `DIRECTOR_MAX_BUDGET_USD`.
 Your Claude account's own usage limits always apply; the costs CreatorBrio logs are the CLI's list-price estimates, not invoiced charges.
 

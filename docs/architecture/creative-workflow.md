@@ -130,9 +130,9 @@ The image service may keep generating an image it already started until it finis
 | Generated images per message | 5, and never more than the slide count |
 | One image | 150 seconds, or less when the stage has less time left |
 | Image stage | 12 minutes |
-| Design Agent | 15 minutes by default (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600 seconds); no spending cap unless `DESIGN_AGENT_MAX_BUDGET_USD` sets one |
+| Design Agent | 30 minutes by default (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600 seconds), and 5 minutes without output (`DESIGN_AGENT_INACTIVITY_SECONDS`, 60 to 900 seconds, shorter than the deadline); no spending cap unless `DESIGN_AGENT_MAX_BUDGET_USD` sets one |
 
-A run can therefore hold the chat request open for about 30 minutes in the worst case with the default settings.
+A run can therefore hold the chat request open for about 45 minutes in the worst case with the default settings.
 The route declares a matching `maxDuration`, which a self-hosted Next.js server does not enforce; these limits are the real bound.
 The Director runs on every message, including small edits, which adds its planning time and cost to each message.
 
@@ -140,11 +140,12 @@ The Director runs on every message, including small edits, which adds its planni
 
 The Design Agent had a fixed USD 1.00 cap and a fixed 8-minute limit.
 The CLI's cost estimate grows with every slide's tool call, so the cap stopped legitimate 8-to-10-slide carousels part-way.
-Now the Design Agent has no cap of its own unless the operator sets `DESIGN_AGENT_MAX_BUDGET_USD` (an invalid value is refused before anything runs), and its deadline is `DESIGN_AGENT_TIMEOUT_SECONDS`, 15 minutes by default, after which the CLI is stopped and, if it ignores that, killed five seconds later.
+Now the Design Agent has no cap of its own unless the operator sets `DESIGN_AGENT_MAX_BUDGET_USD` (an invalid value is refused before anything runs).
+Its execution limits are described under [Execution limits (#187)](#execution-limits-187).
 Both are separate from the Director's settings. The account's own provider limits are unchanged.
 
-How a design ends is reported distinctly: the operator's cap (`budget_exceeded`), a usage, rate or spending limit outside CreatorBrio as the CLI reports it (`usage_limited`, never blamed on CreatorBrio), the deadline (`timed_out`), Stop (no error), a lost session (`session_not_found`), a setting that is not valid, or any other failure (`agent_failed`).
-The `[chat] run finished` log line carries the run ID, the stage, the failure category, the configured cap and deadline, the duration, the CLI's token usage and estimated cost, the slides saved and planned, and whether Continue is available; never the message, the plan or slide copy.
+How a design ends is reported distinctly: the operator's cap (`budget_exceeded`), a usage, rate or spending limit outside CreatorBrio as the CLI reports it (`usage_limited`, never blamed on CreatorBrio), the deadline (`timed_out`), the inactivity limit (`stalled`), Stop (no error), a lost session (`session_not_found`), a setting that is not valid, or any other failure (`agent_failed`).
+The `[chat] run finished` log line carries the run ID, the stage, the failure category, the configured cap, deadline and inactivity limit, which limit stopped the run (`limit`), when design started, when the CLI last wrote output, how long it had been quiet and its longest quiet period (`longestQuietMs`, measured until a limit fires), when the carousel was last written, the duration, the CLI's token usage and estimated cost, the slides saved and planned, and whether Continue is available; never the message, the plan or slide copy.
 The Director logs `[director] plan finished` and the exporter `[export]`, so a failure's origin is always visible.
 
 From the moment design starts, the run record keeps the validated plan, the exact task the Design Agent was given and each plan image's asset ID.
@@ -156,6 +157,26 @@ When the Design Agent resumes the run's own conversation the original task is al
 A completed continuation clears the offer and the interruption, and runs the usual conformance check against the stored plan.
 The offer is withdrawn when the user accepts the slides as they are, when a new request replaces the run, or 24 hours after the run ended; a stale or foreign `continueRunId` is refused and changes nothing.
 Nothing continues on its own.
+
+### Execution limits (#187)
+
+A design run has two execution limits, and the first to fire stops it.
+
+- The deadline, `DESIGN_AGENT_TIMEOUT_SECONDS`, 30 minutes by default, is absolute: no amount of output extends it.
+- The inactivity limit, `DESIGN_AGENT_INACTIVITY_SECONDS`, 5 minutes by default, stops a run whose CLI has written nothing to its standard output for that long. Any output resets it.
+- A set inactivity limit must be a whole number from 60 to 900 seconds and shorter than the deadline; anything else is refused before the run starts. The default applies only when the deadline is longer than 5 minutes.
+
+Either limit sends the CLI a stop and kills it five seconds later if it is still running, then reports `timed_out` or `stalled`.
+Both are recorded as a `timed-out` run, so the saved slides, the interrupted state, the export gate and Continue behave the same for both.
+The message states how many of the planned slides exist: when all of them do, it says so and offers Continue to let the agent finish or the slides as they are, and it never calls a slide missing that exists.
+A `[chat] design agent stopped by an execution limit` warning records which limit fired, the run's elapsed time and how long it had been quiet.
+
+The 15-minute deadline stopped a real 10-page run after all pages were saved, while the agent was still refining them (#185).
+Real runs took 437 to 1,062 seconds, so the deadline is now 30 minutes.
+The 5-minute limit was checked against a proxy: the gaps between recorded events in 71 design sessions (5,309 intervals), the longest 159 seconds during one long model turn, with calls to an advisor model taking up to 116 seconds.
+Standard output itself was not recorded; the CLI streams partial messages while a turn is in progress, so its silences are expected to be shorter.
+5 minutes leaves almost twice the longest gap while ending a stuck run 25 minutes sooner, and the run log's `longestQuietMs` measures the real silences from now on.
+A legitimately silent step longer than the limit is stopped as `stalled`; Continue resumes it, and the operator can raise the limit to 15 minutes.
 
 ### Verifying the workflow end to end
 
