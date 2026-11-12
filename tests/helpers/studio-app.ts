@@ -43,6 +43,8 @@ export interface BuiltApp {
   scratch: string;
   restart(): Promise<void>;
   stop(): Promise<void>;
+  /** The end of the server's output, for a failure message. */
+  logTail(chars?: number): string;
 }
 
 async function waitForReady(url: string, child: ChildProcess, log: () => string): Promise<void> {
@@ -129,5 +131,6 @@ export async function startBuiltApp(port: number, options: { chromium?: string; 
       await stopChild();
       await rm(workdir, { recursive: true, force: true });
     },
+    logTail: (chars = 4000) => output.slice(-chars),
   };
 }

@@ -70,6 +70,13 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     return page;
   }
 
+  /** An export, failing with the app's own error and its log rather than a bare status. */
+  async function exportAs(id: string, format: string): Promise<Response> {
+    const res = await fetch(`${app.url}/api/carousels/${id}/export?format=${format}`, { method: "POST" });
+    if (res.status !== 200) throw new Error(`Export ${format} answered ${res.status}: ${await res.text()}\n--- server log ---\n${app.logTail()}`);
+    return res;
+  }
+
   async function settled(page: Page, path: string): Promise<void> {
     await page.goto(`${app.url}${path}`, { waitUntil: "networkidle0" });
   }
@@ -265,8 +272,7 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     // The editor's main export for a one-slide cover is the single PNG, at 1080 × 1920.
     await page.reload({ waitUntil: "networkidle0" });
     await page.waitForFunction(() => document.body.innerText.includes("1080 × 1920"), { timeout: 15_000 });
-    const png = await fetch(`${app.url}/api/carousels/${id}/export?format=single-png`, { method: "POST" });
-    expect(png.status).toBe(200);
+    const png = await exportAs(id, "single-png");
     expect(png.headers.get("content-type")).toBe("image/png");
     const bytes = Buffer.from(await png.arrayBuffer());
     expect(bytes.subarray(1, 4).toString()).toBe("PNG");
@@ -276,8 +282,7 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
   }, 120_000);
 
   it("exports a LinkedIn document as one PDF", async () => {
-    const pdf = await fetch(`${app.url}/api/carousels/${documentId}/export?format=pdf`, { method: "POST" });
-    expect(pdf.status).toBe(200);
+    const pdf = await exportAs(documentId, "pdf");
     expect(pdf.headers.get("content-type")).toBe("application/pdf");
     const bytes = Buffer.from(await pdf.arrayBuffer());
     expect(bytes.subarray(0, 5).toString()).toBe("%PDF-");

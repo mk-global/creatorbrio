@@ -13,7 +13,11 @@ import { existsSync } from "node:fs";
 import { chromiumPath } from "./native-pdf";
 import { builtAppMissing } from "./studio-app";
 
+// The real binaries come first: /usr/bin/google-chrome on Linux is a shell
+// wrapper that needs readlink and dirname on PATH, and the test server's PATH
+// holds only Node and the media tools, so the wrapper cannot start there.
 const SYSTEM_BROWSERS = [
+  "/opt/google/chrome/chrome",
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",
