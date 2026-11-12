@@ -87,11 +87,6 @@ export function SlideFace({ html, aspectRatio, title = "Slide preview" }: { html
     if (!el) return;
     const resize = new ResizeObserver(([entry]) => setScale(entry.contentRect.width / width));
     resize.observe(el);
-    // Older engines without IntersectionObserver simply render at once.
-    if (typeof IntersectionObserver === "undefined") {
-      setNear(true);
-      return () => resize.disconnect();
-    }
     const seen = new IntersectionObserver(([entry]) => entry.isIntersecting && setNear(true), { rootMargin: "300px" });
     seen.observe(el);
     return () => {
