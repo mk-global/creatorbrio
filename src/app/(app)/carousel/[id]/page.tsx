@@ -297,6 +297,7 @@ export default function CarouselEditorPage({ params }: PageProps) {
             aspectRatio={carousel.aspectRatio}
             generating={generationActive}
             interrupted={generation.interrupted}
+            plannedSlides={generation.continuation?.expected ?? null}
             onAcceptInterrupted={generation.acceptSlides}
             primary={primaryExportFor(format, carousel.slides.length)}
           />

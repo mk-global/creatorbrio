@@ -13,11 +13,13 @@ import {
   CHAT_ERROR_MESSAGES,
   checkChatMessage,
   encodeChatEvent,
+  executionLimitMessage,
   isRunId,
   isSessionId,
   MAX_CHAT_MESSAGE_LENGTH,
   type ChatErrorCode,
   type ChatStreamEvent,
+  type ExecutionLimit,
 } from "@/lib/chat-stream";
 import { finishCreativeRun, prepareCreativeRun, type CreativeRunInput } from "@/lib/creative-run";
 import { checkConformance } from "@/lib/creative-handoff";
@@ -33,10 +35,10 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // The longest creative run with default settings: linked pages (30 s),
-// planning (120 s), images (12 min) and design (15 min), about 30 minutes. A
+// planning (120 s), images (12 min) and design (30 min), about 45 minutes. A
 // self-hosted Next.js server does not enforce this value; the stage limits,
 // including an operator's DESIGN_AGENT_TIMEOUT_SECONDS, are the real bound.
-export const maxDuration = 1800;
+export const maxDuration = 2700;
 
 type DesignRun = Extract<Awaited<ReturnType<typeof prepareCreativeRun>>, { kind: "design" }>;
 
@@ -201,10 +203,10 @@ export async function POST(request: NextRequest) {
       // Only the first failure is reported: it is the cause, and anything
       // after it (a non-zero exit following an error result) is a consequence.
       let errorCode: ChatErrorCode | null = null;
-      const fail = (code: ChatErrorCode) => {
+      const fail = (code: ChatErrorCode, message: string = CHAT_ERROR_MESSAGES[code]) => {
         if (errorCode || cancelled) return;
         errorCode = code;
-        send({ type: "error", code, message: CHAT_ERROR_MESSAGES[code] });
+        send({ type: "error", code, message });
       };
       const close = () => {
         try {
@@ -277,7 +279,7 @@ export async function POST(request: NextRequest) {
 
       function design(taskMessage: string, creativeRun: DesignRun | null) {
       if (!settings.ok) return;
-      const { timeoutMs } = settings;
+      const { timeoutMs, inactivityMs } = settings;
       let childProcess: ReturnType<typeof spawn>;
       const isWindowsShim =
         process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
@@ -403,6 +405,53 @@ export async function POST(request: NextRequest) {
         }
       };
 
+      // The two execution limits (#187). The deadline is absolute. The
+      // inactivity watchdog is reset by anything the CLI writes to its
+      // standard output, and output can never move the deadline. The first
+      // limit to fire is the only one: it clears both, stops the CLI, and
+      // kills it outright if it ignores the stop, so the run always ends.
+      let limitFired: ExecutionLimit | null = null;
+      let exited = false;
+      // The activity that tells a working agent from a stuck one, measured
+      // until a limit fires: output after the stop does not count.
+      let lastOutput: number | null = null;
+      let longestQuiet = 0;
+      let stoppedAt: number | null = null;
+      let limitKill: ReturnType<typeof setTimeout> | null = null;
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearLimits = () => {
+        clearTimeout(deadline);
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        inactivityTimer = null;
+      };
+      const stopFor = (limit: ExecutionLimit) => {
+        if (limitFired || exited || cancelled) return;
+        limitFired = limit;
+        timedOut = true;
+        clearLimits();
+        const now = Date.now();
+        stoppedAt = now;
+        // An expected outcome, not a fault: counts and times only.
+        console.warn("[chat] design agent stopped by an execution limit", {
+          carouselId: carouselId ?? null,
+          runId: creativeRun?.runId ?? null,
+          limit,
+          timeoutMs,
+          inactivityMs,
+          elapsedMs: now - designStarted,
+          quietMs: now - (lastOutput ?? designStarted),
+        });
+        childProcess.kill();
+        limitKill = setTimeout(() => childProcess.kill("SIGKILL"), FORCE_KILL_AFTER_MS);
+      };
+      const deadline = setTimeout(() => stopFor("deadline"), timeoutMs);
+      const watchOutput = () => {
+        if (inactivityMs === null || limitFired || exited) return;
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(() => stopFor("inactivity"), inactivityMs);
+      };
+      watchOutput();
+
       let buffer = "";
       const handleLine = (line: string) => {
         if (!line.trim()) return;
@@ -418,6 +467,12 @@ export async function POST(request: NextRequest) {
       };
 
       childProcess.stdout?.on("data", (chunk: Buffer) => {
+        if (!limitFired) {
+          const now = Date.now();
+          longestQuiet = Math.max(longestQuiet, now - (lastOutput ?? designStarted));
+          lastOutput = now;
+          watchOutput();
+        }
         buffer += chunk.toString();
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
@@ -432,17 +487,8 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      // The design run's deadline (DESIGN_AGENT_TIMEOUT_SECONDS). A CLI that
-      // ignores the stop is killed outright, so the run always ends.
-      let deadlineKill: ReturnType<typeof setTimeout> | null = null;
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        childProcess.kill();
-        deadlineKill = setTimeout(() => childProcess.kill("SIGKILL"), FORCE_KILL_AFTER_MS);
-      }, timeoutMs);
-
       childProcess.on("error", async (err) => {
-        clearTimeout(timeout);
+        clearLimits();
         // A cancelled chat reports an AbortError as soon as the kill is sent,
         // while the subprocess may still be finishing a write. Release here
         // only if it never started or has already gone; otherwise "exit" will.
@@ -480,13 +526,26 @@ export async function POST(request: NextRequest) {
       });
 
       childProcess.on("exit", async (code) => {
-        clearTimeout(timeout);
-        if (deadlineKill) clearTimeout(deadlineKill);
+        exited = true;
+        const endedAt = Date.now();
+        const activityEnd = stoppedAt ?? endedAt;
+        clearLimits();
+        if (limitKill) clearTimeout(limitKill);
         handleLine(buffer);
         buffer = "";
 
-        if (timedOut) {
-          fail("timed_out");
+        // Read once, for the stop message and the run log; the CLI has exited,
+        // so nothing changes the slides any more.
+        const after = carouselId ? await getCarousel(carouselId).catch(() => null) : null;
+        if (limitFired) {
+          fail(
+            limitFired === "deadline" ? "timed_out" : "stalled",
+            executionLimitMessage(limitFired, {
+              limitMs: limitFired === "deadline" ? timeoutMs : (inactivityMs ?? timeoutMs),
+              saved: after ? after.slides.length : null,
+              expected: creativeRun?.plan.execution.slideCount ?? null,
+            })
+          );
         } else if (code !== 0 && !cancelled) {
           // Non-zero, or killed by a signal nobody here sent.
           fail(resumeFailed() ? "session_not_found" : providerError ? "usage_limited" : "agent_failed");
@@ -509,8 +568,7 @@ export async function POST(request: NextRequest) {
 
         // A session that could not be resumed is not offered again.
         const nextSessionId = errorCode === "session_not_found" ? null : resolvedSessionId;
-        // Counts, codes and settings only: never the message, the plan or slide copy.
-        const after = carouselId ? await getCarousel(carouselId).catch(() => null) : null;
+        // Counts, codes, settings and times only: never the message, the plan or slide copy.
         const offer = carouselId && outcome !== "completed" ? await continuationOffer(carouselId).catch(() => null) : null;
         console.info("[chat] run finished", {
           carouselId: carouselId ?? null,
@@ -526,7 +584,17 @@ export async function POST(request: NextRequest) {
           providerError,
           budgetUsd,
           timeoutMs,
-          designDurationMs: Date.now() - designStarted,
+          inactivityMs,
+          // Which execution limit stopped the run, if one did, and the
+          // activity that tells a working agent from a stuck one (#187).
+          limit: limitFired,
+          designStartedAt: new Date(designStarted).toISOString(),
+          lastOutputAt: lastOutput === null ? null : new Date(lastOutput).toISOString(),
+          quietMs: activityEnd - (lastOutput ?? designStarted),
+          // The longest the CLI went without output, the evidence for the inactivity limit.
+          longestQuietMs: Math.max(longestQuiet, activityEnd - (lastOutput ?? designStarted)),
+          lastCarouselWriteAt: after && Date.parse(after.updatedAt) >= designStarted ? after.updatedAt : null,
+          designDurationMs: endedAt - designStarted,
           designCostUsd,
           designUsage,
           designTurns,

@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import type { BrandConfig } from "@/types/brand";
-import { CHAT_ERROR_MESSAGES, createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
+import { CHAT_ERROR_MESSAGES, createChatStreamParser, executionLimitMessage, type ChatStreamEvent } from "@/lib/chat-stream";
 import {
+  DEFAULT_DESIGN_AGENT_INACTIVITY_SECONDS,
   DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS,
   DESIGN_AGENT_BUDGET_ENV,
+  DESIGN_AGENT_INACTIVITY_ENV,
   DESIGN_AGENT_TIMEOUT_ENV,
   designAgentArgs,
   designAgentSettings,
@@ -57,14 +59,18 @@ const OTHER_SESSION = "0f8b7c2e-3d4a-4b5c-9d6e-7f8091a2b3c4";
  * The scenario is JSON: `before` events, then (with `wait`) a pause until the
  * test writes the `proceed` file, then `after` events and `exit`; `hang`
  * never exits, `ignoreSigterm` survives a plain kill. `resumeMissing` plays
- * the real CLI's answer to a session it cannot find.
+ * the real CLI's answer to a session it cannot find. With `beats`, each
+ * `beat-<n>` file the test writes makes the CLI print "beat <n>", in order:
+ * output at exactly the moment a test chooses.
  */
 const FAKE_CLAUDE = `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const dir = process.env.FAKE_CLAUDE_DIR;
-writeFileSync(path.join(dir, "pid"), String(process.pid));
+// The arguments are recorded before the pid announces the process, so a test
+// that waits for the pid can always read this invocation's arguments.
 appendFileSync(path.join(dir, "argv.jsonl"), JSON.stringify(process.argv.slice(2)) + "\\n");
+writeFileSync(path.join(dir, "pid"), String(process.pid));
 const s = JSON.parse(readFileSync(path.join(dir, "scenario.json"), "utf8"));
 // Options are parsed like the real CLI's: anything before "--" that starts
 // with "-" must be a known option, or the CLI refuses it before running.
@@ -91,6 +97,15 @@ const session = requested ?? "${SESSION}";
 out({ type: "system", subtype: "init", session_id: session });
 const fill = (e) => (e.type === "result" ? { session_id: session, ...e } : e);
 for (const e of s.before ?? []) out(fill(e));
+if (s.beats) {
+  let beat = 1;
+  setInterval(() => {
+    while (existsSync(path.join(dir, "beat-" + beat))) {
+      out({ type: "assistant", message: { type: "message", content: [{ type: "text", text: "beat " + beat + " " }] } });
+      beat++;
+    }
+  }, 10);
+}
 const finish = () => {
   for (const e of s.after ?? []) out(fill(e));
   if (s.hang) setInterval(() => {}, 1000);
@@ -146,6 +161,7 @@ beforeEach(async () => {
   process.env.FAKE_CLAUDE_DIR = fakeDir;
   delete process.env[DESIGN_AGENT_BUDGET_ENV];
   delete process.env[DESIGN_AGENT_TIMEOUT_ENV];
+  delete process.env[DESIGN_AGENT_INACTIVITY_ENV];
   delete process.env[DIRECTOR_BUDGET_ENV];
   process.chdir(workdir);
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -178,6 +194,7 @@ afterEach(async () => {
   delete process.env.FAKE_CLAUDE_DIR;
   delete process.env[DESIGN_AGENT_BUDGET_ENV];
   delete process.env[DESIGN_AGENT_TIMEOUT_ENV];
+  delete process.env[DESIGN_AGENT_INACTIVITY_ENV];
   delete process.env[DIRECTOR_BUDGET_ENV];
   await rm(workdir, { recursive: true, force: true });
 });
@@ -201,6 +218,62 @@ async function waitFor(condition: () => boolean, timeoutMs = 5000) {
 }
 
 const started = () => waitFor(() => existsSync(path.join(fakeDir, "pid")));
+
+/**
+ * Waits on real time while the route's timers and clock are faked: it
+ * polls with setImmediate and measures with performance.now, neither of
+ * which the limit tests fake.
+ */
+async function settle(condition: () => boolean, timeoutMs = 5000) {
+  const deadline = performance.now() + timeoutMs;
+  while (!condition()) {
+    if (performance.now() > deadline) throw new Error("Timed out waiting for condition");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/** A chat stream read incrementally, so a test can act between its events. */
+function streamOf(res: Response) {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const parser = createChatStreamParser();
+  const events: ChatStreamEvent[] = [];
+  return {
+    events,
+    /** Reads until `condition` holds; fails if the stream ends first. */
+    async until(condition: (events: ChatStreamEvent[]) => boolean) {
+      while (!condition(events)) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error(`The stream ended early: ${JSON.stringify(events.map((e) => e.type))}`);
+        events.push(...parser.push(decoder.decode(value, { stream: true })));
+      }
+    },
+    /** Reads to the end of the stream. */
+    async drain() {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        events.push(...parser.push(decoder.decode(value, { stream: true })));
+      }
+      events.push(...parser.end());
+      return events;
+    },
+    /** The user's Stop: the client goes away. */
+    cancel: () => reader.cancel(),
+  };
+}
+
+const replied = (text: string) => (events: ChatStreamEvent[]) =>
+  events.some((e) => e.type === "token" && e.text.includes(text));
+
+/** Makes the agent print one line of output, and waits until the route has received it. */
+async function beat(run: ReturnType<typeof streamOf>, n: number) {
+  await writeFile(path.join(fakeDir, `beat-${n}`), "");
+  await run.until(replied(`beat ${n} `));
+}
+
+/** The warnings logged when an execution limit stops the agent. */
+const limitStops = () => vi.mocked(console.warn).mock.calls.filter((c) => c[0] === "[chat] design agent stopped by an execution limit");
 
 function postChat(body: Record<string, unknown>) {
   return chat(
@@ -286,7 +359,12 @@ function runLog(): Record<string, unknown> {
 describe("the Design Agent's spending cap (#127)", () => {
   it("passes no --max-budget-usd by default; main hardcoded 1.00", () => {
     const settings = designAgentSettings({});
-    expect(settings).toEqual({ ok: true, budgetUsd: null, timeoutMs: DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000 });
+    expect(settings).toEqual({
+      ok: true,
+      budgetUsd: null,
+      timeoutMs: DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000,
+      inactivityMs: DEFAULT_DESIGN_AGENT_INACTIVITY_SECONDS * 1000,
+    });
     const args = designAgentArgs({ taskMessage: "t", systemPrompt: "s", resumeSessionId: null, budgetUsd: null });
     expect(args).not.toContain("--max-budget-usd");
     expect(args).not.toContain("1.00");
@@ -298,7 +376,7 @@ describe("the Design Agent's spending cap (#127)", () => {
     await readEvents(await postChat({ message: "Make a carousel", carouselId: carousel.id }));
     const [argv] = await invocations();
     expect(argv).not.toContain("--max-budget-usd");
-    expect(runLog()).toMatchObject({ budgetUsd: null, timeoutMs: 900_000 });
+    expect(runLog()).toMatchObject({ budgetUsd: null, timeoutMs: 1_800_000, inactivityMs: 300_000 });
   });
 
   it.each([["2.5", "2.5"], [" 3 ", "3"], ["0.75", "0.75"]])("passes a configured cap %j exactly once", async (raw, passed) => {
@@ -367,7 +445,7 @@ describe("the task reaches the CLI as the task, never as an option (#127)", () =
 
 describe("the Design Agent's execution deadline (#127)", () => {
   it.each([
-    ["", 900_000],
+    ["", 1_800_000],
     ["60", 60_000],
     ["1200", 1_200_000],
     ["3600", 3_600_000],
@@ -412,12 +490,25 @@ describe("the Design Agent's execution deadline (#127)", () => {
       events.push(...parser.push(decoder.decode(value, { stream: true })));
     }
     vi.useRealTimers();
-    expect(events.find((e) => e.type === "error")).toEqual({ type: "error", code: "timed_out", message: CHAT_ERROR_MESSAGES.timed_out });
+    expect(events.find((e) => e.type === "error")).toEqual({
+      type: "error",
+      code: "timed_out",
+      message: executionLimitMessage("deadline", { limitMs: 120_000, saved: 3, expected: 8 }),
+    });
     expect((await getCarousel(carousel.id))!.slides).toHaveLength(3);
     const status = await statusOf(carousel.id);
     expect(status.interrupted).toMatchObject({ reason: "timed-out" });
     expect(status.continuation).toMatchObject({ saved: 3, expected: 8 });
-    expect(runLog()).toMatchObject({ failureCategory: "timed_out", timeoutMs: 120_000, slidesSaved: 3, slidesExpected: 8, continuationAvailable: true });
+    // The default inactivity limit is not shorter than a 2-minute deadline, so only the deadline applies.
+    expect(runLog()).toMatchObject({
+      failureCategory: "timed_out",
+      limit: "deadline",
+      timeoutMs: 120_000,
+      inactivityMs: null,
+      slidesSaved: 3,
+      slidesExpected: 8,
+      continuationAvailable: true,
+    });
   });
 
   it("kills a CLI that ignores the stop at the deadline, so the run always ends", async () => {
@@ -451,6 +542,270 @@ describe("the Design Agent's execution deadline (#127)", () => {
     expect(() => process.kill(pid, 0)).toThrow();
     expect(isGenerating(carousel.id)).toBe(false);
   }, 15_000);
+});
+
+describe("the inactivity watchdog and the absolute deadline (#187)", () => {
+  /** Fakes the route's timers and clock; real time is still measured by `settle`. */
+  const fakeTime = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+
+  it("defaults to a 30-minute deadline and a 5-minute inactivity limit", () => {
+    expect(designAgentSettings({})).toEqual({ ok: true, budgetUsd: null, timeoutMs: 1_800_000, inactivityMs: 300_000 });
+  });
+
+  it.each([
+    ["60", 60_000],
+    ["300", 300_000],
+    ["900", 900_000],
+  ])("reads an inactivity limit of %j as %d ms", (raw, ms) => {
+    expect(designAgentSettings({ [DESIGN_AGENT_INACTIVITY_ENV]: raw })).toMatchObject({ ok: true, inactivityMs: ms });
+  });
+
+  it("applies no inactivity limit when the deadline is not longer than the default one", () => {
+    expect(designAgentSettings({ [DESIGN_AGENT_TIMEOUT_ENV]: "300" })).toMatchObject({ ok: true, timeoutMs: 300_000, inactivityMs: null });
+    expect(designAgentSettings({ [DESIGN_AGENT_TIMEOUT_ENV]: "301" })).toMatchObject({ ok: true, inactivityMs: 300_000 });
+  });
+
+  it.each([
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "59" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "901" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "0" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "-5" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "90.5" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "5m" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "1e3" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "300", [DESIGN_AGENT_TIMEOUT_ENV]: "300" }],
+    [{ [DESIGN_AGENT_INACTIVITY_ENV]: "900", [DESIGN_AGENT_TIMEOUT_ENV]: "600" }],
+  ])("refuses %j before planning or starting the CLI", async (env) => {
+    Object.assign(process.env, env);
+    await play({ after: [success(0.4)] });
+    const carousel = await createCarousel("Bad inactivity limit", "4:5");
+    const events = await readEvents(await postChat({ message: "Make a carousel", carouselId: carousel.id }));
+    expect(events[0]).toEqual({ type: "error", code: "inactivity_setting_invalid", message: CHAT_ERROR_MESSAGES.inactivity_setting_invalid });
+    expect(await invocations()).toEqual([]);
+    expect(director.requests).toHaveLength(0);
+    expect((await getCarousel(carousel.id))!.slides).toHaveLength(0);
+  });
+
+  it("lets a run that keeps producing output work past the old 15-minute deadline", async () => {
+    director.restore();
+    director = stubDirector(planOf(10));
+    await play({ before: [text("Designing")], beats: true, wait: true, after: [success(4.1)] });
+    const carousel = await createCarousel("Long and productive", "4:5");
+    fakeTime();
+    const run = streamOf(await postChat({ message: "Make a 10 slides LinkedIn document", carouselId: carousel.id }));
+    await run.until(replied("Designing"));
+    // Output every 4 minutes for 24 minutes, saving pages along the way. Main stopped this run at 15 minutes.
+    for (let n = 1; n <= 6; n++) {
+      await vi.advanceTimersByTimeAsync(240_000);
+      if (n <= 5) await agentSaves(carousel.id, 2 * n - 1, 2 * n);
+      await beat(run, n);
+    }
+    expect(isGenerating(carousel.id)).toBe(true);
+    await proceed();
+    const events = await run.drain();
+    vi.useRealTimers();
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(await slidesOf(carousel.id)).toHaveLength(10);
+    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null, continuation: null });
+    expect(runLog()).toMatchObject({ outcome: "completed", limit: null, timeoutMs: 1_800_000, inactivityMs: 300_000, slidesSaved: 10 });
+    expect(limitStops()).toHaveLength(0);
+  });
+
+  it("stops a run that produces no output for 5 minutes as stalled, keeps its slides and offers Continue", async () => {
+    director.restore();
+    director = stubDirector(planOf(8));
+    await play({ before: [text("Designing")], beats: true, hang: true });
+    const carousel = await createCarousel("Stalled", "4:5");
+    fakeTime();
+    const start = Date.now();
+    const run = streamOf(await postChat({ message: "Make 8 slides", carouselId: carousel.id }));
+    await run.until(replied("Designing"));
+    await agentSaves(carousel.id, 1, 3);
+    // Output resets the watchdog; then the agent goes quiet.
+    await vi.advanceTimersByTimeAsync(200_000);
+    await beat(run, 1);
+    await vi.advanceTimersByTimeAsync(299_000);
+    expect(isGenerating(carousel.id)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const events = await run.drain();
+    vi.useRealTimers();
+
+    const errors = events.filter((e) => e.type === "error");
+    const message = executionLimitMessage("inactivity", { limitMs: 300_000, saved: 3, expected: 8 });
+    expect(errors).toEqual([{ type: "error", code: "stalled", message }]);
+    expect(message).toContain("3 of 8 planned slides");
+    expect(message).toContain("5 missing slides");
+    expect((await getCarousel(carousel.id))!.slides).toHaveLength(3);
+    const status = await statusOf(carousel.id);
+    expect(status.interrupted).toMatchObject({ reason: "timed-out" });
+    expect(status.continuation).toMatchObject({ saved: 3, expected: 8 });
+    expect((await requestExport(carousel.id)).status).toBe(409);
+    const log = runLog();
+    expect(log).toMatchObject({
+      outcome: "timed-out",
+      errorCode: "stalled",
+      failureCategory: "stalled",
+      limit: "inactivity",
+      timeoutMs: 1_800_000,
+      inactivityMs: 300_000,
+      quietMs: 300_000,
+      longestQuietMs: 300_000,
+      designStartedAt: new Date(start).toISOString(),
+      lastOutputAt: new Date(start + 200_000).toISOString(),
+      lastCarouselWriteAt: new Date(start).toISOString(),
+      slidesSaved: 3,
+      slidesExpected: 8,
+      continuationAvailable: true,
+    });
+    expect(limitStops()).toHaveLength(1);
+    expect(limitStops()[0][1]).toMatchObject({ limit: "inactivity", elapsedMs: 500_000, quietMs: 300_000 });
+    // Counts, codes and times only.
+    const logged = JSON.stringify([...vi.mocked(console.info).mock.calls, ...vi.mocked(console.warn).mock.calls]);
+    expect(logged).not.toContain("Approved copy");
+    expect(logged).not.toContain("Make 8 slides");
+  });
+
+  it("stops a run at the absolute deadline however much output it produces", async () => {
+    process.env[DESIGN_AGENT_TIMEOUT_ENV] = "600";
+    process.env[DESIGN_AGENT_INACTIVITY_ENV] = "120";
+    director.restore();
+    director = stubDirector(planOf(4));
+    await play({ before: [text("Designing")], beats: true, hang: true });
+    const carousel = await createCarousel("Noisy", "4:5");
+    fakeTime();
+    const run = streamOf(await postChat({ message: "Make 4 slides", carouselId: carousel.id }));
+    await run.until(replied("Designing"));
+    await agentSaves(carousel.id, 1, 4);
+    // Output every 100 seconds keeps the watchdog quiet, and never moves the deadline.
+    for (let n = 1; n <= 5; n++) {
+      await vi.advanceTimersByTimeAsync(100_000);
+      await beat(run, n);
+    }
+    await vi.advanceTimersByTimeAsync(99_000);
+    expect(isGenerating(carousel.id)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const events = await run.drain();
+    vi.useRealTimers();
+
+    const message = executionLimitMessage("deadline", { limitMs: 600_000, saved: 4, expected: 4 });
+    expect(events.filter((e) => e.type === "error")).toEqual([{ type: "error", code: "timed_out", message }]);
+    // Every planned slide exists, so nothing is called missing.
+    expect(message).toContain("all 4 planned slides");
+    expect(message).not.toMatch(/missing/);
+    expect(runLog()).toMatchObject({
+      errorCode: "timed_out",
+      limit: "deadline",
+      timeoutMs: 600_000,
+      inactivityMs: 120_000,
+      quietMs: 100_000,
+      longestQuietMs: 100_000,
+      slidesSaved: 4,
+    });
+    expect(limitStops()).toHaveLength(1);
+  });
+
+  it("kills a CLI that ignores the stop, and the first limit to fire is the only one reported", async () => {
+    process.env[DESIGN_AGENT_TIMEOUT_ENV] = "120";
+    process.env[DESIGN_AGENT_INACTIVITY_ENV] = "60";
+    await play({ before: [text("Designing")], beats: true, hang: true, ignoreSigterm: true });
+    const carousel = await createCarousel("Stubborn and silent", "4:5");
+    fakeTime();
+    const run = streamOf(await postChat({ message: "Make a carousel", carouselId: carousel.id }));
+    await run.until(replied("Designing"));
+    const pid = Number(await readFile(path.join(fakeDir, "pid"), "utf8"));
+    await vi.advanceTimersByTimeAsync(55_000);
+    await beat(run, 1);
+    // Silent from 55 s: the watchdog stops it at 115 s, and the CLI ignores the stop.
+    await vi.advanceTimersByTimeAsync(60_000);
+    for (let i = 0; i < 200; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(() => process.kill(pid, 0)).not.toThrow();
+    expect(isGenerating(carousel.id)).toBe(true);
+    // At 120 s the deadline would also have fired; the kill lands instead, and nothing else.
+    await vi.advanceTimersByTimeAsync(5_000);
+    const events = await run.drain();
+    vi.useRealTimers();
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(isGenerating(carousel.id)).toBe(false);
+    const log = runLog();
+    expect(log).toMatchObject({ limit: "inactivity", errorCode: "stalled", slidesSaved: 0 });
+    expect(events.filter((e) => e.type === "error")).toEqual([
+      {
+        type: "error",
+        code: "stalled",
+        message: executionLimitMessage("inactivity", { limitMs: 60_000, saved: 0, expected: log.slidesExpected as number }),
+      },
+    ]);
+    expect(limitStops()).toHaveLength(1);
+  }, 15_000);
+
+  it("fires no limit after Stop", async () => {
+    director.restore();
+    director = stubDirector(planOf(8));
+    await play({ before: [text("Designing")], hang: true });
+    const carousel = await createCarousel("Stopped early", "4:5");
+    fakeTime();
+    const run = streamOf(await postChat({ message: "Make 8 slides", carouselId: carousel.id }));
+    await run.until(replied("Designing"));
+    const pid = Number(await readFile(path.join(fakeDir, "pid"), "utf8"));
+    await agentSaves(carousel.id, 1, 2);
+    await run.cancel();
+    await settle(() => !isGenerating(carousel.id) && vi.mocked(console.info).mock.calls.some((c) => c[0] === "[chat] run finished"));
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    vi.useRealTimers();
+    expect(limitStops()).toHaveLength(0);
+    expect(runLog()).toMatchObject({ outcome: "stopped", failureCategory: "cancelled", limit: null });
+    expect((await statusOf(carousel.id)).interrupted).toMatchObject({ reason: "stopped" });
+  });
+
+  it("fires no limit after the CLI exits", async () => {
+    await play({ before: [text("Designing")], after: [success(0.3)] });
+    const carousel = await createCarousel("Quick", "4:5");
+    fakeTime();
+    const events = await streamOf(await postChat({ message: "Make a carousel", carouselId: carousel.id })).drain();
+    await settle(() => !isGenerating(carousel.id) && vi.mocked(console.info).mock.calls.some((c) => c[0] === "[chat] run finished"));
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    vi.useRealTimers();
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(limitStops()).toHaveLength(0);
+    expect(runLog()).toMatchObject({ outcome: "completed", limit: null });
+  });
+
+  it("continues after a stalled stop with only the missing slides, leaving the saved ones untouched", async () => {
+    director.restore();
+    director = stubDirector(planOf(8));
+    await play({ before: [text("Designing")], hang: true });
+    const carousel = await createCarousel("Stalled then continued", "4:5");
+    fakeTime();
+    const run = streamOf(await postChat({ message: "Make 8 slides", carouselId: carousel.id }));
+    await run.until(replied("Designing"));
+    await agentSaves(carousel.id, 1, 3);
+    await vi.advanceTimersByTimeAsync(300_000);
+    await run.drain();
+    vi.useRealTimers();
+    expect(runLog()).toMatchObject({ errorCode: "stalled" });
+    const savedBefore = await slidesOf(carousel.id);
+    const { continuation } = await statusOf(carousel.id);
+    expect(continuation).toMatchObject({ saved: 3, expected: 8 });
+
+    await play({ before: [text("Continuing")], wait: true, after: [success(0.9)] });
+    const res = await postChat({ message: "Continue the unfinished design", carouselId: carousel.id, sessionId: SESSION, continueRunId: continuation!.runId });
+    await started();
+    const task = taskOf((await invocations())[1]);
+    expect(task).toContain("Still to make: slides 4 to 8 of the plan.");
+    await agentSaves(carousel.id, 4, 8);
+    await proceed();
+    const events = await readEvents(res);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    const after = await slidesOf(carousel.id);
+    expect(after).toHaveLength(8);
+    expect(after.slice(0, 3)).toEqual(savedBefore);
+    expect(director.requests).toHaveLength(1);
+    expect(await statusOf(carousel.id)).toEqual({ generating: false, interrupted: null, continuation: null });
+    expect((await requestExport(carousel.id)).status).toBe(200);
+  });
 });
 
 describe("an unfinished design and its continuation (#127)", () => {
@@ -679,7 +1034,8 @@ describe("failure classification (#127)", () => {
     expect(CHAT_ERROR_MESSAGES.usage_limited).not.toMatch(/DESIGN_AGENT_MAX_BUDGET_USD/);
     expect(CHAT_ERROR_MESSAGES.budget_exceeded).toMatch(/DESIGN_AGENT_MAX_BUDGET_USD/);
     expect(CHAT_ERROR_MESSAGES.timed_out).toMatch(/time limit/);
-    const messages = ["budget_exceeded", "usage_limited", "timed_out", "agent_failed", "start_failed", "session_not_found"].map(
+    expect(CHAT_ERROR_MESSAGES.stalled).toMatch(/no output/);
+    const messages = ["budget_exceeded", "usage_limited", "timed_out", "stalled", "agent_failed", "start_failed", "session_not_found"].map(
       (c) => CHAT_ERROR_MESSAGES[c as keyof typeof CHAT_ERROR_MESSAGES]
     );
     expect(new Set(messages).size).toBe(messages.length);

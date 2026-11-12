@@ -12,13 +12,17 @@
 export type ChatErrorCode =
   | "start_failed"
   | "agent_failed"
+  /** The run reached its absolute deadline, `DESIGN_AGENT_TIMEOUT_SECONDS`. */
   | "timed_out"
+  /** The CLI wrote no output for `DESIGN_AGENT_INACTIVITY_SECONDS` and was stopped as stuck (#187). */
+  | "stalled"
   /** The operator's own `DESIGN_AGENT_MAX_BUDGET_USD` cap was reached. */
   | "budget_exceeded"
   /** Claude refused to continue for a usage, rate or spending limit outside CreatorBrio. */
   | "usage_limited"
   | "budget_setting_invalid"
   | "timeout_setting_invalid"
+  | "inactivity_setting_invalid"
   | "session_not_found"
   | "run_failed";
 
@@ -79,8 +83,12 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorCode, string> = {
     "The design agent could not be started. Check that Claude Code is installed and working, then try again.",
   agent_failed:
     "The design agent stopped unexpectedly before finishing. Slides it already saved are kept; select Continue to make only the missing ones, or send your message again.",
+  // The two execution limits. These are the texts for a run without a known
+  // plan; a run with one is told its slide counts by `executionLimitMessage`.
   timed_out:
-    "The design agent reached its time limit and was stopped. Slides it already saved are kept; select Continue to make only the missing ones. To allow longer runs, raise DESIGN_AGENT_TIMEOUT_SECONDS in .env.local and restart CreatorBrio.",
+    "The design agent reached its time limit and was stopped. Slides it already saved are kept; select Continue to finish the design. To allow longer runs, raise DESIGN_AGENT_TIMEOUT_SECONDS in .env.local and restart CreatorBrio.",
+  stalled:
+    "The design agent produced no output for too long, so it was stopped as stuck. Slides it already saved are kept; select Continue to finish the design. If it needs longer quiet periods, raise DESIGN_AGENT_INACTIVITY_SECONDS in .env.local and restart CreatorBrio.",
   budget_exceeded:
     "The design agent reached the spending cap set by DESIGN_AGENT_MAX_BUDGET_USD and stopped. Slides it already saved are kept; raise or remove that cap in .env.local, restart CreatorBrio, then select Continue to make only the missing ones.",
   usage_limited:
@@ -89,12 +97,76 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorCode, string> = {
     "The design agent's spending cap, DESIGN_AGENT_MAX_BUDGET_USD, is not a positive amount in US dollars, such as 2.50. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
   timeout_setting_invalid:
     "The design agent's time limit, DESIGN_AGENT_TIMEOUT_SECONDS, is not a whole number of seconds from 60 to 3600. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
+  inactivity_setting_invalid:
+    "The design agent's inactivity limit, DESIGN_AGENT_INACTIVITY_SECONDS, is not a whole number of seconds from 60 to 900 that is shorter than DESIGN_AGENT_TIMEOUT_SECONDS. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
   session_not_found:
     "The previous conversation could not be resumed, so it has been reset. Send your message again, or select Continue, to carry on in a new conversation.",
   run_failed: "Something went wrong before the design started. Nothing was changed; send your message again.",
 };
 
 const ERROR_CODES = new Set<string>(Object.keys(CHAT_ERROR_MESSAGES));
+
+/** The execution limit that stopped a design run: the absolute deadline, or the inactivity watchdog. */
+export type ExecutionLimit = "deadline" | "inactivity";
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** "30-minute" or "90-second", as an adjective. */
+function limitAdjective(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  return seconds % 60 === 0 ? `${seconds / 60}-minute` : `${seconds}-second`;
+}
+
+/** "5 minutes" or "90 seconds". */
+function limitLength(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  return seconds % 60 === 0 ? plural(seconds / 60, "minute") : plural(seconds, "second");
+}
+
+/**
+ * What the user is told when an execution limit stops a design run (#187):
+ * which limit, how many of the planned slides exist, and what Continue will
+ * do. A run whose slides all exist is never told any are missing. Without a
+ * known plan and slide count, the generic text for the limit's code is used.
+ */
+export function executionLimitMessage(
+  limit: ExecutionLimit,
+  run: { limitMs: number; saved: number | null; expected: number | null }
+): string {
+  const { limitMs, saved, expected } = run;
+  if (saved === null || expected === null || expected < 1) {
+    return CHAT_ERROR_MESSAGES[limit === "deadline" ? "timed_out" : "stalled"];
+  }
+  const missing = Math.max(0, expected - saved);
+  const one = expected === 1;
+  const progress =
+    missing === 0
+      ? one
+        ? "with the planned slide saved"
+        : `with all ${expected} planned slides saved`
+      : saved === 0
+        ? expected === 1
+          ? "before saving the 1 planned slide"
+          : `before saving any of the ${expected} planned slides`
+        : `with ${saved} of ${expected} planned slides saved`;
+  const opening =
+    limit === "deadline"
+      ? `The design agent reached its ${limitAdjective(limitMs)} time limit ${progress}${missing === 0 ? `, while it was still working on ${one ? "it" : "them"},` : ","} and was stopped.`
+      : `The design agent produced no output for ${limitLength(limitMs)} ${progress}, so it was stopped as stuck.`;
+  const next =
+    missing === 0
+      ? one
+        ? "The slide is kept: select Continue to let it finish, or use it as it is."
+        : "The slides are kept: select Continue to let it finish, or use them as they are."
+      : saved === 0
+        ? `Select Continue to make ${one ? "it" : "them"}.`
+        : `Saved slides are kept; select Continue to make only the ${plural(missing, "missing slide")}.`;
+  const setting =
+    limit === "deadline"
+      ? "To allow longer runs, raise DESIGN_AGENT_TIMEOUT_SECONDS in .env.local and restart CreatorBrio."
+      : "If it needs longer quiet periods, raise DESIGN_AGENT_INACTIVITY_SECONDS in .env.local and restart CreatorBrio.";
+  return `${opening} ${next} ${setting}`;
+}
 
 /**
  * The longest chat message, as a JavaScript string length (UTF-16 code

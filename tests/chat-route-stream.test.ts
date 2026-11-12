@@ -267,7 +267,7 @@ describe("chat errors after streaming starts (#3)", () => {
     }
   });
 
-  it("reports a timeout kill at the default 15-minute deadline, which exits without a code", async () => {
+  it("stops a silent CLI at the default 5-minute inactivity limit, which exits without a code (#187)", async () => {
     await play("hang");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const carousel = await createCarousel("Errors", "4:5");
@@ -284,10 +284,11 @@ describe("chat errors after streaming starts (#3)", () => {
       events.push(...parser.push(text));
     }
 
-    // Still running at the old 8-minute limit and just before the deadline (#127).
-    await vi.advanceTimersByTimeAsync(480_000);
+    // Silent since its first reply: still running just before the inactivity
+    // limit, long before the 30-minute deadline (#187).
+    await vi.advanceTimersByTimeAsync(299_000);
     expect(isGenerating(carousel.id)).toBe(true);
-    await vi.advanceTimersByTimeAsync(900_000 - 480_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -297,7 +298,7 @@ describe("chat errors after streaming starts (#3)", () => {
     }
 
     expect(events.map((e) => e.type)).toEqual(["stage", "stage", "token", "error", "done"]);
-    expect(events[3]).toMatchObject({ type: "error", code: "timed_out" });
+    expect(events[3]).toMatchObject({ type: "error", code: "stalled" });
     expectNoDiagnostics(raw);
   });
 

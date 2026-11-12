@@ -45,6 +45,8 @@ interface ExportButtonProps {
    * confirms the slides through `onAcceptInterrupted` or a later run completes.
    */
   interrupted?: Interruption | null;
+  /** How many slides the interrupted design planned, from its Continue offer; null when unknown. */
+  plannedSlides?: number | null;
   onAcceptInterrupted?: () => Promise<void>;
   /** The project format's main export, offered first (#175). */
   primary?: ExportFormat;
@@ -77,6 +79,7 @@ export function ExportButton({
   aspectRatio,
   generating = false,
   interrupted = null,
+  plannedSlides = null,
   onAcceptInterrupted,
   primary,
 }: ExportButtonProps) {
@@ -265,6 +268,7 @@ export function ExportButton({
           <InterruptedExportNotice
             reason={interrupted.reason}
             slideCount={slideCount}
+            plannedSlides={plannedSlides}
             onAccept={async () => {
               await onAcceptInterrupted?.();
             }}

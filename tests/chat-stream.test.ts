@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHAT_ERROR_MESSAGES,
   createChatStreamParser,
   encodeChatEvent,
+  executionLimitMessage,
   INITIAL_CHAT_RUN,
   reduceChatRun,
   sessionAfterRun,
@@ -280,5 +282,80 @@ describe("creative run events (#40)", () => {
     expect(run.blocked?.message).toBe("first");
     expect(run.deviations).toEqual(["a", "b"]);
     expect(reduceChatRun(run, { type: "done", sessionId: null }).stage).toBeNull();
+  });
+});
+
+describe("messages after an execution limit stops the design (#187)", () => {
+  it("says every planned slide is saved, and calls none missing, when all of them are", () => {
+    const deadline = executionLimitMessage("deadline", { limitMs: 1_800_000, saved: 10, expected: 10 });
+    expect(deadline).toBe(
+      "The design agent reached its 30-minute time limit with all 10 planned slides saved, while it was still working on them, and was stopped. " +
+        "The slides are kept: select Continue to let it finish, or use them as they are. " +
+        "To allow longer runs, raise DESIGN_AGENT_TIMEOUT_SECONDS in .env.local and restart CreatorBrio."
+    );
+    const stalled = executionLimitMessage("inactivity", { limitMs: 300_000, saved: 10, expected: 10 });
+    expect(stalled).toBe(
+      "The design agent produced no output for 5 minutes with all 10 planned slides saved, so it was stopped as stuck. " +
+        "The slides are kept: select Continue to let it finish, or use them as they are. " +
+        "If it needs longer quiet periods, raise DESIGN_AGENT_INACTIVITY_SECONDS in .env.local and restart CreatorBrio."
+    );
+    for (const message of [deadline, stalled]) expect(message).not.toMatch(/missing/);
+    // A Reel cover has exactly one slide.
+    expect(executionLimitMessage("inactivity", { limitMs: 300_000, saved: 1, expected: 1 })).toBe(
+      "The design agent produced no output for 5 minutes with the planned slide saved, so it was stopped as stuck. " +
+        "The slide is kept: select Continue to let it finish, or use it as it is. " +
+        "If it needs longer quiet periods, raise DESIGN_AGENT_INACTIVITY_SECONDS in .env.local and restart CreatorBrio."
+    );
+    expect(executionLimitMessage("deadline", { limitMs: 1_800_000, saved: 1, expected: 1 })).toContain(
+      "reached its 30-minute time limit with the planned slide saved, while it was still working on it, and was stopped. The slide is kept"
+    );
+    // A carousel with more slides than planned is not missing any either.
+    expect(executionLimitMessage("deadline", { limitMs: 600_000, saved: 9, expected: 8 })).toContain("all 8 planned slides");
+  });
+
+  it("counts the saved and the missing slides when some are missing", () => {
+    expect(executionLimitMessage("deadline", { limitMs: 1_800_000, saved: 4, expected: 8 })).toBe(
+      "The design agent reached its 30-minute time limit with 4 of 8 planned slides saved, and was stopped. " +
+        "Saved slides are kept; select Continue to make only the 4 missing slides. " +
+        "To allow longer runs, raise DESIGN_AGENT_TIMEOUT_SECONDS in .env.local and restart CreatorBrio."
+    );
+    expect(executionLimitMessage("inactivity", { limitMs: 300_000, saved: 7, expected: 8 })).toBe(
+      "The design agent produced no output for 5 minutes with 7 of 8 planned slides saved, so it was stopped as stuck. " +
+        "Saved slides are kept; select Continue to make only the 1 missing slide. " +
+        "If it needs longer quiet periods, raise DESIGN_AGENT_INACTIVITY_SECONDS in .env.local and restart CreatorBrio."
+    );
+  });
+
+  it("does not claim saved slides when none were saved", () => {
+    const message = executionLimitMessage("inactivity", { limitMs: 90_000, saved: 0, expected: 1 });
+    expect(message).toBe(
+      "The design agent produced no output for 90 seconds before saving the 1 planned slide, so it was stopped as stuck. " +
+        "Select Continue to make it. " +
+        "If it needs longer quiet periods, raise DESIGN_AGENT_INACTIVITY_SECONDS in .env.local and restart CreatorBrio."
+    );
+    expect(executionLimitMessage("deadline", { limitMs: 60_000, saved: 0, expected: 5 })).toContain(
+      "reached its 1-minute time limit before saving any of the 5 planned slides, and was stopped. Select Continue to make them."
+    );
+  });
+
+  it("falls back to a message that claims nothing about missing slides when the plan is unknown", () => {
+    expect(executionLimitMessage("deadline", { limitMs: 1_800_000, saved: 3, expected: null })).toBe(CHAT_ERROR_MESSAGES.timed_out);
+    expect(executionLimitMessage("inactivity", { limitMs: 300_000, saved: null, expected: 8 })).toBe(CHAT_ERROR_MESSAGES.stalled);
+    for (const code of ["timed_out", "stalled"] as const) {
+      expect(CHAT_ERROR_MESSAGES[code]).not.toMatch(/missing/);
+      expect(CHAT_ERROR_MESSAGES[code]).toMatch(/Continue/);
+    }
+  });
+
+  it("carries a stalled stop through the stream like any other failure", () => {
+    const parser = createChatStreamParser();
+    const message = executionLimitMessage("inactivity", { limitMs: 300_000, saved: 3, expected: 8 });
+    const events = parser.push(frame({ type: "error", code: "stalled", message }) + frame({ type: "done", sessionId: SESSION }));
+    expect(events).toEqual([
+      { type: "error", code: "stalled", message },
+      { type: "done", sessionId: SESSION },
+    ]);
+    const state = events.reduce(reduceChatRun, INITIAL_CHAT_RUN);
+    expect(state.error).toEqual({ code: "stalled", message });
   });
 });
