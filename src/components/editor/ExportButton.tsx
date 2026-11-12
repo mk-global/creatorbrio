@@ -46,6 +46,8 @@ interface ExportButtonProps {
    */
   interrupted?: Interruption | null;
   onAcceptInterrupted?: () => Promise<void>;
+  /** The project format's main export, offered first (#175). */
+  primary?: ExportFormat;
 }
 
 const GENERATING_HINT =
@@ -76,6 +78,7 @@ export function ExportButton({
   generating = false,
   interrupted = null,
   onAcceptInterrupted,
+  primary,
 }: ExportButtonProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
@@ -282,7 +285,7 @@ export function ExportButton({
           }}
           className="oc-enter-pop absolute right-0 top-full mt-2 z-30 w-72 rounded-lg border border-border bg-surface p-1 shadow-lg"
         >
-          {exportFormatsFor(slideCount).map((option) => {
+          {exportFormatsFor(slideCount, primary).map((option) => {
             const note = option.format === "pdf" ? advisory : null;
             return (
               <button

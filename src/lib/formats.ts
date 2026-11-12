@@ -1,4 +1,4 @@
-import { MAX_SLIDES, type AspectRatio, type Carousel } from "@/types/carousel";
+import { DIMENSIONS, MAX_SLIDES, type AspectRatio, type Carousel } from "@/types/carousel";
 import type { ExportFormat } from "@/lib/export-formats";
 
 /**
@@ -22,6 +22,8 @@ export interface FormatDefinition {
   id: ProjectFormat;
   /** Sentence case, as people read it: "Instagram carousel". */
   name: string;
+  /** The name for several: "Instagram carousels". */
+  plural: string;
   /** What it makes, in a few words. */
   makes: string;
   /** What it exports, in a few words. */
@@ -46,6 +48,7 @@ export const FORMATS: Record<ProjectFormat, FormatDefinition> = {
   "instagram-carousel": {
     id: "instagram-carousel",
     name: "Instagram carousel",
+    plural: "Instagram carousels",
     makes: "Swipeable slides for the feed",
     exports: "PNG images, or one PDF",
     sizes: ["4:5", "1:1", "9:16"],
@@ -58,6 +61,7 @@ export const FORMATS: Record<ProjectFormat, FormatDefinition> = {
   "linkedin-document": {
     id: "linkedin-document",
     name: "LinkedIn document",
+    plural: "LinkedIn documents",
     makes: "Pages LinkedIn shows as a document",
     exports: "One searchable PDF",
     sizes: ["4:5", "1:1"],
@@ -70,6 +74,7 @@ export const FORMATS: Record<ProjectFormat, FormatDefinition> = {
   "reel-cover": {
     id: "reel-cover",
     name: "Reel cover",
+    plural: "Reel covers",
     makes: "The still image in front of a Reel",
     exports: "One PNG, 1080 × 1920",
     sizes: ["9:16"],
@@ -130,4 +135,19 @@ export function primaryExportFor(format: ProjectFormat, slideCount: number): Exp
   const preferred = FORMATS[format].defaultExport;
   if (preferred === "single-png" && slideCount !== 1) return "png";
   return preferred;
+}
+
+/** "1 slide", "6 pages": a project's length in its format's own word. */
+export function countLabel(format: ProjectFormat, count: number): string {
+  const unit = FORMATS[format].unit;
+  return `${count} ${count === 1 ? unit.one : unit.many}`;
+}
+
+/** What people call each size. */
+export const SIZE_NAMES: Record<AspectRatio, string> = { "4:5": "Portrait", "1:1": "Square", "9:16": "Story" };
+
+/** "1080 × 1350": a size in pixels, as the export makes it. */
+export function sizePixels(size: AspectRatio): string {
+  const { width, height } = DIMENSIONS[size];
+  return `${width} × ${height}`;
 }

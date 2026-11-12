@@ -31,6 +31,8 @@ interface SlideFilmstripProps {
   onAddSlideRequest?: () => void;
   onReorderSlides?: (slideIds: string[]) => void;
   isGenerating?: boolean;
+  /** The project format's slide limit (#175); the add button goes once it is reached. */
+  maxSlides?: number;
 }
 
 function SortableSlideThumb({
@@ -153,6 +155,7 @@ export function SlideFilmstrip({
   onAddSlideRequest,
   onReorderSlides,
   isGenerating,
+  maxSlides = MAX_SLIDES,
 }: SlideFilmstripProps) {
   const { width: slideW, height: slideH } = DIMENSIONS[aspectRatio];
   const thumbHeight = 80;
@@ -230,7 +233,7 @@ export function SlideFilmstrip({
           </div>
         )}
 
-        {slides.length < MAX_SLIDES && !isGenerating && (
+        {slides.length < maxSlides && !isGenerating && (
           <button
             onClick={onAddSlideRequest}
             className="shrink-0 rounded-lg border-2 border-dashed border-border flex items-center justify-center hover:border-muted-foreground/50 hover:bg-muted/50 transition-colors cursor-pointer"

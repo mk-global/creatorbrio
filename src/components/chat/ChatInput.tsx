@@ -34,6 +34,8 @@ interface ChatInputProps {
   disabled?: boolean;
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   onStop?: () => void;
+  /** Words already in the box when it first shows, such as the New project description (#175). Never sent by itself. */
+  initialValue?: string;
 }
 
 const SUGGESTIONS = [
@@ -44,8 +46,8 @@ const SUGGESTIONS = [
   "Make the headings bigger",
 ];
 
-export function ChatInput({ onSend, isStreaming, disabled, textareaRef: externalRef, onStop }: ChatInputProps) {
-  const [value, setValue] = useState("");
+export function ChatInput({ onSend, isStreaming, disabled, textareaRef: externalRef, onStop, initialValue = "" }: ChatInputProps) {
+  const [value, setValue] = useState(initialValue);
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = externalRef || internalRef;
 

@@ -49,12 +49,14 @@ export const SINGLE_PNG_FORMAT: ExportFormatOption = {
 
 /**
  * The formats the Export menu offers for a carousel with this many slides: the
- * usual two, followed by the single PNG when there is only one slide.
+ * usual two, followed by the single PNG when there is only one slide. With a
+ * `primary` format (the project format's main export, #175) that one is
+ * offered first; nothing is removed.
  */
-export function exportFormatsFor(slideCount: number): ExportFormatOption[] {
-  return slideCount === 1
-    ? [...EXPORT_FORMATS, SINGLE_PNG_FORMAT]
-    : [...EXPORT_FORMATS];
+export function exportFormatsFor(slideCount: number, primary?: ExportFormat): ExportFormatOption[] {
+  const all = slideCount === 1 ? [...EXPORT_FORMATS, SINGLE_PNG_FORMAT] : [...EXPORT_FORMATS];
+  const first = all.find((o) => o.format === primary);
+  return first ? [first, ...all.filter((o) => o !== first)] : all;
 }
 
 /**

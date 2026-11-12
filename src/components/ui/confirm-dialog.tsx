@@ -1,9 +1,8 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, X } from "lucide-react";
-import { Button } from "./button";
-import { cn } from "@/lib/utils";
+import { useRef } from "react";
+import { X } from "lucide-react";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -11,68 +10,65 @@ interface ConfirmDialogProps {
   title: string;
   description: string;
   confirmLabel?: string;
+  /** The button that closes the dialog without doing anything. */
+  cancelLabel?: string;
   variant?: "destructive" | "default";
   onConfirm: () => void;
 }
 
+/**
+ * The app's one confirmation (#175, Design C). These dialogs are opened by
+ * state rather than by a Radix trigger, so the dialog remembers what had
+ * focus when it opened and returns focus there when it closes.
+ */
 export function ConfirmDialog({
   open,
   onOpenChange,
   title,
   description,
   confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
   variant = "default",
   onConfirm,
 }: ConfirmDialogProps) {
+  const opener = useRef<HTMLElement | null>(null);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay data-oc-overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
-        <Dialog.Content data-oc-dialog className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl bg-surface border border-border p-6 shadow-2xl">
+        <Dialog.Overlay data-oc-overlay className="fixed inset-0 z-[60] bg-ink/35" />
+        <Dialog.Content
+          data-oc-dialog
+          onOpenAutoFocus={() => {
+            opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          }}
+          onCloseAutoFocus={(e) => {
+            const el = opener.current;
+            if (el && el.isConnected) {
+              e.preventDefault();
+              el.focus();
+            }
+          }}
+          className="fixed top-1/2 left-1/2 z-[61] max-h-[calc(100dvh-32px)] w-[calc(100vw-32px)] max-w-[460px] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-[14px] bg-sheet p-6 shadow-[0_24px_60px_-20px_rgb(28_27_41/0.5)]"
+        >
           <div className="flex items-start gap-4">
-            <div
-              className={cn(
-                "h-10 w-10 rounded-full flex items-center justify-center shrink-0",
-                variant === "destructive"
-                  ? "bg-destructive/10 text-destructive"
-                  : "bg-accent/10 text-accent"
-              )}
-            >
-              <AlertTriangle className="h-5 w-5" />
-            </div>
-            <div className="flex-1">
-              <Dialog.Title className="text-sm font-semibold">
-                {title}
-              </Dialog.Title>
-              <Dialog.Description className="text-xs text-muted-foreground mt-1">
-                {description}
-              </Dialog.Description>
-            </div>
-            <Dialog.Close asChild>
-              <button
-                className="h-6 w-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                aria-label="Close"
-              >
-                <X className="h-4 w-4" />
-              </button>
+            <Dialog.Title className="display-md flex-1 text-[24px]">{title}</Dialog.Title>
+            <Dialog.Close className="btn btn-ghost btn-sm btn-icon -mt-1 -mr-2" aria-label="Close">
+              <X className="size-4" aria-hidden="true" />
             </Dialog.Close>
           </div>
-          <div className="flex justify-end gap-2 mt-6">
-            <Dialog.Close asChild>
-              <Button variant="outline" size="sm">
-                Cancel
-              </Button>
-            </Dialog.Close>
-            <Button
-              variant={variant === "destructive" ? "destructive" : "accent"}
-              size="sm"
+          <Dialog.Description className="mt-2 text-graphite">{description}</Dialog.Description>
+          <div className="mt-6 flex flex-wrap justify-end gap-2">
+            <Dialog.Close className="btn btn-quiet">{cancelLabel}</Dialog.Close>
+            <button
+              type="button"
+              className={variant === "destructive" ? "btn btn-danger" : "btn btn-primary"}
               onClick={() => {
                 onConfirm();
                 onOpenChange(false);
               }}
             >
               {confirmLabel}
-            </Button>
+            </button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

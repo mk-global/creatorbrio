@@ -2,9 +2,10 @@
 export type BrandSetupMode = "setup" | "edit" | "create";
 
 /**
- * Where the brand settings dialog saves. Editing always names its brand: with
- * no id there is nothing safe to save to, and falling back to the default
- * brand would overwrite it with whatever the dialog was showing.
+ * Where the brand editor saves (#175; before it, the brand settings dialog).
+ * Editing always names its brand: with no id there is nothing safe to save
+ * to, and falling back to the default brand would overwrite it with whatever
+ * the editor was showing.
  */
 export function brandSaveTarget(
   mode: BrandSetupMode,
