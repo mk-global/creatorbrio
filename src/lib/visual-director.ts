@@ -7,7 +7,7 @@ import type { BrandConfig } from "@/types/brand";
 import type { Carousel, CarouselAsset, ReferenceImage } from "@/types/carousel";
 import type { StylePreset } from "@/types/style-preset";
 import { DIMENSIONS, MAX_SLIDES } from "@/types/carousel";
-import { slideLimitOf } from "./formats";
+import { FORMATS, formatOf, slideLimitOf } from "./formats";
 import { getClaudePath } from "./claude-path";
 import { briefForCarousel } from "./creative-brief";
 import type { CapabilityId, CapabilityStatus } from "./creative-capabilities";
@@ -129,8 +129,17 @@ export const UNAVAILABLE_CAPABILITY_MESSAGES: Partial<Record<CapabilityId, strin
     "This request needs a newly generated image, and image generation is not set up on this machine. Nothing was changed; you can ask for a design without generated images.",
 };
 
-/** The user-facing message for a planning failure. */
-export function directorFailureMessage(code: DirectorFailureCode, unavailable: readonly CapabilityId[] = []): string {
+/** Why a plan for a one-slide format was refused for having more slides (#175). */
+export const ONE_SLIDE_PLAN_MESSAGE =
+  "The visual plan had more than one slide, and a Reel cover has one. Nothing was changed; describe the one image you want and send your message again.";
+
+/**
+ * The user-facing message for a planning failure. `slideLimit` is the
+ * project's slide limit: a one-slide format gets advice that fits it, not
+ * the carousel advice to name a count from 1 to 20.
+ */
+export function directorFailureMessage(code: DirectorFailureCode, unavailable: readonly CapabilityId[] = [], slideLimit: number = MAX_SLIDES): string {
+  if (code === "slide_count_mismatch" && slideLimit === 1) return ONE_SLIDE_PLAN_MESSAGE;
   if (code === "capability_unavailable") {
     const reasons = unavailable.map((c) => UNAVAILABLE_CAPABILITY_MESSAGES[c]).filter((m): m is string => !!m);
     if (reasons.length > 0) return [...new Set(reasons)].join(" ");
@@ -354,6 +363,14 @@ export function buildDirectorInput(
   const { carousel, brand, stylePreset, message } = request;
   const size = DIMENSIONS[carousel.aspectRatio];
   const isNew = carousel.slides.length === 0;
+  // A format with a lower limit than a carousel's is stated as a fact, so the
+  // plan fits it and is not refused after planning (#175). Every other
+  // project's input is exactly as before.
+  const limit = slideLimitOf(carousel);
+  const formatFacts =
+    limit < MAX_SLIDES
+      ? [`Project format: ${FORMATS[formatOf(carousel)].name}. It has ${limit === 1 ? "exactly one slide; plan 1 slide whatever the message says" : `at most ${limit} slides`}.`]
+      : [];
   const counts = explicitSlideCounts(message);
   const pages = explicitPageCounts(message);
   const known = new Set([...request.references.map((r) => r.id), ...request.assets.map((a) => a.asset.id)]);
@@ -364,6 +381,7 @@ export function buildDirectorInput(
       "Carousel",
       [
         `Aspect ratio: ${carousel.aspectRatio} (${size.width}x${size.height})`,
+        ...formatFacts,
         `Request type: ${isNew ? "new (no slides yet)" : `revision (${carousel.slides.length} slides now)`}`,
         ...(isNew
           ? []
@@ -373,7 +391,7 @@ export function buildDirectorInput(
         `Slide counts stated in the message: ${counts.length > 0 ? counts.join(", ") : "none"}`,
         `Page counts stated in the message: ${pages.length > 0 ? `${pages.join(", ")} (a document carousel's pages are its slides; a count that describes a source document is not a request)` : "none"}`,
         `The message mentions a cover: ${mentionsCover(message) ? "yes" : "no"}`,
-        `Baseline default for a new request: ${BASELINE_DEFAULT_SLIDES} slides`,
+        `Baseline default for a new request: ${Math.min(BASELINE_DEFAULT_SLIDES, limit)} ${Math.min(BASELINE_DEFAULT_SLIDES, limit) === 1 ? "slide" : "slides"}`,
         `Image limit: at most ${MAX_IMAGE_TASKS} generated images per request`,
       ].join("\n")
     ),

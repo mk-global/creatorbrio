@@ -24,8 +24,9 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
   const [draft, setDraft] = useState<BrandConfig>(() => existing ?? { ...DEFAULT_BRAND, name: "" });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [badColors, setBadColors] = useState<string[]>([]);
   const isNew = existing === null;
-  const canSave = draft.name.trim().length > 0 && !saving;
+  const canSave = draft.name.trim().length > 0 && badColors.length === 0 && !saving;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,7 +93,11 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
             <h2 id="colours" className="display-md text-[22px]">
               Colours
             </h2>
-            <ColorFields colors={draft.colors} onChange={(key, value) => setDraft((d) => ({ ...d, colors: { ...d.colors, [key]: value } }))} />
+            <ColorFields
+              colors={draft.colors}
+              onChange={(key, value) => setDraft((d) => ({ ...d, colors: { ...d.colors, [key]: value } }))}
+              onInvalidChange={setBadColors}
+            />
           </section>
 
           <section aria-labelledby="type" className="space-y-4">
@@ -126,7 +131,11 @@ export function BrandEditor({ existing }: { existing: Brand | null }) {
             <Link href="/brands" className="btn btn-ghost">
               Cancel
             </Link>
-            {!draft.name.trim() && <span className="text-[13px] text-graphite">Give the brand a name to save it.</span>}
+            {!draft.name.trim() ? (
+              <span className="text-[13px] text-graphite">Give the brand a name to save it.</span>
+            ) : badColors.length > 0 ? (
+              <span className="text-[13px] text-alert">Fix the {badColors.join(", ").toLowerCase()} colour to save it.</span>
+            ) : null}
           </div>
         </form>
 

@@ -39,6 +39,7 @@ export function BrandSwitcher({ variant }: { variant: "side" | "header" }) {
   const name = brandDisplayName(selectedBrand);
   const items = [
     ...brands.map((b) => ({
+      id: `brand:${b.id}`,
       label: brandDisplayName(b),
       hint: `${b.fonts.heading}${b.styleKeywords.length ? `, ${b.styleKeywords.slice(0, 2).join(", ")}` : ", not described yet"}`,
       icon: <Swatches brand={b} size={11} />,

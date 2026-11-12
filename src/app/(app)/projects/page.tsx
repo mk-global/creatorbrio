@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Grid2x2, Rows3, Search } from "lucide-react";
 import { useApp } from "@/components/app/AppContext";
-import { PageNotice } from "@/components/app/PageNotice";
+import { BrandsUnavailable, PageNotice } from "@/components/app/PageNotice";
 import { FormatTabs } from "@/components/library/FormatTabs";
 import { ProjectFrame } from "@/components/library/ProjectFrame";
 import { ProjectTile, SHEET_GRID } from "@/components/library/ProjectTile";
@@ -17,7 +17,7 @@ type Filter = ProjectFormat | "all";
 
 /** Every project, for this brand or all of them, by format, name and last edit (#175). */
 export default function ProjectsPage() {
-  const { brands, selectedBrand } = useApp();
+  const { brands, selectedBrand, error: brandError, reload: reloadBrands } = useApp();
   const projects = useProjects();
   const [q, setQ] = useState("");
   const [scope, setScope] = useState<"brand" | "all">("brand");
@@ -45,6 +45,8 @@ export default function ProjectsPage() {
     onDeleted: (id: string) => projects.update((items) => items.filter((x) => x.id !== id)),
   };
 
+  if (brandError) return <BrandsUnavailable message={brandError} onRetry={() => void reloadBrands()} />;
+
   return (
     <div>
       <h1 className="display text-[44px] lg:text-[56px]">Projects</h1>
@@ -61,13 +63,12 @@ export default function ProjectsPage() {
           <input id="search" type="search" className="field pl-10" placeholder="Search by name" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
-          <div role="radiogroup" aria-label="Which brands" className="inline-flex rounded-lg bg-hover p-1">
+          <div role="group" aria-label="Which brands" className="inline-flex rounded-lg bg-hover p-1">
             {(["brand", "all"] as const).map((s) => (
               <button
                 key={s}
                 type="button"
-                role="radio"
-                aria-checked={scope === s}
+                aria-pressed={scope === s}
                 onClick={() => setScope(s)}
                 className={`h-8 rounded-md px-3 text-[13.5px] font-medium ${scope === s ? "bg-sheet shadow-[0_1px_2px_rgb(28_27_41/0.15)]" : "text-graphite"}`}
               >
@@ -82,11 +83,11 @@ export default function ProjectsPage() {
             <option value="edited">Last edited</option>
             <option value="name">Name</option>
           </select>
-          <div className="hidden gap-1 sm:flex" role="radiogroup" aria-label="Layout">
-            <button type="button" role="radio" aria-checked={view === "sheet"} aria-label="Contact sheet" onClick={() => setView("sheet")} className={`btn btn-ghost btn-icon ${view === "sheet" ? "bg-hover" : ""}`}>
+          <div className="hidden gap-1 sm:flex" role="group" aria-label="Layout">
+            <button type="button" aria-pressed={view === "sheet"} aria-label="Contact sheet" onClick={() => setView("sheet")} className={`btn btn-ghost btn-icon ${view === "sheet" ? "bg-hover" : ""}`}>
               <Grid2x2 className="size-[18px]" aria-hidden="true" />
             </button>
-            <button type="button" role="radio" aria-checked={view === "list"} aria-label="List" onClick={() => setView("list")} className={`btn btn-ghost btn-icon ${view === "list" ? "bg-hover" : ""}`}>
+            <button type="button" aria-pressed={view === "list"} aria-label="List" onClick={() => setView("list")} className={`btn btn-ghost btn-icon ${view === "list" ? "bg-hover" : ""}`}>
               <Rows3 className="size-[18px]" aria-hidden="true" />
             </button>
           </div>

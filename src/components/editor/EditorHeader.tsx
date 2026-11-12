@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ArrowLeft, BookmarkPlus, ChevronDown, CopyPlus, Ellipsis, Maximize2, MessageSquare, Ratio as RatioIcon, ScanLine, Trash2 } from "lucide-react";
 import { Swatches } from "@/components/app/BrandSwitcher";
 import { Menu } from "@/components/app/Menu";
@@ -38,7 +38,8 @@ export function EditorHeader({
   format: ProjectFormat;
   brand: Brand | undefined;
   exportButton: React.ReactNode;
-  onRename: (name: string) => void;
+  /** Saves the name; false when it was not saved, so the field shows the stored name again. */
+  onRename: (name: string) => Promise<boolean>;
   onSize: (size: AspectRatio) => void;
   safeZones: boolean;
   onSafeZones: (on: boolean) => void;
@@ -60,10 +61,17 @@ export function EditorHeader({
     setName(carousel.name);
   }
   const empty = carousel.slides.length === 0;
-  const commitName = () => {
+  // Escape cancels: the blur it causes must not save. State set in the same
+  // key event is not visible to the blur handler yet, so a ref carries it.
+  const cancelling = useRef(false);
+  const commitName = async () => {
     const v = name.trim();
-    if (v && v !== carousel.name) onRename(v);
-    else setName(carousel.name);
+    if (cancelling.current || !v || v === carousel.name) {
+      cancelling.current = false;
+      setName(carousel.name);
+      return;
+    }
+    if (!(await onRename(v))) setName(carousel.name);
   };
 
   return (
@@ -82,11 +90,11 @@ export function EditorHeader({
             value={name}
             maxLength={200}
             onChange={(e) => setName(e.target.value)}
-            onBlur={commitName}
+            onBlur={() => void commitName()}
             onKeyDown={(e) => {
               if (e.key === "Enter") e.currentTarget.blur();
               if (e.key === "Escape") {
-                setName(carousel.name);
+                cancelling.current = true;
                 e.currentTarget.blur();
               }
             }}

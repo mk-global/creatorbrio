@@ -10,6 +10,8 @@ import { useEffect, useId, useRef, useState } from "react";
 // menus are short lists that need nothing more (#175).
 
 export interface MenuItem {
+  /** Distinguishes items whose labels can repeat, such as two brands with one name. */
+  id?: string;
   label: string;
   hint?: string;
   icon?: React.ReactNode;
@@ -120,7 +122,7 @@ export function Menu({
           {header && <div className="px-2.5 pt-1.5 pb-2 text-[13px] text-graphite">{header}</div>}
           {items.map((it) => (
             <button
-              key={it.label}
+              key={it.id ?? it.label}
               type="button"
               role={it.checked !== undefined ? "menuitemradio" : "menuitem"}
               aria-checked={it.checked !== undefined ? it.checked : undefined}

@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import puppeteer, { type Browser, type Page } from "puppeteer";
 import { startBuiltApp, type BuiltApp } from "./helpers/studio-app";
@@ -46,7 +49,8 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     return { status: res.status, body: (text ? JSON.parse(text) : null) as T };
   }
 
-  async function openPage(width = 1440, height = 900): Promise<Page> {
+  /** `expectFailedRequests`: a page that provokes server errors on purpose, whose "Failed to load resource" lines are not app errors. */
+  async function openPage(width = 1440, height = 900, { expectFailedRequests = false } = {}): Promise<Page> {
     const page = await browser.newPage();
     await page.setViewport({ width, height });
     page.on("request", (r) => {
@@ -58,7 +62,9 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     });
     page.on("console", (m) => {
       // Sandboxed slide iframes have no scripts; that is the point, not an error.
-      if (m.type() === "error" && !/about:srcdoc|sandboxed/i.test(m.text())) consoleErrors.push(m.text());
+      if (m.type() !== "error" || /about:srcdoc|sandboxed/i.test(m.text())) return;
+      if (expectFailedRequests && /Failed to load resource/.test(m.text())) return;
+      consoleErrors.push(m.text());
     });
     page.on("pageerror", (e) => consoleErrors.push(String(e)));
     return page;
@@ -107,6 +113,7 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
   it("opens Home on the four formats, for the default brand, with one main navigation", async () => {
     const page = await openPage();
     await settled(page, "/");
+    await page.waitForFunction(() => document.querySelector("#make")?.previousElementSibling?.textContent?.includes("Northwind Coffee") && document.body.innerText.includes("Spring menu"), { timeout: 15_000 });
     const home = await page.evaluate(() => ({
       heading: document.querySelector("h1")?.textContent?.trim(),
       creatingFor: document.querySelector("#make")?.previousElementSibling?.textContent ?? "",
@@ -199,9 +206,10 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     await page.waitForFunction(() => document.querySelector("#make")?.previousElementSibling?.textContent?.includes("Harbor Yoga"));
 
     await page.reload({ waitUntil: "networkidle0" });
-    expect(await page.evaluate(() => document.querySelector("#make")?.previousElementSibling?.textContent)).toContain("Harbor Yoga");
+    await page.waitForFunction(() => document.querySelector("#make")?.previousElementSibling?.textContent?.includes("Harbor Yoga"), { timeout: 15_000 });
 
     await settled(page, "/projects");
+    await page.waitForFunction(() => (document.querySelector("main")?.innerText ?? "").includes("Breathing guide"), { timeout: 15_000 });
     const text = await page.evaluate(() => document.querySelector("main")?.innerText ?? "");
     expect(text).toContain("Breathing guide");
     expect(text).not.toContain("Spring menu");
@@ -240,6 +248,8 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     const id = decodeURIComponent(new URL(page.url()).pathname.split("/").pop()!);
     expect(page.url()).toContain("/carousel/");
 
+    // The message box appears once the editor has checked that Claude Code is installed.
+    await page.waitForSelector('textarea[aria-label="Chat message input"]', { timeout: 15_000 });
     const composer = await page.$eval('textarea[aria-label="Chat message input"]', (e) => (e as HTMLTextAreaElement).value);
     expect(composer).toBe("A one-slide Reel cover. Three stretches for desk workers");
 
@@ -254,7 +264,7 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
 
     // The editor's main export for a one-slide cover is the single PNG, at 1080 × 1920.
     await page.reload({ waitUntil: "networkidle0" });
-    expect(await page.evaluate(() => document.body.innerText)).toContain("1080 × 1920");
+    await page.waitForFunction(() => document.body.innerText.includes("1080 × 1920"), { timeout: 15_000 });
     const png = await fetch(`${app.url}/api/carousels/${id}/export?format=single-png`, { method: "POST" });
     expect(png.status).toBe(200);
     expect(png.headers.get("content-type")).toBe("image/png");
@@ -290,11 +300,111 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     const page = await openPage();
     await settled(page, "/");
     await Promise.all([page.waitForNavigation({ waitUntil: "networkidle0" }), page.click('aside a[href="/studio"]')]);
+    // The page asks whether this browser is paired, then shows the pairing panel.
+    await page.waitForFunction(() => /pair/i.test(document.querySelector("main")?.innerText ?? "") && !/Checking this browser/.test(document.querySelector("main")?.innerText ?? ""), { timeout: 15_000 });
     const text = await page.evaluate(() => document.querySelector("main")?.innerText ?? "");
     expect(text).toContain("Video Studio");
-    expect(text).toMatch(/pair/i);
     expect(unauthorized).toEqual([]);
     await page.close();
+  }, 60_000);
+
+  it("renames a project with Enter and cancels a rename with Escape", async () => {
+    const page = await openPage();
+    await settled(page, `/carousel/${carouselId}`);
+    const field = await page.waitForSelector("#project-name");
+    const stored = async () => (await api<{ name: string }>(`/api/carousels/${carouselId}`)).body.name;
+
+    await field!.click({ clickCount: 3 });
+    await page.keyboard.type("Spring menu, final");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => (document.querySelector("#project-name") as HTMLInputElement | null)?.value === "Spring menu, final");
+    await expect.poll(stored).toBe("Spring menu, final");
+
+    // Escape puts the stored name back and saves nothing.
+    await field!.click({ clickCount: 3 });
+    await page.keyboard.type("A name I did not want");
+    await page.keyboard.press("Escape");
+    expect(await page.$eval("#project-name", (e) => (e as HTMLInputElement).value)).toBe("Spring menu, final");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(await stored()).toBe("Spring menu, final");
+    await page.close();
+  }, 60_000);
+
+  it("opens a recent production from Home in the Studio workspace", async () => {
+    const page = await openPage();
+    // Pair this browser with a code from the pairing command, as a person does; the data is this test's own.
+    const printed = execFileSync(process.execPath, [path.resolve(__dirname, "..", "scripts", "studio-pair.mjs"), "--data-dir", app.dataDir, "--no-tty-check"], { encoding: "utf8" });
+    const code = /\b([0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5})\b/.exec(printed)![1];
+    await settled(page, "/studio");
+    await (await page.waitForSelector("::-p-aria(Pairing code)"))!.type(code);
+    await (await page.waitForSelector('::-p-aria([name="Pair"][role="button"])'))!.click();
+    await (await page.waitForSelector("::-p-aria(New production)", { timeout: 30_000 }))!.type("Launch teaser");
+    await (await page.waitForSelector('::-p-aria([name="Create"][role="button"])'))!.click();
+    await page.waitForFunction(() => new URL(location.href).searchParams.has("production"), { timeout: 30_000 });
+    const id = new URL(page.url()).searchParams.get("production")!;
+
+    // Home lists it; following the link is a client-side navigation into that production.
+    await settled(page, "/");
+    const link = await page.waitForSelector(`a[href="/studio?production=${id}"]`, { timeout: 15_000 });
+    await link!.click();
+    await page.waitForFunction((want) => new URL(location.href).searchParams.get("production") === want, {}, id);
+    // The workspace, not the list: its heading is the production's name, and the list's form is gone.
+    await page.waitForFunction(() => [...document.querySelectorAll("h1")].some((h) => h.textContent?.trim() === "Launch teaser"), { timeout: 15_000 });
+    expect(await page.$("::-p-aria(New production)")).toBeNull();
+    await page.close();
+  }, 120_000);
+
+  it("refuses an invalid colour, keeps duplicate brand names apart and reverts a rename that was not saved", async () => {
+    const page = await openPage(1440, 900, { expectFailedRequests: true });
+
+    // A colour that is not #RRGGBB blocks saving, with the reason.
+    await settled(page, "/brands/new");
+    await page.type("#bname", "Draft brand");
+    const hex = await page.waitForSelector("#hex-accent");
+    await hex!.click({ clickCount: 3 });
+    await page.keyboard.type("#12");
+    expect(await page.$eval('form button[type="submit"]', (b) => (b as HTMLButtonElement).disabled)).toBe(true);
+    expect(await page.evaluate(() => document.querySelector("form")?.innerText ?? "")).toContain("Fix the accent colour to save it.");
+
+    // Two brands may share a name; the menu still lists both without a React key clash.
+    expect((await api(`/api/brands`, { method: "POST", body: JSON.stringify({ ...HARBOR, colors: { ...HARBOR.colors, accent: "#00aa88" } }) })).status).toBe(201);
+    await settled(page, "/");
+    await page.click('aside button[aria-label^="Brand for new work"]');
+    await page.waitForSelector('[role="menuitemradio"]');
+    expect((await page.$$eval('[role="menuitemradio"]', (els) => els.map((e) => e.textContent ?? ""))).filter((t) => t.includes("Harbor Yoga"))).toHaveLength(2);
+    await page.keyboard.press("Escape");
+
+    // The Projects toggles say which option is on.
+    await settled(page, "/projects");
+    expect(await page.$$eval('[role="group"][aria-label="Which brands"] button', (els) => els.map((e) => e.getAttribute("aria-pressed")))).toEqual(["true", "false"]);
+
+    // A rename the server does not store puts the stored name back in the field.
+    await settled(page, `/carousel/${documentId}`);
+    await page.setRequestInterception(true);
+    page.on("request", (r) => (r.method() === "PUT" && r.url().endsWith(`/api/carousels/${documentId}`) ? r.respond({ status: 500, contentType: "application/json", body: '{"error":"disk full"}' }) : r.continue()));
+    const field = await page.waitForSelector("#project-name");
+    await field!.click({ clickCount: 3 });
+    await page.keyboard.type("Never stored");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => (document.querySelector("#project-name") as HTMLInputElement | null)?.value === "Breathing guide", { timeout: 10_000 });
+    await page.setRequestInterception(false);
+    await page.close();
+  }, 120_000);
+
+  it("shows the brands error on Projects and Templates rather than an empty library", async () => {
+    const file = path.join(app.dataDir, "brands.json");
+    const original = await readFile(file, "utf8");
+    const page = await openPage(1440, 900, { expectFailedRequests: true });
+    try {
+      await writeFile(file, "{ not json");
+      for (const where of ["/projects", "/templates"]) {
+        await settled(page, where);
+        await page.waitForFunction(() => document.body.innerText.includes("Your brands couldn't be loaded"), { timeout: 15_000 });
+      }
+    } finally {
+      await writeFile(file, original);
+      await page.close();
+    }
   }, 60_000);
 
   it("logged no errors in the browser console and never started a design", () => {

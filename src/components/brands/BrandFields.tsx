@@ -16,9 +16,28 @@ const COLOR_HINTS: Record<keyof BrandColors, string> = {
   surface: "Cards and panels",
 };
 
-/** The five brand colours, each with a picker and a hex field that accepts only a full #RRGGBB. */
-export function ColorFields({ colors, onChange }: { colors: BrandColors; onChange: (key: keyof BrandColors, value: string) => void }) {
-  const [typed, setTyped] = useState<Partial<Record<keyof BrandColors, string>>>({});
+type Typed = Partial<Record<keyof BrandColors, string>>;
+
+/**
+ * The five brand colours, each with a picker and a hex field that accepts only
+ * a full #RRGGBB. A field holding anything else is reported through
+ * `onInvalidChange`, so the form can refuse to save rather than silently keep
+ * the previous colour.
+ */
+export function ColorFields({
+  colors,
+  onChange,
+  onInvalidChange,
+}: {
+  colors: BrandColors;
+  onChange: (key: keyof BrandColors, value: string) => void;
+  onInvalidChange?: (labels: string[]) => void;
+}) {
+  const [typed, setTyped] = useState<Typed>({});
+  const update = (next: Typed) => {
+    setTyped(next);
+    onInvalidChange?.(COLOR_ROLES.filter((r) => next[r.key] !== undefined && !HEX.test(next[r.key]!)).map((r) => r.label));
+  };
   return (
     <ul className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {COLOR_ROLES.map((r) => {
@@ -31,7 +50,7 @@ export function ColorFields({ colors, onChange }: { colors: BrandColors; onChang
               value={HEX.test(colors[r.key]) ? colors[r.key] : "#000000"}
               onChange={(e) => {
                 onChange(r.key, e.target.value);
-                setTyped((t) => ({ ...t, [r.key]: undefined }));
+                update({ ...typed, [r.key]: undefined });
               }}
               className="size-11 shrink-0 cursor-pointer rounded-md border-0 bg-transparent p-0"
             />
@@ -39,7 +58,9 @@ export function ColorFields({ colors, onChange }: { colors: BrandColors; onChang
               <label htmlFor={`hex-${r.key}`} className="block text-[14px] font-semibold">
                 {r.label}
               </label>
-              <p className="truncate text-[12.5px] text-graphite">{COLOR_HINTS[r.key]}</p>
+              <p id={`hex-${r.key}-hint`} className={`truncate text-[12.5px] ${HEX.test(shown) ? "text-graphite" : "text-alert"}`}>
+                {HEX.test(shown) ? COLOR_HINTS[r.key] : "Use # and six digits, like #1C1B29"}
+              </p>
             </div>
             <input
               id={`hex-${r.key}`}
@@ -47,9 +68,10 @@ export function ColorFields({ colors, onChange }: { colors: BrandColors; onChang
               value={shown}
               maxLength={7}
               aria-invalid={!HEX.test(shown)}
+              aria-describedby={`hex-${r.key}-hint`}
               onChange={(e) => {
                 const v = e.target.value;
-                setTyped((t) => ({ ...t, [r.key]: v }));
+                update({ ...typed, [r.key]: v });
                 if (HEX.test(v)) onChange(r.key, v);
               }}
             />
@@ -187,10 +209,26 @@ export function LogoField({ value, onChange }: { value: string | null; onChange:
       setState({ busy: false, error: err instanceof Error ? err.message : "The logo could not be uploaded." });
     }
   };
+  const [over, setOver] = useState(false);
   return (
     <div>
       <p className="mb-1.5 text-[14px] font-semibold">Logo</p>
-      <div className="flex flex-wrap items-center gap-3">
+      {/* A file can also be dropped here, as it could before #175; the button stays the keyboard path. */}
+      <div
+        className={`flex flex-wrap items-center gap-3 rounded-lg ${over ? "outline-2 outline-offset-4 outline-ink outline-dashed" : ""}`}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setOver(true);
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setOver(false);
+          const file = e.dataTransfer.files?.[0];
+          if (file && !state.busy) void upload(file);
+        }}
+      >
         {value && (
           <span className="flex size-16 items-center justify-center overflow-hidden rounded-lg bg-sheet shadow-[inset_0_0_0_1px_var(--color-rule)]">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -221,7 +259,7 @@ export function LogoField({ value, onChange }: { value: string | null; onChange:
         />
       </div>
       <p className={`mt-1.5 text-[13px] ${state.error ? "text-alert" : "text-graphite"}`} role={state.error ? "alert" : undefined}>
-        {state.error ?? "PNG, JPG or WebP, up to 10 MB."}
+        {state.error ?? "PNG, JPG or WebP, up to 10 MB. Choose a file or drop it here."}
       </p>
     </div>
   );

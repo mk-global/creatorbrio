@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { useApp } from "@/components/app/AppContext";
-import { PageNotice } from "@/components/app/PageNotice";
+import { BrandsUnavailable, PageNotice } from "@/components/app/PageNotice";
 import { FormatTabs } from "@/components/library/FormatTabs";
 import { ProjectFrame } from "@/components/library/ProjectFrame";
 import { SHEET_FH, SHEET_GRID } from "@/components/library/ProjectTile";
@@ -68,7 +68,7 @@ function TemplateTile({ t, brand, onDeleted }: { t: Template; brand: Brand | und
 
 /** The brand's templates by format (#175); using one opens New project with it chosen. */
 export default function TemplatesPage() {
-  const { brands, selectedBrand, defaultBrandId } = useApp();
+  const { brands, selectedBrand, defaultBrandId, error: brandError, reload: reloadBrands } = useApp();
   const templates = useTemplates();
   const [filter, setFilter] = useState<ProjectFormat | "all">("all");
   const mine =
@@ -81,6 +81,8 @@ export default function TemplatesPage() {
     { id: "all" as const, label: "All", count: mine.length },
     ...PROJECT_FORMATS.map((f) => ({ id: f, label: FORMATS[f].plural, count: mine.filter((t) => formatOf(t) === f).length })),
   ];
+
+  if (brandError) return <BrandsUnavailable message={brandError} onRetry={() => void reloadBrands()} />;
 
   return (
     <div>

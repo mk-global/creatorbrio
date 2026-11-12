@@ -437,7 +437,7 @@ async function plan_(
     if (result.code === "cancelled") throw new Cancelled();
     throw new Blocked(
       result.code === "capability_unavailable" ? "capability_unavailable" : "plan_failed",
-      directorFailureMessage(result.code, result.unavailable)
+      directorFailureMessage(result.code, result.unavailable, slideLimitOf(input.carousel))
     );
   }
   if (result.plan.status === "source-required") throw new Blocked("source_required", result.plan.message);

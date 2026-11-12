@@ -250,13 +250,21 @@ export default function CarouselEditorPage({ params }: PageProps) {
         format={format}
         brand={brand}
         onRename={async (name) => {
-          const res = await fetch(`/api/carousels/${id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name }),
-          });
-          if (res.ok) setCarousel(await res.json());
-          else toast("The new name wasn't saved. Try again.");
+          try {
+            const res = await fetch(`/api/carousels/${id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name }),
+            });
+            if (res.ok) {
+              setCarousel(await res.json());
+              return true;
+            }
+          } catch {
+            // reported below
+          }
+          toast("The new name wasn't saved. Try again.");
+          return false;
         }}
         onSize={handleAspectChange}
         safeZones={showSafeZones}

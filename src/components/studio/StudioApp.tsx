@@ -7,6 +7,7 @@
  * page needs no Claude CLI or AI provider.
  */
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useSearchParams } from "next/navigation";
 import { LogOut, MonitorSmartphone } from "lucide-react";
 
 import { StudioApiError } from "@/lib/video/studio/api";
@@ -18,15 +19,15 @@ import { useStudioApi } from "./workspace";
 
 type Pairing = { status: "checking" } | { status: "unpaired" } | { status: "paired" } | { status: "unreachable"; message: string };
 
-function readProductionParam(): string | null {
-  if (typeof window === "undefined") return null;
-  return new URLSearchParams(window.location.search).get("production");
-}
 
 export function StudioApp() {
   const api = useStudioApi();
   const [pairing, setPairing] = useState<Pairing>({ status: "checking" });
-  const [productionId, setProductionId] = useState<string | null>(readProductionParam);
+  // The open production is the URL's `?production=`, read through the router:
+  // a link from Home, Back and Forward, and the pushes below all update it.
+  // Reading window.location at first render missed client-side navigation
+  // from Home, which writes the URL only after the page renders (#175).
+  const productionId = useSearchParams().get("production");
 
   const check = useCallback(async () => {
     try {
@@ -42,9 +43,6 @@ export function StudioApp() {
 
   useEffect(() => {
     void check();
-    const onPop = () => setProductionId(readProductionParam());
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
   }, [check]);
 
   const open = useCallback((id: string | null) => {
@@ -52,7 +50,6 @@ export function StudioApp() {
     if (id) url.searchParams.set("production", id);
     else url.searchParams.delete("production");
     window.history.pushState(null, "", url);
-    setProductionId(id);
   }, []);
 
   const signOut = useCallback(async () => {

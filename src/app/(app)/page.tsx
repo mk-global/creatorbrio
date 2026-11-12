@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useApp } from "@/components/app/AppContext";
 import { Swatches } from "@/components/app/BrandSwitcher";
-import { PageNotice } from "@/components/app/PageNotice";
+import { BrandsUnavailable, PageNotice } from "@/components/app/PageNotice";
 import { useAppStatus } from "@/components/app/useAppStatus";
 import { BrandPanel } from "@/components/home/BrandPanel";
 import { FormatStage } from "@/components/home/FormatStage";
@@ -47,21 +47,7 @@ export default function Home() {
       ? templates.state.items.filter((t) => templateBrandId(t, defaultBrandId) === selectedBrand.id)
       : [];
 
-  if (brandError) {
-    return (
-      <PageNotice
-        tone="alert"
-        title="Your brands couldn't be loaded"
-        action={
-          <button type="button" className="btn btn-quiet btn-sm" onClick={() => void reloadBrands()}>
-            Try again
-          </button>
-        }
-      >
-        {brandError} Nothing was deleted; your data files were left as they are.
-      </PageNotice>
-    );
-  }
+  if (brandError) return <BrandsUnavailable message={brandError} onRetry={() => void reloadBrands()} />;
 
   return (
     <div className="space-y-14 lg:space-y-20">

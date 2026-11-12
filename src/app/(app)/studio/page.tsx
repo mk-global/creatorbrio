@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 
 import { StudioApp } from "@/components/studio/StudioApp";
 
@@ -7,5 +8,10 @@ export const metadata: Metadata = {
 };
 
 export default function StudioPage() {
-  return <StudioApp />;
+  // StudioApp reads the URL's search parameters, which need a Suspense boundary.
+  return (
+    <Suspense>
+      <StudioApp />
+    </Suspense>
+  );
 }

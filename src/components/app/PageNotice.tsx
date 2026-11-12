@@ -35,3 +35,24 @@ export function PageNotice({
     </div>
   );
 }
+
+/**
+ * Shown in place of a page that needs the brands when they could not be read
+ * (#175). Home, Projects and Templates all show this one notice, so a broken
+ * brands file is never mistaken for an empty library.
+ */
+export function BrandsUnavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <PageNotice
+      tone="alert"
+      title="Your brands couldn't be loaded"
+      action={
+        <button type="button" className="btn btn-quiet btn-sm" onClick={onRetry}>
+          Try again
+        </button>
+      }
+    >
+      {message} Nothing was deleted; your data files were left as they are.
+    </PageNotice>
+  );
+}
