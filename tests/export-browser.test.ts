@@ -19,18 +19,48 @@ vi.mock("@/lib/fonts", () => ({
 
 type ExportSlides = typeof import("@/lib/export-slides");
 
-const STATE_KEY = Symbol.for("creatorbrio.export-browser");
+const STATE_KEY = Symbol.for("creatorbrio.export-browser.v2");
 const MAX_EXPORTS_BEFORE_RESTART = 50;
+
+interface FakeContext {
+  open: boolean;
+  newPage(): Promise<unknown>;
+  close(): Promise<void>;
+}
 
 interface FakeBrowser {
   connected: boolean;
   openPages: number;
+  /** Every browser context opened in this browser, in order. */
+  contexts: FakeContext[];
   /** Pages still open each time close() was called. */
   closes: number[];
   isConnected(): boolean;
   newPage(): Promise<unknown>;
+  createBrowserContext(): Promise<FakeContext>;
+  process(): FakeProcess | null;
+  /** When set, close() never finishes, as a wedged browser's does not. */
+  closeHangs: boolean;
+  /** Rejects when the browser's process is killed. */
+  death: Promise<never>;
   close(): Promise<void>;
 }
+
+/** The browser process, for tests that check it is killed. */
+interface FakeProcess {
+  pid: number;
+  exitCode: number | null;
+  signalCode: string | null;
+  once(event: "exit", listener: () => void): void;
+  kill(signal: string): void;
+}
+
+/** Process ids the code under test signalled, with the signal; the fake process exits on SIGKILL. */
+let signalled: [number, string][];
+/** Fake browser processes by group id, so a signal to a group reaches its process. */
+let fakeProcesses: Map<number, { exit(): void }>;
+/** When true, launched fake browsers have a process the code can kill. */
+let supervised: boolean;
 
 let png: Buffer;
 let browsers: FakeBrowser[];
@@ -55,13 +85,60 @@ let frameChecks: (html: string) => (Check | Error)[];
 let documentError: (html: string) => Error | null;
 /** When set, pages opened from now on wait for it before their screenshot. */
 let screenshotGate: Promise<void> | null;
+/** Whether a page's screenshot never finishes, keyed by its HTML (the health check loads `<p>ok</p>`). */
+let hangs: (html: string) => boolean;
 
 function fakeBrowser(): FakeBrowser {
+  let child: FakeProcess | null = null;
+  let die!: (reason: Error) => void;
+  const death = new Promise<never>((_, reject) => (die = reject));
+  death.catch(() => {});
+  if (supervised) {
+    const pid = 900_000 + fakeProcesses.size;
+    const listeners: (() => void)[] = [];
+    child = {
+      pid,
+      exitCode: null,
+      signalCode: null,
+      once: (_event, listener) => void listeners.push(listener),
+      kill: (signal) => void signalled.push([pid, signal]),
+    };
+    const proc = child;
+    fakeProcesses.set(pid, {
+      exit() {
+        proc.signalCode = "SIGKILL";
+        browser.connected = false;
+        die(new Error("Protocol error: Target closed"));
+        for (const listener of listeners) listener();
+      },
+    });
+  }
   const browser: FakeBrowser = {
     connected: true,
     openPages: 0,
+    contexts: [],
     closes: [],
     isConnected: () => browser.connected,
+    process: () => child,
+    closeHangs: false,
+    death,
+    async createBrowserContext() {
+      const pages: { close(): Promise<void> }[] = [];
+      const context: FakeContext = {
+        open: true,
+        async newPage() {
+          const page = (await browser.newPage()) as { close(): Promise<void> };
+          pages.push(page);
+          return page;
+        },
+        async close() {
+          context.open = false;
+          for (const page of pages) await page.close();
+        },
+      };
+      browser.contexts.push(context);
+      return context;
+    },
     async newPage() {
       browser.openPages++;
       const gate = screenshotGate;
@@ -122,7 +199,9 @@ function fakeBrowser(): FakeBrowser {
           return printed(html);
         },
         screenshot: async () => {
-          await gate;
+          // A killed browser fails whatever is still waiting in it, as Chromium's connection does.
+          await Promise.race([gate, browser.death]);
+          if (hangs(html)) await Promise.race([new Promise(() => {}), browser.death]);
           return png;
         },
         close: async () => {
@@ -134,6 +213,7 @@ function fakeBrowser(): FakeBrowser {
     },
     async close() {
       browser.closes.push(browser.openPages);
+      if (browser.closeHangs) return new Promise<void>(() => {});
       browser.connected = false;
     },
   };
@@ -224,6 +304,7 @@ beforeEach(async () => {
     .toBuffer();
   browsers = [];
   screenshotGate = null;
+  hangs = () => false;
   printable = () => ({ hasText: true, visibleText: "", problem: null });
   printed = (html) => textPdf(html.includes("Slide 2") ? "Second" : "Any");
   printOptions = [];
@@ -233,6 +314,9 @@ beforeEach(async () => {
   bodyIsSlide = true;
   launch.mockReset();
   launch.mockImplementation(launchFake);
+  signalled = [];
+  fakeProcesses = new Map();
+  supervised = false;
 });
 
 describe("export browser", () => {
@@ -638,5 +722,203 @@ describe("export browser", () => {
       );
       expect(browsers[0].openPages).toBe(0);
     });
+  });
+});
+
+// #198: a browser that stays connected but stops completing captures must not
+// block later exports or need the server restarted. Fake timers make every
+// deadline exact; the defaults are used, so these also pin their values.
+describe("unhealthy export browser (#198)", () => {
+  const PNG_DEADLINE = 60_000;
+  const PROBE = 10_000;
+
+  /** Settles `work` into its error message, or null when it succeeds. */
+  function outcome(work: Promise<unknown>): Promise<string | null> {
+    return work.then(
+      () => null,
+      (error: Error) => error.message
+    );
+  }
+
+  /** Stands in for process.kill: records the signal and lets the fake process exit. */
+  function interceptKill() {
+    return vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+      signalled.push([pid, String(signal)]);
+      fakeProcesses.get(Math.abs(pid))?.exit();
+      return true;
+    }) as typeof process.kill);
+  }
+
+  it("renders each export in its own browser context and closes it afterwards", async () => {
+    const { exportAllSlides } = await freshModule();
+    await Promise.all([exportAllSlides(slides(3), "4:5"), exportAllSlides(slides(2), "4:5")]);
+
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(browsers[0].contexts).toHaveLength(2);
+    expect(browsers[0].contexts.every((context) => !context.open)).toBe(true);
+    expect(browsers[0].openPages).toBe(0);
+  });
+
+  it("fails a slide that misses its deadline, naming it, without disturbing a concurrent export or killing a browser that still answers", async () => {
+    supervised = true;
+    const kill = interceptKill();
+    const { exportAllSlides } = await freshModule();
+    vi.useFakeTimers();
+    try {
+      // Only slide 2 hangs; the browser itself still answers, the health check included.
+      hangs = (html) => html.includes("Slide 2");
+      const stuck = outcome(exportAllSlides(slides(3), "4:5"));
+      await vi.advanceTimersByTimeAsync(PNG_DEADLINE / 2);
+      hangs = () => false;
+      const concurrent = outcome(exportAllSlides(slides(3), "4:5"));
+      await vi.advanceTimersByTimeAsync(PNG_DEADLINE / 2 + PROBE);
+
+      expect(await stuck).toBe(
+        "Slide 2 took longer than 60 seconds to render, so the export stopped. Try again; if it happens again, simplify that slide."
+      );
+      expect(await concurrent).toBeNull();
+      expect(signalled).toEqual([]);
+      expect(browsers[0].contexts.every((context) => !context.open)).toBe(true);
+
+      // Nothing uses that browser any more, so the next export gets a new one.
+      const next = outcome(exportAllSlides(slides(2), "4:5"));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await next).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+      expect(browsers[0].closes).toEqual([0]);
+    } finally {
+      vi.useRealTimers();
+      kill.mockRestore();
+    }
+  });
+
+  it("kills a browser that no longer completes any capture, fails what still runs in it at once, and the next export works", async () => {
+    supervised = true;
+    const kill = interceptKill();
+    const { exportAllSlides } = await freshModule();
+    vi.useFakeTimers();
+    try {
+      const warm = outcome(exportAllSlides(slides(1), "4:5"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await warm).toBeNull();
+
+      // From now on the browser completes no screenshot at all, the health check's included.
+      hangs = () => true;
+      const first = outcome(exportAllSlides(slides(3), "4:5"));
+      await vi.advanceTimersByTimeAsync(PNG_DEADLINE / 2);
+      const second = outcome(exportAllSlides(slides(2), "4:5"));
+      await vi.advanceTimersByTimeAsync(PNG_DEADLINE / 2 + PROBE + 10);
+
+      const replaced = "The export browser stopped responding and was replaced. Try the export again.";
+      expect(await first).toBe(replaced);
+      // Started half a deadline later, it fails with the kill rather than waiting out its own deadline.
+      expect(await second).toBe(replaced);
+      expect(signalled).toEqual([[-browsers[0].process()!.pid, "SIGKILL"]]);
+
+      hangs = () => false;
+      const next = outcome(exportAllSlides(slides(3), "4:5"));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await next).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      kill.mockRestore();
+    }
+  });
+
+  it("kills a retired browser whose clean close does not finish, and still launches its replacement", async () => {
+    supervised = true;
+    const kill = interceptKill();
+    const { exportSlide } = await freshModule();
+    vi.useFakeTimers();
+    try {
+      const warm = exportSlide(slides(1)[0], "4:5");
+      await vi.advanceTimersByTimeAsync(10);
+      await warm;
+      browsers[0].closeHangs = true;
+      browsers[0].connected = false;
+
+      const next = outcome(exportSlide(slides(1)[0], "4:5"));
+      await vi.advanceTimersByTimeAsync(2_000 + 100);
+
+      expect(await next).toBeNull();
+      expect(browsers[0].closes).toHaveLength(1);
+      expect(signalled).toEqual([[-browsers[0].process()!.pid, "SIGKILL"]]);
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      kill.mockRestore();
+    }
+  });
+
+  it("closes a browser left idle for five minutes and launches anew for the next export", async () => {
+    const { exportSlide } = await freshModule();
+    vi.useFakeTimers();
+    try {
+      const first = outcome(exportSlide(slides(1)[0], "4:5"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await first).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(5 * 60_000 - 1_000);
+      expect(browsers[0].closes).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(browsers[0].closes).toEqual([0]);
+
+      const next = outcome(exportSlide(slides(1)[0], "4:5"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await next).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never closes an idle browser while an export is using it", async () => {
+    const { exportSlide, exportBrowserLimits } = await freshModule();
+    exportBrowserLimits.idleCloseMs = 20_000;
+    vi.useFakeTimers();
+    try {
+      const warm = outcome(exportSlide(slides(1)[0], "4:5"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await warm).toBeNull();
+
+      // An export starts just before the idle limit and holds its page past it, inside its own deadline.
+      await vi.advanceTimersByTimeAsync(19_000);
+      const held = deferred();
+      screenshotGate = held.promise;
+      const slow = outcome(exportSlide(slides(1)[0], "4:5"));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(browsers[0].closes).toEqual([]);
+
+      held.resolve();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await slow).toBeNull();
+      expect(browsers[0].closes).toEqual([]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(browsers[0].closes).toEqual([0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("names the PDF slide that missed its deadline", async () => {
+    const { exportAllSlidePdfs } = await freshModule();
+    vi.useFakeTimers();
+    try {
+      printed = (html) => (html.includes("Slide 2") ? new Promise<Uint8Array>(() => {}) : textPdf("Any"));
+      const pdfs = outcome(exportAllSlidePdfs(slides(2), "4:5"));
+      await vi.advanceTimersByTimeAsync(120_000 + PROBE + 10);
+      expect(await pdfs).toMatch(/^Slide 2 took longer than 120 seconds to render, so the export stopped\./);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("explains a missed deadline and a replaced browser in the person's words", async () => {
+    const { describeExportFailure, SlideTimeoutError, ExportBrowserReplacedError } = await freshModule();
+    expect(describeExportFailure(new SlideTimeoutError(60, 4))).toMatch(/^Slide 4 took longer than 60 seconds/);
+    expect(describeExportFailure(new ExportBrowserReplacedError())).toBe(
+      "The export browser stopped responding and was replaced. Try the export again."
+    );
   });
 });
