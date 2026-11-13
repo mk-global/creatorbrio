@@ -107,7 +107,6 @@ async function world() {
   await addReferenceImage(carousel.id, {
     id: referenceId,
     url: `/uploads/${referenceId}.png`,
-    absPath: "",
     name: "reference",
     addedAt: new Date().toISOString(),
   });

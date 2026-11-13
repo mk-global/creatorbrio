@@ -20,6 +20,25 @@ function mutate<R>(fn: (data: CarouselsData) => R): Promise<R> {
 }
 
 /**
+ * Exactly the fields of a reference image, as it is stored and returned. A
+ * record stored before #62 may still carry the absolute path of its file on
+ * the server; that is never copied into a new record or sent to the browser.
+ */
+export function referenceImageFields({ id, url, name, addedAt }: ReferenceImage): ReferenceImage {
+  return { id, url, name, addedAt };
+}
+
+/**
+ * A carousel as the API returns it. Every route that answers with a carousel
+ * passes it through here, so a stored reference image reaches the browser
+ * with its own fields only, never a server path (#62). Stored data is not
+ * changed: this is a new object, and mutators hand back the stored one.
+ */
+export function carouselResponse(carousel: Carousel): Carousel {
+  return { ...carousel, referenceImages: (carousel.referenceImages ?? []).map(referenceImageFields) };
+}
+
+/**
  * Lists carousels, optionally only those of one brand. Carousels made before
  * brands existed belong to the default brand.
  */
@@ -95,7 +114,8 @@ export async function duplicateCarousel(id: string): Promise<Carousel | null> {
         id: generateId(),
         previousVersions: [],
       })),
-      referenceImages: [...(source.referenceImages || [])],
+      // The same uploads, without a server path an old record may carry (#62).
+      referenceImages: (source.referenceImages || []).map(referenceImageFields),
       // The copy shares the same files, as it does for reference images.
       assets: [...carouselAssets(source)],
       // The copy keeps what the carousel is for; its references and assets came with it.

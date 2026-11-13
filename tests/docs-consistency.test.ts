@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { MAX_SLIDES } from "@/types/carousel";
 import { DEFAULT_BRAND } from "@/types/brand";
-import { buildSystemPrompt } from "@/lib/chat-system-prompt";
+import { buildSystemPrompt, type PromptCarousel } from "@/lib/chat-system-prompt";
 import { DIRECTOR_BUDGET_ENV, DIRECTOR_TIMEOUT_MS, DIRECTOR_TOOLS } from "@/lib/visual-director";
 import {
   DEFAULT_DESIGN_AGENT_INACTIVITY_SECONDS,
@@ -17,7 +17,6 @@ import {
   MIN_DESIGN_AGENT_INACTIVITY_SECONDS,
   MIN_DESIGN_AGENT_TIMEOUT_SECONDS,
 } from "@/lib/design-agent";
-import type { Carousel } from "@/types/carousel";
 
 // CLAUDE.md is read by the assistant working on this repository, so a stale
 // number there is a wrong instruction, not a stale comment. These assertions
@@ -133,7 +132,7 @@ describe("the generated system prompt agrees with the docs", () => {
       tags: [],
       createdAt: "",
       updatedAt: "",
-    } as Carousel;
+    } as PromptCarousel;
 
     const prompt = buildSystemPrompt({
       baseUrl: "http://localhost:3001",

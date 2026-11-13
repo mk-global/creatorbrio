@@ -220,6 +220,68 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     await page.close();
   }, 300_000);
 
+  it("shows every colour's full role name and hint in the brand editor at 1440, 1280, 768, 390 and 320 px (#190)", async () => {
+    const page = await openPage();
+    const clipped: string[] = [];
+    /** Each colour field's role name and hint must lie wholly inside its own box, clear of the swatch and the hex input. */
+    const measure = async (where: string, width: number) => {
+      const found = await page.$$eval("main form li:has(input[type=color])", (items) =>
+        items.flatMap((li) => {
+          const label = li.querySelector("label")!;
+          const hint = li.querySelector("p")!;
+          const swatch = li.querySelector("input[type=color]")!.getBoundingClientRect();
+          const hex = li.querySelector("input:not([type=color])")!.getBoundingClientRect();
+          const field = li.getBoundingClientRect();
+          const name = label.textContent ?? "";
+          return [label, hint].flatMap((el) => {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const text = range.getBoundingClientRect();
+            const own = el.getBoundingClientRect();
+            const problems: string[] = [];
+            if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) problems.push(`overflows its box (${el.scrollWidth}x${el.scrollHeight} in ${el.clientWidth}x${el.clientHeight})`);
+            if (text.left < own.left - 0.5 || text.right > own.right + 0.5) problems.push(`text is ${Math.round(text.width)}px wide in a ${Math.round(own.width)}px box`);
+            if (text.left < field.left - 0.5 || text.right > field.right + 0.5) problems.push("text leaves the field");
+            for (const [other, r] of [["hex input", hex], ["swatch", swatch]] as const) {
+              if (text.left < r.right && text.right > r.left && text.top < r.bottom && text.bottom > r.top) problems.push(`text lies under the ${other}`);
+            }
+            const what = el === label ? `${name} role name` : `${name} hint "${el.textContent}"`;
+            return problems.map((p) => `${what}: ${p}`);
+          });
+        })
+      );
+      clipped.push(...found.map((f) => `${where} at ${width}px: ${f}`));
+    };
+    const fieldsShown = (primary: string) =>
+      page.waitForFunction(
+        (want) => (document.querySelector("#hex-primary") as HTMLInputElement | null)?.value === want && document.querySelectorAll("main form li:has(input[type=color])").length === 5,
+        { timeout: 15_000 },
+        primary
+      );
+
+    // The sidebar is as the app draws it at each width: full at 1440 and 1280, the rail at 768, none on a phone.
+    for (const width of [1440, 1280, 768, 390, 320]) {
+      await page.setViewport({ width, height: 900 });
+      await settled(page, "/brands/new");
+      await fieldsShown("#1a1a2e");
+      await measure("/brands/new", width);
+      await settled(page, `/brands/${harborId}`);
+      await fieldsShown(HARBOR.colors.primary);
+      await measure(`/brands/${HARBOR.name}`, width);
+      // The longer message for a colour that is not #RRGGBB must fit as well.
+      // Focused and selected directly: on a clipped layout the field may not be where a click would land.
+      await page.focus("#hex-surface");
+      await page.$eval("#hex-surface", (el) => (el as HTMLInputElement).select());
+      await page.keyboard.type("#12");
+      await page.waitForFunction(() => document.querySelector("#hex-surface-hint")?.textContent?.startsWith("Use # and six digits"), { timeout: 10_000 });
+      await measure(`/brands/${HARBOR.name} with an invalid surface colour`, width);
+    }
+    expect(clipped).toEqual([]);
+    // Nothing typed here was saved.
+    expect((await api<{ colors: { surface: string } }>(`/api/brands/${harborId}`)).body.colors.surface).toBe(HARBOR.colors.surface);
+    await page.close();
+  }, 240_000);
+
   it("can be used from the keyboard: skip link first, every stop visibly focused", async () => {
     const page = await openPage();
     await settled(page, "/");

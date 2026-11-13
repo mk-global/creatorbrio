@@ -2,15 +2,16 @@ import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import type { Carousel, ReferenceImage } from "@/types/carousel";
+import type { Carousel, ResolvedReferenceImage } from "@/types/carousel";
 
 /**
  * Reference images are the only files whose paths the app hands to the design
  * agent, which opens them with its Read tool. Every such path is derived here,
  * by the server, from a URL in the one form the upload route produces for an
  * image: a random UUID with a `.png` extension directly under `/uploads/`.
- * A stored `absPath` is never trusted, because it was once taken from the
- * request that registered the reference.
+ * No path is stored (#62); an `absPath` left on a record stored before then
+ * is never trusted or read, because it was once taken from the request that
+ * registered the reference.
  */
 export const REFERENCE_URL_PATTERN =
   /^\/uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.png$/;
@@ -117,12 +118,12 @@ function logExclusionOnce(carouselId: string, referenceId: string, reason: Refer
  * each with a path derived now. References that fail are left in storage,
  * never deleted, and are simply not offered to the agent.
  */
-export async function resolveReferenceImages(carousel: Carousel): Promise<ReferenceImage[]> {
-  const resolved: ReferenceImage[] = [];
+export async function resolveReferenceImages(carousel: Carousel): Promise<ResolvedReferenceImage[]> {
+  const resolved: ResolvedReferenceImage[] = [];
   for (const ref of carousel.referenceImages ?? []) {
     const result = await confineUploadedPng(ref.url);
     if (result.ok) {
-      resolved.push({ ...ref, absPath: result.absPath });
+      resolved.push({ id: ref.id, url: ref.url, name: ref.name, addedAt: ref.addedAt, absPath: result.absPath });
     } else {
       logExclusionOnce(carousel.id, ref.id, result.reason);
     }
