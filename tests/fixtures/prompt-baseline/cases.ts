@@ -1,7 +1,7 @@
 import type { BrandConfig } from "@/types/brand";
-import type { Carousel, Slide } from "@/types/carousel";
+import type { Slide } from "@/types/carousel";
 import type { StylePreset } from "@/types/style-preset";
-import type { SystemPromptContext } from "@/lib/chat-system-prompt";
+import type { PromptCarousel, SystemPromptContext } from "@/lib/chat-system-prompt";
 
 /**
  * Five fixed, synthetic inputs to the Design Agent's system prompt that
@@ -41,7 +41,7 @@ const slide = (id: string, order: number, notes: string): Slide => ({
   notes,
 });
 
-const carousel = (overrides: Partial<Carousel>): Carousel => ({
+const carousel = (overrides: Partial<PromptCarousel>): PromptCarousel => ({
   id: "c0ffee00-0000-4000-8000-000000000001",
   name: "Five habits of calm teams",
   aspectRatio: "4:5",

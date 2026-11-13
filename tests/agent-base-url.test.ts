@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { resolveAppOrigin } from "@/lib/request-origin";
-import { buildSystemPrompt } from "@/lib/chat-system-prompt";
+import { buildSystemPrompt, type PromptCarousel } from "@/lib/chat-system-prompt";
 import { DEFAULT_BRAND } from "@/types/brand";
-import type { Carousel } from "@/types/carousel";
 
 function requestOn(url: string, headers: Record<string, string> = {}): Request {
   return new Request(url, { headers });
@@ -62,7 +61,7 @@ describe("buildSystemPrompt", () => {
     tags: [],
     createdAt: "",
     updatedAt: "",
-  } as Carousel;
+  } as PromptCarousel;
 
   it("points every API example at the running instance", () => {
     const prompt = buildSystemPrompt({

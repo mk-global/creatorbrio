@@ -74,7 +74,6 @@ export async function scenarioRequest(setup: ScenarioSetup, message: string): Pr
     await addReferenceImage(carousel.id, {
       id,
       url,
-      absPath: "",
       name: ref.name,
       addedAt: new Date().toISOString(),
     });

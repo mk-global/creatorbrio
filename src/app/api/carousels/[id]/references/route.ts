@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { addReferenceImage, removeReferenceImage, getCarousel } from "@/lib/carousels";
+import { addReferenceImage, removeReferenceImage, getCarousel, referenceImageFields } from "@/lib/carousels";
 import { confineUploadedPng, REFERENCE_REJECTION_MESSAGES } from "@/lib/reference-images";
 import { generateId, now } from "@/lib/utils";
 import { dataErrorResponse } from "@/lib/api-errors";
+import type { ReferenceImage } from "@/types/carousel";
 
 export async function GET(
   _request: Request,
@@ -13,7 +14,7 @@ export async function GET(
   if (!carousel) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  return NextResponse.json({ references: carousel.referenceImages || [] });
+  return NextResponse.json({ references: (carousel.referenceImages || []).map(referenceImageFields) });
 }
 
 export async function POST(
@@ -29,8 +30,9 @@ export async function POST(
       return NextResponse.json({ error: "url is required" }, { status: 400 });
     }
 
-    // The path is derived by the server from the URL, and only for a regular
-    // PNG upload inside public/uploads; nothing else is stored or advertised.
+    // Only a regular PNG upload inside public/uploads is accepted. Its path
+    // is neither stored nor returned (#62): the server derives it again from
+    // the URL whenever it needs the file.
     const confined = await confineUploadedPng(url);
     if (!confined.ok) {
       return NextResponse.json(
@@ -39,10 +41,9 @@ export async function POST(
       );
     }
 
-    const ref = {
+    const ref: ReferenceImage = {
       id: generateId(),
       url: confined.url,
-      absPath: confined.absPath,
       name: name || "Reference image",
       addedAt: now(),
     };
@@ -52,7 +53,7 @@ export async function POST(
       return NextResponse.json({ error: "Carousel not found" }, { status: 404 });
     }
 
-    return NextResponse.json(result, { status: 201 });
+    return NextResponse.json(referenceImageFields(result), { status: 201 });
   } catch (err) {
     const dataError = dataErrorResponse(err);
     if (dataError) return dataError;
