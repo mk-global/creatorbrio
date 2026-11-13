@@ -76,8 +76,7 @@ A slide that misses its deadline marks the browser for replacement and starts on
 - A browser that fails the check is killed at once. The export, and any other export still running in it, fails with "The export browser stopped responding and was replaced. Try the export again.", and the next export launches a new browser.
 - A browser that passes is replaced as soon as no export is using it, and the export fails with a message naming the slide that took too long.
 
-The browser is also replaced after 50 slides once no export is using it, and closed after 5 minutes without an export.
-The idle close frees the browser's memory (about 650 MB across its processes on macOS arm64) at the cost of a new launch for the next export (about 1.5 seconds to its first capture).
+The browser is also replaced after 50 slides once no export is using it; otherwise it stays open between exports.
 Why Chromium stopped completing captures in the outage that led to this is not known; a browser that stays connected but completes no capture is recovered this way whatever the cause.
 The route does not stop an export when its request is abandoned; the slide deadlines bound how long that work runs.
 

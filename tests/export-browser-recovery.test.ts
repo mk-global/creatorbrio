@@ -9,9 +9,10 @@ import { appBrowser, inCi } from "./helpers/app-browser";
 // #198: the real export browser can stay connected while it stops completing
 // captures. Freezing the browser's GPU process, which produces the frames a
 // screenshot waits for, reproduces that state: the browser answers the
-// DevTools protocol but no capture finishes, in any context. These run in CI
-// on the runner's Chrome; a missing browser, or no GPU process to freeze,
-// fails the suite rather than skipping it.
+// DevTools protocol but no capture finishes, in any context. Where Chrome runs
+// no separate GPU process, the browser process itself is frozen instead. These
+// run in CI on the runner's Chrome; a missing browser fails the suite rather
+// than skipping it.
 const browser = appBrowser();
 
 const slide = (text: string, background: string): Slide => ({
@@ -36,15 +37,33 @@ function processes(): Proc[] {
     .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), args: m[3] }));
 }
 
-/** This test process's own export browser and its GPU process, found by parentage only. */
-function ownExportBrowser(): { browserPid: number; gpuPid: number } {
+/**
+ * This test process's own export browser, found by parentage only, and the
+ * process to freeze: its GPU process, which produces the frames a capture
+ * waits for. Where Chrome has no separate GPU process, the browser process
+ * itself is frozen, which leaves the connection open while nothing completes.
+ */
+function ownExportBrowser(): { browserPid: number; freezePid: number } {
   const all = processes();
   // Children of this process that run the browser executable (the `ps` above is a child too).
   const roots = all.filter((p) => p.ppid === process.pid && p.args.includes(browser!) && !p.args.includes("--type="));
   expect(roots, "exactly one export browser launched by this test process").toHaveLength(1);
-  const gpu = all.filter((p) => p.ppid === roots[0].pid && p.args.includes("--type=gpu-process"));
-  expect(gpu, "the export browser has a GPU process to freeze").toHaveLength(1);
-  return { browserPid: roots[0].pid, gpuPid: gpu[0].pid };
+  const tree = new Set([roots[0].pid]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const p of all) {
+      if (tree.has(p.ppid) && !tree.has(p.pid)) {
+        tree.add(p.pid);
+        grew = true;
+      }
+    }
+  }
+  const descendants = all.filter((p) => p.pid !== roots[0].pid && tree.has(p.pid));
+  const gpu = descendants.filter((p) => p.args.includes("--type=gpu-process"));
+  expect(gpu.length, "at most one GPU process").toBeLessThanOrEqual(1);
+  const types = descendants.map((p) => p.args.match(/--type=([\w-]+)/)?.[1] ?? "other");
+  console.info(`export browser ${roots[0].pid}: freezing ${gpu.length ? "its GPU process" : "the browser process"}; children ${types.join(", ")}`);
+  return { browserPid: roots[0].pid, freezePid: gpu[0]?.pid ?? roots[0].pid };
 }
 
 function alive(pid: number): boolean {
@@ -80,22 +99,30 @@ describe.skipIf(!browser && !inCi)("export browser recovery in Chromium (#198)",
 
   it("replaces a browser that stays connected but completes no capture, and the next export works", async () => {
     const { exportAllSlides, exportBrowserLimits } = await import("@/lib/export-slides");
-    exportBrowserLimits.pngSlideMs = 5_000;
-    exportBrowserLimits.probeMs = 3_000;
     const slides = [slide("One", "#f7f3e9"), slide("Two", "#16a085")];
 
+    // The cold launch and first export run under the default limits.
     const before = await exportAllSlides(slides, "4:5");
-    const { browserPid, gpuPid } = ownExportBrowser();
-    process.kill(gpuPid, "SIGSTOP");
-    frozen = gpuPid;
+    const { browserPid, freezePid } = ownExportBrowser();
+    process.kill(freezePid, "SIGSTOP");
+    frozen = freezePid;
 
+    // Short limits only while the browser is frozen, restored for everything after.
+    const defaults = { ...exportBrowserLimits };
+    exportBrowserLimits.pngSlideMs = 5_000;
+    exportBrowserLimits.probeMs = 3_000;
     const started = Date.now();
-    const outcomes = await Promise.all([
-      exportAllSlides(slides, "4:5").then(() => null, (error: Error) => error.message),
-      new Promise((resolve) => setTimeout(resolve, 1_000)).then(() =>
-        exportAllSlides(slides, "1:1").then(() => null, (error: Error) => error.message)
-      ),
-    ]);
+    let outcomes: (string | null)[];
+    try {
+      outcomes = await Promise.all([
+        exportAllSlides(slides, "4:5").then(() => null, (error: Error) => error.message),
+        new Promise((resolve) => setTimeout(resolve, 1_000)).then(() =>
+          exportAllSlides(slides, "1:1").then(() => null, (error: Error) => error.message)
+        ),
+      ]);
+    } finally {
+      Object.assign(exportBrowserLimits, defaults);
+    }
     const elapsed = Date.now() - started;
 
     const replaced = "The export browser stopped responding and was replaced. Try the export again.";
@@ -103,8 +130,8 @@ describe.skipIf(!browser && !inCi)("export browser recovery in Chromium (#198)",
     // The deadline (5 s) and the health check (3 s), not the 180 s a capture used to wait.
     expect(elapsed).toBeLessThan(15_000);
 
-    // The whole process group is gone, the frozen GPU process included.
-    await expect.poll(() => alive(browserPid) || alive(gpuPid), { timeout: 10_000 }).toBe(false);
+    // The whole process group is gone, the frozen process included.
+    await expect.poll(() => alive(browserPid) || alive(freezePid), { timeout: 10_000 }).toBe(false);
     frozen = null;
 
     const after = await exportAllSlides(slides, "4:5");

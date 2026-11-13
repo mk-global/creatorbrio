@@ -49,8 +49,6 @@ export const exportBrowserLimits = {
   closeGraceMs: 2_000,
   /** How long to wait for a killed browser process to exit. */
   exitWaitMs: 5_000,
-  /** A browser no export has used for this long is closed; the next export launches a new one. */
-  idleCloseMs: 5 * 60_000,
 };
 
 /** A slide that missed its deadline in a browser that still passed the health check. */
@@ -115,8 +113,6 @@ interface ExportBrowserState {
   current: BrowserLease | null;
   /** Settles when every retired browser has shut down; a launch waits for it. */
   shutdown: Promise<void>;
-  /** Closes the current browser once it has been idle for `idleCloseMs`. */
-  idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const EXPORT_BROWSER_KEY = Symbol.for("creatorbrio.export-browser.v2");
@@ -125,7 +121,7 @@ function exportBrowserState(): ExportBrowserState {
   const store = globalThis as typeof globalThis & {
     [EXPORT_BROWSER_KEY]?: ExportBrowserState;
   };
-  store[EXPORT_BROWSER_KEY] ??= { current: null, shutdown: Promise.resolve(), idleTimer: null };
+  store[EXPORT_BROWSER_KEY] ??= { current: null, shutdown: Promise.resolve() };
   return store[EXPORT_BROWSER_KEY];
 }
 
@@ -216,24 +212,6 @@ function currentLease(state: ExportBrowserState): BrowserLease {
   return lease ?? launchBrowser(state);
 }
 
-function cancelIdleClose(state: ExportBrowserState): void {
-  if (state.idleTimer) clearTimeout(state.idleTimer);
-  state.idleTimer = null;
-}
-
-/** Closes the current browser if no export uses it for `idleCloseMs`. */
-function scheduleIdleClose(state: ExportBrowserState): void {
-  cancelIdleClose(state);
-  const lease = state.current;
-  if (!lease || lease.inFlight > 0) return;
-  state.idleTimer = setTimeout(() => {
-    state.idleTimer = null;
-    if (state.current === lease && lease.inFlight === 0) retireBrowser(state, lease, "close");
-  }, exportBrowserLimits.idleCloseMs);
-  // An idle browser never keeps the process alive on its own.
-  state.idleTimer.unref?.();
-}
-
 /** Whether the browser can still open a context, load a tiny page and capture it, within `probeMs`. */
 async function browserAnswers(browser: Browser): Promise<boolean> {
   let context: BrowserContext | null = null;
@@ -282,7 +260,6 @@ interface ExportSession {
  */
 async function withExportSession<T>(work: (session: ExportSession) => Promise<T>): Promise<T> {
   const state = exportBrowserState();
-  cancelIdleClose(state);
   let lease = currentLease(state);
   lease.inFlight++;
   let context: BrowserContext | null = null;
@@ -301,14 +278,20 @@ async function withExportSession<T>(work: (session: ExportSession) => Promise<T>
       await missedDeadline(state, lease);
       throw lease.killed ? new ExportBrowserReplacedError() : new SlideTimeoutError(exportBrowserLimits.contextMs / 1000);
     }
-    context = await opening;
+    try {
+      context = await opening;
+    } catch (error) {
+      // A browser killed while this export waited for its context failed it, not the export.
+      throw lease.killed ? new ExportBrowserReplacedError() : error;
+    }
     return await work({ state, lease, context });
   } finally {
     if (context && !(await settlesWithin(context.close(), exportBrowserLimits.contextMs))) {
       lease.retire = true;
     }
     lease.inFlight--;
-    scheduleIdleClose(state);
+    // A browser due for retirement after a missed deadline shuts down as soon as nothing uses it.
+    if (lease.inFlight === 0 && lease.retire && state.current === lease) retireBrowser(state, lease, "close");
   }
 }
 

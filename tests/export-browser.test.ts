@@ -59,6 +59,8 @@ interface FakeProcess {
 let signalled: [number, string][];
 /** Fake browser processes by group id, so a signal to a group reaches its process. */
 let fakeProcesses: Map<number, { exit(): void }>;
+/** When true, opening a browser context never finishes until the browser is killed. */
+let contextsHang: boolean;
 /** When true, launched fake browsers have a process the code can kill. */
 let supervised: boolean;
 
@@ -123,6 +125,7 @@ function fakeBrowser(): FakeBrowser {
     closeHangs: false,
     death,
     async createBrowserContext() {
+      if (contextsHang) await browser.death;
       const pages: { close(): Promise<void> }[] = [];
       const context: FakeContext = {
         open: true,
@@ -317,6 +320,7 @@ beforeEach(async () => {
   signalled = [];
   fakeProcesses = new Map();
   supervised = false;
+  contextsHang = false;
 });
 
 describe("export browser", () => {
@@ -779,8 +783,10 @@ describe("unhealthy export browser (#198)", () => {
       expect(await concurrent).toBeNull();
       expect(signalled).toEqual([]);
       expect(browsers[0].contexts.every((context) => !context.open)).toBe(true);
+      // Nothing uses that browser any more, so it closes without waiting for another export.
+      expect(browsers[0].closes).toEqual([0]);
 
-      // Nothing uses that browser any more, so the next export gets a new one.
+      // The next export gets a new one.
       const next = outcome(exportAllSlides(slides(2), "4:5"));
       await vi.advanceTimersByTimeAsync(100);
       expect(await next).toBeNull();
@@ -826,6 +832,41 @@ describe("unhealthy export browser (#198)", () => {
     }
   });
 
+  it("fails an export still opening its context in a browser that is killed as replaced, not with the connection's error", async () => {
+    supervised = true;
+    const kill = interceptKill();
+    const { exportAllSlides } = await freshModule();
+    vi.useFakeTimers();
+    try {
+      const warm = outcome(exportAllSlides(slides(1), "4:5"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await warm).toBeNull();
+
+      // The whole browser stops answering: captures, and then even opening a context.
+      hangs = () => true;
+      const first = outcome(exportAllSlides(slides(2), "4:5"));
+      await vi.advanceTimersByTimeAsync(PNG_DEADLINE / 2);
+      contextsHang = true;
+      const second = outcome(exportAllSlides(slides(2), "4:5"));
+      await vi.advanceTimersByTimeAsync(PNG_DEADLINE / 2 + PROBE + 10);
+
+      const replaced = "The export browser stopped responding and was replaced. Try the export again.";
+      expect(await first).toBe(replaced);
+      expect(await second).toBe(replaced);
+      expect(signalled).toHaveLength(1);
+
+      hangs = () => false;
+      contextsHang = false;
+      const next = outcome(exportAllSlides(slides(2), "4:5"));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await next).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      kill.mockRestore();
+    }
+  });
+
   it("kills a retired browser whose clean close does not finish, and still launches its replacement", async () => {
     supervised = true;
     const kill = interceptKill();
@@ -848,56 +889,6 @@ describe("unhealthy export browser (#198)", () => {
     } finally {
       vi.useRealTimers();
       kill.mockRestore();
-    }
-  });
-
-  it("closes a browser left idle for five minutes and launches anew for the next export", async () => {
-    const { exportSlide } = await freshModule();
-    vi.useFakeTimers();
-    try {
-      const first = outcome(exportSlide(slides(1)[0], "4:5"));
-      await vi.advanceTimersByTimeAsync(10);
-      expect(await first).toBeNull();
-
-      await vi.advanceTimersByTimeAsync(5 * 60_000 - 1_000);
-      expect(browsers[0].closes).toEqual([]);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(browsers[0].closes).toEqual([0]);
-
-      const next = outcome(exportSlide(slides(1)[0], "4:5"));
-      await vi.advanceTimersByTimeAsync(10);
-      expect(await next).toBeNull();
-      expect(launch).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("never closes an idle browser while an export is using it", async () => {
-    const { exportSlide, exportBrowserLimits } = await freshModule();
-    exportBrowserLimits.idleCloseMs = 20_000;
-    vi.useFakeTimers();
-    try {
-      const warm = outcome(exportSlide(slides(1)[0], "4:5"));
-      await vi.advanceTimersByTimeAsync(10);
-      expect(await warm).toBeNull();
-
-      // An export starts just before the idle limit and holds its page past it, inside its own deadline.
-      await vi.advanceTimersByTimeAsync(19_000);
-      const held = deferred();
-      screenshotGate = held.promise;
-      const slow = outcome(exportSlide(slides(1)[0], "4:5"));
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(browsers[0].closes).toEqual([]);
-
-      held.resolve();
-      await vi.advanceTimersByTimeAsync(10);
-      expect(await slow).toBeNull();
-      expect(browsers[0].closes).toEqual([]);
-      await vi.advanceTimersByTimeAsync(20_000);
-      expect(browsers[0].closes).toEqual([0]);
-    } finally {
-      vi.useRealTimers();
     }
   });
 
