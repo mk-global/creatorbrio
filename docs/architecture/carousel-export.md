@@ -63,6 +63,23 @@ Pages are sized at 0.75 pt per pixel (72 pt per inch over 96 CSS pixels per inch
 Chromium rounds the paper up to a hundredth of an inch (a 4:5 slide prints 1013.04 pt tall), so each page is trimmed to the slide's exact size from its top edge, where the slide is drawn.
 The trim moves the page box, not the drawing, so the sliver falls below the box and the content is copied byte for byte; moving the drawing instead would leave gradients, which are positioned against the page itself, half a point off.
 
+## The export browser
+
+One headless Chromium in the server process renders every export, launched by the first export and shared by those after it, and each export renders in its own browser context, closed when the export ends ([#198](https://github.com/mk-global/creatorbrio/issues/198)).
+At most one browser is alive at a time: a new one is launched only after the previous one has shut down.
+Every shutdown is bounded: a clean close gets 2 seconds, after which the browser's whole process group is killed and its exit awaited.
+
+Every slide has a deadline from opening its page to its capture: 60 seconds for a PNG and 120 seconds for a PDF page.
+Each sits above the sum of the bounded waits inside it (load 20 s, fonts 10 s and images 10 s, and for the PDF the print check 15 s and the print 30 s), so it fires only when the browser stops answering, and every DevTools call times out 5 seconds after the longer one.
+A slide that misses its deadline marks the browser for replacement and starts one health check, shared by every slide that missed it: a fresh context, a tiny page and its screenshot, within 10 seconds.
+
+- A browser that fails the check is killed at once. The export, and any other export still running in it, fails with "The export browser stopped responding and was replaced. Try the export again.", and the next export launches a new browser.
+- A browser that passes is replaced as soon as no export is using it, and the export fails with a message naming the slide that took too long.
+
+The browser is also replaced after 50 slides once no export is using it; otherwise it stays open between exports.
+Why Chromium stopped completing captures in the outage that led to this is not known; a browser that stays connected but completes no capture is recovered this way whatever the cause.
+The route does not stop an export when its request is abandoned; the slide deadlines bound how long that work runs.
+
 ## Native PDF limits
 
 Chromium's PDF printer keeps text as text through transforms, opacity, clipping, gradients, blend modes other than `plus-lighter` and `plus-darker`, outlined text, and text and box shadows.
