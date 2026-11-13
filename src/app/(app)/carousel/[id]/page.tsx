@@ -286,7 +286,7 @@ export default function CarouselEditorPage({ params }: PageProps) {
         onSaveTemplate={() =>
           void saveProjectAsTemplate(carousel.id).then(
             (t) => toast(`Saved "${t.name}" as a template.`),
-            (err: unknown) => toast(`Couldn't save the template: ${err instanceof Error ? err.message : "the app did not answer."}`)
+            (err: unknown) => toast(`Couldn't save the template: ${err instanceof Error ? err.message : "the app did not answer."}`, { tone: "alert" })
           )
         }
         onDelete={handleDeleteCarousel}

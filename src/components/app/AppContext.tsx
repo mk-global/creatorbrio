@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { CircleAlert, X } from "lucide-react";
 import { useBrandSelection } from "@/components/brand/useBrandSelection";
 
 /**
@@ -13,13 +13,17 @@ import { useBrandSelection } from "@/components/brand/useBrandSelection";
 
 type BrandState = ReturnType<typeof useBrandSelection>;
 
+/** "alert" marks a failure, so it never looks like the confirmation it replaces. */
+type ToastTone = "info" | "alert";
+
 interface Toast {
   id: number;
   text: string;
+  tone: ToastTone;
 }
 
 interface AppState extends BrandState {
-  toast: (text: string) => void;
+  toast: (text: string, options?: { tone?: ToastTone }) => void;
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -37,9 +41,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const dismiss = useCallback((id: number) => setToasts((all) => all.filter((t) => t.id !== id)), []);
   const toast = useCallback(
-    (text: string) => {
+    (text: string, { tone = "info" }: { tone?: ToastTone } = {}) => {
       const id = next.current++;
-      setToasts((all) => [...all.slice(-2), { id, text }]);
+      setToasts((all) => [...all.slice(-2), { id, text, tone }]);
       window.setTimeout(() => dismiss(id), 5000);
     },
     [dismiss]
@@ -58,8 +62,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((t) => (
           <div
             key={t.id}
+            data-tone={t.tone}
             className="pop pointer-events-auto flex w-full max-w-[420px] items-start gap-3 rounded-xl bg-ink px-4 py-3 text-[14px] text-white shadow-[0_18px_40px_-16px_color-mix(in_srgb,var(--color-ink)_60%,transparent)]"
           >
+            {/* Toasts stay Ink (Brand Identity v1.0); a failure leads with the alert mark, in the Alert surface colour that reads on Ink. */}
+            {t.tone === "alert" && <CircleAlert className="mt-px size-[18px] shrink-0 text-alert-bg" aria-hidden="true" />}
             <p className="min-w-0 flex-1">{t.text}</p>
             <button
               type="button"
