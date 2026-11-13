@@ -3,11 +3,11 @@ import { describe, it, expect } from "vitest";
 import { HANDOFF_END, HANDOFF_START, buildDesignMessage, buildHandoff, checkConformance, type ResolvedImage } from "@/lib/creative-handoff";
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
 import type { ReadyPlan } from "@/lib/director-plan";
-import type { ReferenceImage } from "@/types/carousel";
+import type { ResolvedReferenceImage } from "@/types/carousel";
 
-const photo: ReferenceImage = { id: "ref-photo", url: "/uploads/photo.png", absPath: "/srv/app/public/uploads/photo.png", name: "founder-photo.png", addedAt: "" };
-const mood: ReferenceImage = { id: "ref-mood", url: "/uploads/mood.png", absPath: "/srv/app/public/uploads/mood.png", name: "moodboard.png", addedAt: "" };
-const unused: ReferenceImage = { id: "ref-old", url: "/uploads/old.png", absPath: "/srv/app/public/uploads/old.png", name: "old.png", addedAt: "" };
+const photo: ResolvedReferenceImage = { id: "ref-photo", url: "/uploads/photo.png", absPath: "/srv/app/public/uploads/photo.png", name: "founder-photo.png", addedAt: "" };
+const mood: ResolvedReferenceImage = { id: "ref-mood", url: "/uploads/mood.png", absPath: "/srv/app/public/uploads/mood.png", name: "moodboard.png", addedAt: "" };
+const unused: ResolvedReferenceImage = { id: "ref-old", url: "/uploads/old.png", absPath: "/srv/app/public/uploads/old.png", name: "old.png", addedAt: "" };
 const generated: ResolvedImage = { url: "/uploads/gen-1.png", absPath: "/srv/app/public/uploads/gen-1.png" };
 
 function plan(patch: Partial<ReadyPlan["execution"]> = {}): ReadyPlan {

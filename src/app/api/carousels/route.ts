@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listCarousels, createCarousel } from "@/lib/carousels";
+import { listCarousels, createCarousel, carouselResponse } from "@/lib/carousels";
 import type { AspectRatio } from "@/types/carousel";
 import { dataErrorResponse } from "@/lib/api-errors";
 import { isAspectRatio } from "@/lib/api-input";
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
       const projects = carousels.map((c) => summarizeProject(c, defaultBrandId)).sort(byRecentEdit);
       return NextResponse.json({ projects });
     }
-    return NextResponse.json({ carousels });
+    return NextResponse.json({ carousels: carousels.map(carouselResponse) });
   } catch (err) {
     const dataError = dataErrorResponse(err);
     if (dataError) return dataError;
@@ -82,7 +82,7 @@ export async function POST(request: Request) {
     }
 
     const carousel = await createCarousel(name.trim(), ratio, brandId, format);
-    return NextResponse.json(carousel, { status: 201 });
+    return NextResponse.json(carouselResponse(carousel), { status: 201 });
   } catch (err) {
     const dataError = dataErrorResponse(err);
     if (dataError) return dataError;

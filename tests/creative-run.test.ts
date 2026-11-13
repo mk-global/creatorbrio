@@ -17,6 +17,7 @@ import { SIMPLE_REVISION_MESSAGE, simpleRevisionPlan } from "./fixtures/simple-r
 import { DIRECTOR_FAILURE_MESSAGES } from "@/lib/visual-director";
 import type { DirectorRequest } from "@/lib/visual-director";
 import type { ProjectFormat } from "@/lib/formats";
+import type { ReferenceImage } from "@/types/carousel";
 
 // Through the real chat route, real storage and a real Design Agent
 // subprocess. The Director, the image generator and page retrieval are
@@ -186,7 +187,9 @@ async function addReference(carouselId: string, name: string) {
   const id = randomUUID();
   const url = `/uploads/${id}.png`;
   await writeFile(path.join(workdir, "public", "uploads", `${id}.png`), await png("1:1", name.length));
-  await addReferenceImage(carouselId, { id, url, absPath: "/stale/path/never/used.png", name, addedAt: "" });
+  // Stored the way records were before #62, with a stale path that must never be used.
+  const legacy = { id, url, absPath: "/stale/path/never/used.png", name, addedAt: "" };
+  await addReferenceImage(carouselId, legacy as ReferenceImage);
   return { id, url };
 }
 

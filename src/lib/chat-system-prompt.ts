@@ -1,5 +1,5 @@
 import type { BrandConfig } from "@/types/brand";
-import type { Carousel } from "@/types/carousel";
+import type { Carousel, ResolvedReferenceImage } from "@/types/carousel";
 import type { StylePreset } from "@/types/style-preset";
 import { DIMENSIONS, MAX_SLIDES } from "@/types/carousel";
 
@@ -11,9 +11,17 @@ export interface SystemPromptContext {
    */
   baseUrl: string;
   brand: BrandConfig;
-  carousel?: Carousel | null;
+  /**
+   * The open carousel, with only the reference images that still confine to
+   * an upload, each with its server-derived path (`resolveReferenceImages`).
+   */
+  carousel?: PromptCarousel | null;
   stylePreset?: StylePreset | null;
 }
+
+export type PromptCarousel = Omit<Carousel, "referenceImages"> & {
+  referenceImages: ResolvedReferenceImage[];
+};
 
 export function buildSystemPrompt({
   baseUrl,

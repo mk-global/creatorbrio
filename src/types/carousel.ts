@@ -11,12 +11,27 @@ export interface Slide {
   notes: string;
 }
 
+/**
+ * A reference image as stored and as the API returns it. It holds no file
+ * path: the server derives one from `url` whenever it needs the file (#62).
+ * Records stored before #62 may still carry an `absPath` on disk; it is never
+ * read and never sent.
+ */
 export interface ReferenceImage {
   id: string;
   url: string;       // e.g. "/uploads/abc.png"
-  absPath: string;    // absolute path for Claude to Read
   name: string;       // original filename or description
   addedAt: string;
+}
+
+/**
+ * A reference image whose `url` still confines to an uploaded PNG, with the
+ * absolute path derived from it now by `resolveReferenceImages`. Server-only:
+ * it is given to the Design Agent's prompt, the Visual Director and the
+ * creative run, and is never stored or sent to the browser.
+ */
+export interface ResolvedReferenceImage extends ReferenceImage {
+  absPath: string;
 }
 
 /**

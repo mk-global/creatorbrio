@@ -256,7 +256,6 @@ describe("generation status", () => {
       await addReferenceImage(id, {
         id: "ref-1",
         url: "/uploads/11111111-2222-4333-8444-555555555555.png",
-        absPath: "/srv/uploads/11111111-2222-4333-8444-555555555555.png",
         name: "mood",
         addedAt: "2026-10-01T00:00:00.000Z",
       });

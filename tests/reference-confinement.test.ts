@@ -38,10 +38,10 @@ vi.mock("@/lib/claude-path", () => ({
 import { POST as chat } from "@/app/api/chat/route";
 import { POST as addReference } from "@/app/api/carousels/[id]/references/route";
 import { confineUploadedPng, MAX_REFERENCE_BYTES } from "@/lib/reference-images";
-import { buildSystemPrompt } from "@/lib/chat-system-prompt";
+import { buildSystemPrompt, type PromptCarousel } from "@/lib/chat-system-prompt";
 import { addReferenceImage, createCarousel, duplicateCarousel, getCarousel } from "@/lib/carousels";
 import { DEFAULT_BRAND } from "@/types/brand";
-import type { Carousel } from "@/types/carousel";
+import type { ReferenceImage } from "@/types/carousel";
 
 let workdir: string;
 let uploads: string;
@@ -195,7 +195,7 @@ describe("confineUploadedPng", () => {
 });
 
 describe("POST /api/carousels/[id]/references", () => {
-  it("stores a valid upload with a server-derived path", async () => {
+  it("stores a valid upload by its URL, with no path, ignoring one in the request (#62)", async () => {
     const carousel = await createCarousel("Refs", "4:5");
     const url = await uploadPng();
 
@@ -203,11 +203,10 @@ describe("POST /api/carousels/[id]/references", () => {
     expect(res.status).toBe(201);
     const ref = await res.json();
     expect(ref.url).toBe(url);
-    expect(ref.absPath).toBe(path.join(await realpath(uploads), path.basename(url)));
+    expect(ref).not.toHaveProperty("absPath");
 
     const stored = (await getCarousel(carousel.id))!.referenceImages;
-    expect(stored).toHaveLength(1);
-    expect(stored[0].absPath).toBe(ref.absPath);
+    expect(stored).toEqual([ref]);
   });
 
   it.each([
@@ -255,16 +254,18 @@ describe("reference images in the design agent's prompt", () => {
     const poisonedUrl = await uploadPng();
     const realPoisoned = path.join(await realpath(uploads), path.basename(poisonedUrl));
 
-    // Stored records written before confinement existed, straight into storage.
-    await addReferenceImage(carousel.id, {
+    // Stored records written before confinement existed, straight into
+    // storage, each with the path it was stored with before #62.
+    const legacy = (ref: ReferenceImage & { absPath: string }) => ref as ReferenceImage;
+    await addReferenceImage(carousel.id, legacy({
       id: "ref-valid", url: validUrl, absPath: realValid, name: "valid", addedAt: "2026-10-01T00:00:00.000Z",
-    });
-    await addReferenceImage(carousel.id, {
+    }));
+    await addReferenceImage(carousel.id, legacy({
       id: "ref-poisoned-path", url: poisonedUrl, absPath: "/etc/hosts", name: "poisoned path", addedAt: "2026-10-01T00:00:00.000Z",
-    });
-    await addReferenceImage(carousel.id, {
+    }));
+    await addReferenceImage(carousel.id, legacy({
       id: "ref-traversal", url: "/uploads/../../../../etc/passwd", absPath: "/etc/passwd", name: "traversal", addedAt: "2026-10-01T00:00:00.000Z",
-    });
+    }));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const prompt = await systemPromptFor(carousel.id);
@@ -297,7 +298,7 @@ describe("reference images in the design agent's prompt", () => {
       id: "c1", name: "Pure", aspectRatio: "4:5", slides: [], caption: "", hashtags: [],
       referenceImages: [{ id: "r1", url: "/uploads/x.png", absPath: "/nowhere/given.png", name: "given", addedAt: "" }],
       chatSessionId: null, isTemplate: false, createdAt: "", updatedAt: "",
-    } as unknown as Carousel;
+    } as unknown as PromptCarousel;
     const prompt = buildSystemPrompt({ baseUrl: "http://127.0.0.1:3000", brand: DEFAULT_BRAND, carousel, stylePreset: null });
     expect(prompt).toContain(`- "given" → /nowhere/given.png`);
   });
