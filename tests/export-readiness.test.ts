@@ -387,7 +387,6 @@ describe("export while the design agent is generating", () => {
     await addReferenceImage(carousel.id, {
       id: "ref-1",
       url: "/uploads/11111111-2222-4333-8444-555555555555.png",
-      absPath: path.join(workdir, "public", "uploads", "11111111-2222-4333-8444-555555555555.png"),
       name: "mood",
       addedAt: new Date().toISOString(),
     });

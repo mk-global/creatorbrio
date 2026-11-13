@@ -1,4 +1,4 @@
-import type { ReferenceImage, Slide } from "@/types/carousel";
+import type { ResolvedReferenceImage, Slide } from "@/types/carousel";
 import type { ReadyPlan, SlideCountBasis } from "./director-plan";
 
 /**
@@ -28,7 +28,7 @@ export interface HandoffInput {
   /** Plan asset key to its image, or null when an optional image could not be made. */
   assets: ReadonlyMap<string, ResolvedImage | null>;
   /** The carousel's confined reference images. */
-  references: readonly ReferenceImage[];
+  references: readonly ResolvedReferenceImage[];
   /** URLs of the linked pages the plan was made from. */
   sources: readonly string[];
 }
@@ -235,7 +235,7 @@ export function checkConformance(
   plan: ReadyPlan,
   slides: readonly Pick<Slide, "html" | "order">[],
   assets: ReadonlyMap<string, ResolvedImage | null>,
-  references: readonly ReferenceImage[]
+  references: readonly ResolvedReferenceImage[]
 ): ConformanceResult {
   const ordered = [...slides].sort((a, b) => a.order - b.order);
   const x = plan.execution;

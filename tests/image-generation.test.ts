@@ -17,9 +17,8 @@ import {
   type GeneratedImage,
   type ImageAspectRatio,
 } from "@/lib/image-service";
-import { buildSystemPrompt } from "@/lib/chat-system-prompt";
+import { buildSystemPrompt, type PromptCarousel } from "@/lib/chat-system-prompt";
 import { DEFAULT_BRAND } from "@/types/brand";
-import type { Carousel } from "@/types/carousel";
 
 // The server-side image client runs for real against a stand-in for the
 // founder's image service on a loopback port: a real HTTP exchange, real token
@@ -436,7 +435,7 @@ describe("design agent instructions", () => {
     tags: [],
     createdAt: "",
     updatedAt: "",
-  } as Carousel;
+  } as PromptCarousel;
   const prompt = buildSystemPrompt({ baseUrl: "http://127.0.0.1:3042", brand: DEFAULT_BRAND, carousel });
 
   it("no longer offers image generation", () => {

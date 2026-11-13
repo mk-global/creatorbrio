@@ -14,7 +14,8 @@ import {
 } from "@/lib/brand";
 import { createCarousel, duplicateCarousel, getCarousel, listCarousels, addSlide } from "@/lib/carousels";
 import { saveAsTemplate, listTemplates } from "@/lib/templates";
-import { buildSystemPrompt } from "@/lib/chat-system-prompt";
+import { buildSystemPrompt, type PromptCarousel } from "@/lib/chat-system-prompt";
+import { resolveReferenceImages } from "@/lib/reference-images";
 import { GET as getBrandsRoute, POST as postBrandsRoute } from "@/app/api/brands/route";
 import { GET as getBrandRoute, PUT as putBrandRoute } from "@/app/api/brands/[id]/route";
 import { GET as listCarouselsRoute, POST as postCarouselRoute } from "@/app/api/carousels/route";
@@ -193,17 +194,22 @@ describe("migration from brand.json", () => {
   });
 });
 
+/** The carousel as the chat route gives it to the prompt: references resolved. */
+async function forPrompt(carousel: Carousel): Promise<PromptCarousel> {
+  return { ...carousel, referenceImages: await resolveReferenceImages(carousel) };
+}
+
 describe("legacy prompt behaviour", () => {
   const baseUrl = "http://localhost:3000";
 
   it("gives a carousel without brandId a prompt byte-identical to the one built from brand.json", async () => {
     const carousel = LEGACY_CAROUSELS.carousels[0];
-    const before = buildSystemPrompt({ baseUrl, brand: LEGACY_BRAND, carousel });
+    const before = buildSystemPrompt({ baseUrl, brand: LEGACY_BRAND, carousel: await forPrompt(carousel) });
 
     const after = buildSystemPrompt({
       baseUrl,
       brand: await resolveBrandForCarousel(carousel),
-      carousel,
+      carousel: await forPrompt(carousel),
     });
 
     expect(after).toBe(before);
@@ -215,12 +221,11 @@ describe("legacy prompt behaviour", () => {
     expect(buildSystemPrompt({ baseUrl, brand: await resolveBrandForCarousel(null) })).toBe(before);
   });
 
-  it("keeps the design agent's prompt text unchanged (golden snapshot)", () => {
+  it("keeps the design agent's prompt text unchanged (golden snapshot)", async () => {
     // Pins the creative engine's prompt for fixed inputs. A change here is a
     // change to the engine and needs its own decision, not a snapshot update.
-    expect(
-      buildSystemPrompt({ baseUrl, brand: LEGACY_BRAND, carousel: LEGACY_CAROUSELS.carousels[0] })
-    ).toMatchSnapshot();
+    const carousel = await forPrompt(LEGACY_CAROUSELS.carousels[0]);
+    expect(buildSystemPrompt({ baseUrl, brand: LEGACY_BRAND, carousel })).toMatchSnapshot();
   });
 });
 
@@ -234,7 +239,7 @@ describe("brand isolation", () => {
     const carousel = await createCarousel("North launch", "4:5", north.id);
 
     const brand = await resolveBrandForCarousel(carousel);
-    const prompt = buildSystemPrompt({ baseUrl: "http://localhost:3000", brand, carousel });
+    const prompt = buildSystemPrompt({ baseUrl: "http://localhost:3000", brand, carousel: await forPrompt(carousel) });
 
     expect(brand.id).toBe(north.id);
     expect(prompt).toContain("Name: Northwind Labs");

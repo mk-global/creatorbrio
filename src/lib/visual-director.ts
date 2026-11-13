@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crossSpawn from "cross-spawn";
 import type { BrandConfig } from "@/types/brand";
-import type { Carousel, CarouselAsset, ReferenceImage } from "@/types/carousel";
+import type { Carousel, CarouselAsset, ResolvedReferenceImage } from "@/types/carousel";
 import type { StylePreset } from "@/types/style-preset";
 import { DIMENSIONS, MAX_SLIDES } from "@/types/carousel";
 import { FORMATS, formatOf, slideLimitOf } from "./formats";
@@ -75,7 +75,7 @@ export interface DirectorRequest {
   /** Text the server retrieved from links in the message; untrusted. */
   sources: DirectorSource[];
   /** Reference images already confined by `resolveReferenceImages`. */
-  references: ReferenceImage[];
+  references: ResolvedReferenceImage[];
   /** Committed assets with whether each file still matches its hash. */
   assets: { asset: CarouselAsset; intact: boolean }[];
   capabilities: CapabilityStatus[];
