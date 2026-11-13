@@ -42,9 +42,13 @@ Any other reference is left as it is and never read; in the export it does not l
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
 With `?format=single-png`, a carousel with exactly one slide is answered with that slide's PNG itself, the same bytes the ZIP would contain.
 With `?format=pdf`, each slide is loaded in the same document, with the same inlined images and the same waits as for its PNG, and printed natively by Chromium to a one-page PDF with screen media, backgrounds and no margins.
-The print differs from the screenshot's page in four deliberate ways, each so that the PDF shows what the preview shows:
 
-- The slide's scripts do not run, as in the preview's sandboxed iframe.
+A slide's scripts never run in an export, for the PNG and the PDF alike, as they never run in the preview's sandboxed iframe ([#130](https://github.com/mk-global/creatorbrio/issues/130)).
+Slide HTML is untrusted: the design agent writes it while able to fetch web pages, and any local client can write it through the API.
+The export's own font and image waits are evaluated by Puppeteer and still run.
+
+The print differs from the screenshot's page in three deliberate ways, each so that the PDF shows what the preview shows:
+
 - The slide's own `@page` size, margins and page margin boxes are overridden, so the paper is the slide.
 - The body is positioned, so that it, rather than the page, contains absolutely positioned elements and its own `overflow: hidden` clips them in print as the screen clips them; an element reaching past an edge then neither shrinks the page nor starts another.
   Nothing else about the body changes, so its layout, stacking and background are the screen's.
