@@ -39,11 +39,14 @@ export function ColorFields({
     onInvalidChange?.(COLOR_ROLES.filter((r) => next[r.key] !== undefined && !HEX.test(next[r.key]!)).map((r) => r.label));
   };
   return (
-    <ul className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    // As many columns as fit fields at least 18rem wide: the form's width depends on the sidebar
+    // and the preview column, not only the window, so a breakpoint cannot tell when three fit (#190).
+    <ul className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),1fr))] gap-3">
       {COLOR_ROLES.map((r) => {
         const shown = typed[r.key] ?? colors[r.key];
         return (
-          <li key={r.key} className="flex min-w-0 items-center gap-3 rounded-[10px] bg-sheet p-3 shadow-[inset_0_0_0_1px_var(--color-rule)]">
+          // The role name shares a row with the hex field; the hint has the row beneath to itself, so neither is clipped.
+          <li key={r.key} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 rounded-[10px] bg-sheet p-3 shadow-[inset_0_0_0_1px_var(--color-rule)]">
             <input
               type="color"
               aria-label={`${r.label} colour picker`}
@@ -52,19 +55,17 @@ export function ColorFields({
                 onChange(r.key, e.target.value);
                 update({ ...typed, [r.key]: undefined });
               }}
-              className="size-11 shrink-0 cursor-pointer rounded-md border-0 bg-transparent p-0"
+              className="col-start-1 row-span-2 row-start-1 size-11 cursor-pointer rounded-md border-0 bg-transparent p-0"
             />
-            <div className="min-w-0 flex-1">
-              <label htmlFor={`hex-${r.key}`} className="block text-[14px] font-semibold">
-                {r.label}
-              </label>
-              <p id={`hex-${r.key}-hint`} className={`truncate text-[12.5px] ${HEX.test(shown) ? "text-graphite" : "text-alert"}`}>
-                {HEX.test(shown) ? COLOR_HINTS[r.key] : "Use # and six digits, like #1A1A2E"}
-              </p>
-            </div>
+            <label htmlFor={`hex-${r.key}`} className="col-start-2 row-start-1 text-[14px] font-semibold">
+              {r.label}
+            </label>
+            <p id={`hex-${r.key}-hint`} className={`col-span-2 col-start-2 row-start-2 text-[12.5px] leading-snug ${HEX.test(shown) ? "text-graphite" : "text-alert"}`}>
+              {HEX.test(shown) ? COLOR_HINTS[r.key] : "Use # and six digits, like #1A1A2E"}
+            </p>
             <input
               id={`hex-${r.key}`}
-              className="field num h-9 w-[92px] px-2 text-[13.5px] uppercase"
+              className="field num col-start-3 row-start-1 h-9 w-[92px] px-2 text-[13.5px] uppercase"
               value={shown}
               maxLength={7}
               aria-invalid={!HEX.test(shown)}
