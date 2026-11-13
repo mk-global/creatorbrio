@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { open } from "node:fs/promises";
 import type { BrandConfig } from "@/types/brand";
-import type { Carousel, ReferenceImage } from "@/types/carousel";
+import type { Carousel, ResolvedReferenceImage } from "@/types/carousel";
 import { MAX_SLIDES } from "@/types/carousel";
 import type { StylePreset } from "@/types/style-preset";
 import {
@@ -66,7 +66,7 @@ export interface CreativeRunInput {
   stylePreset: StylePreset | null;
   message: string;
   /** Confined reference images, with server-derived paths. */
-  references: ReferenceImage[];
+  references: ResolvedReferenceImage[];
   /** Set for an explicit retry of a blocked run. */
   retryRunId: string | null;
   /** Set for an explicit Continue of an unfinished design (#127). */

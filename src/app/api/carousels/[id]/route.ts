@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCarousel, updateCarousel, deleteCarousel } from "@/lib/carousels";
+import { getCarousel, updateCarousel, deleteCarousel, carouselResponse } from "@/lib/carousels";
 import { dataErrorResponse } from "@/lib/api-errors";
 import { pickCarouselUpdate } from "@/lib/api-input";
 import { formatAllowsSize, formatOf, sizeRefusal } from "@/lib/formats";
@@ -14,7 +14,7 @@ export async function GET(
     if (!carousel) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    return NextResponse.json(carousel);
+    return NextResponse.json(carouselResponse(carousel));
   } catch (err) {
     const dataError = dataErrorResponse(err);
     if (dataError) return dataError;
@@ -50,7 +50,7 @@ export async function PUT(
     if (!updated) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    return NextResponse.json(updated);
+    return NextResponse.json(carouselResponse(updated));
   } catch (err) {
     const dataError = dataErrorResponse(err);
     if (dataError) return dataError;

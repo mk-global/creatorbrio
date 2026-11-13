@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getTemplate } from "@/lib/templates";
-import { createCarousel, addSlide, getCarousel } from "@/lib/carousels";
+import { createCarousel, addSlide, getCarousel, carouselResponse } from "@/lib/carousels";
 import { brandIdOf, getDefaultBrandId } from "@/lib/brand";
 import { dataErrorResponse } from "@/lib/api-errors";
 
@@ -40,7 +40,7 @@ export async function POST(
 
     // Answer with the project as stored, slides included, not as it was
     // created before they were copied.
-    return NextResponse.json((await getCarousel(carousel.id)) ?? carousel, { status: 201 });
+    return NextResponse.json(carouselResponse((await getCarousel(carousel.id)) ?? carousel), { status: 201 });
   } catch (err) {
     const dataError = dataErrorResponse(err);
     if (dataError) return dataError;

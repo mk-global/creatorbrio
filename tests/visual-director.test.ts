@@ -5,7 +5,7 @@ import path from "node:path";
 import sharp from "sharp";
 
 import type { BrandConfig } from "@/types/brand";
-import type { Carousel, CarouselAsset, ReferenceImage } from "@/types/carousel";
+import type { Carousel, CarouselAsset, ResolvedReferenceImage } from "@/types/carousel";
 
 // Through a real subprocess. The Claude CLI is replaced by a script that
 // records its arguments, working directory and stdin, then plays one scripted
@@ -83,7 +83,7 @@ const BROKEN_ASSET_ID = "1c7f2e2f-3b4d-4e6f-9a01-b2c3d4e5f6a7";
 let workdir: string;
 let fakeDir: string;
 let originalCwd: string;
-let reference: ReferenceImage;
+let reference: ResolvedReferenceImage;
 let referenceBytes: Buffer;
 let assetBytes: Buffer;
 
