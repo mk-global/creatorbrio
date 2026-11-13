@@ -47,7 +47,7 @@ export function ProjectTile({
   const brandName = brandDisplayName(brand);
   const def = FORMATS[project.format];
   const href = `/carousel/${encodeURIComponent(project.id)}`;
-  const failed = (what: string) => (err: unknown) => toast(`${what}: ${err instanceof Error ? err.message : "the app did not answer."}`);
+  const failed = (what: string, tone?: "alert") => (err: unknown) => toast(`${what}: ${err instanceof Error ? err.message : "the app did not answer."}`, { tone });
 
   return (
     <div className={`@container relative min-w-0 ${size}`}>
@@ -94,7 +94,7 @@ export function ProjectTile({
               onSelect: () =>
                 void saveProjectAsTemplate(project.id).then(
                   (t) => toast(`Saved "${t.name}" as a template for ${brandName}.`),
-                  failed("Couldn't save the template")
+                  failed("Couldn't save the template", "alert")
                 ),
             },
             { label: "Delete", icon: <Trash2 />, danger: true, onSelect: () => setConfirm(true) },
