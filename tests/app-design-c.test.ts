@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import puppeteer, { type Browser, type Page } from "puppeteer";
+import puppeteer, { type Browser, type ElementHandle, type Page } from "puppeteer";
 import { startBuiltApp, type BuiltApp } from "./helpers/studio-app";
 import { appBrowser, appBrowserTestMissing, inCi } from "./helpers/app-browser";
 
@@ -451,6 +451,74 @@ describe.skipIf(SKIP)("the Design C app in a browser", () => {
     await page.setRequestInterception(false);
     await page.close();
   }, 120_000);
+
+  /** The toasts on screen, each with whether it is marked as a failure. */
+  const shownToasts = (page: Page) =>
+    page.$$eval('[role="status"][aria-live="polite"] > div', (els) => els.map((el) => ({ text: el.querySelector("p")?.textContent ?? "", alert: el.getAttribute("data-tone") === "alert" })));
+  const toastShown = (page: Page, start: string) =>
+    page.waitForFunction(
+      (want) => [...document.querySelectorAll('[role="status"][aria-live="polite"] p')].some((p) => p.textContent?.startsWith(want)),
+      { timeout: 10_000 },
+      start
+    );
+  async function chooseFromMenu(page: Page, menu: string, item: string): Promise<void> {
+    await (await page.waitForSelector(`button[aria-label="${menu}"]`))!.click();
+    const found = await page.waitForFunction((want) => [...document.querySelectorAll('[role="menuitem"]')].find((e) => e.textContent?.startsWith(want)), {}, item);
+    await (found.asElement() as ElementHandle<Element>).click();
+  }
+  async function projectWithSlide(name: string): Promise<string> {
+    const made = await api<{ id: string }>(`/api/carousels`, { method: "POST", body: JSON.stringify({ name, aspectRatio: "4:5" }) });
+    expect((await api(`/api/carousels/${made.body.id}/slides`, { method: "POST", body: JSON.stringify({ html: SLIDE("Saved", "#2b1d14") }) })).status).toBe(201);
+    return made.body.id;
+  }
+  const templatesNamed = async (name: string) => (await api<{ templates: { name: string; slides: unknown[] }[] }>(`/api/templates`)).body.templates.filter((t) => t.name === name);
+
+  it("confirms a template saved from the editor and from a project tile (#158)", async () => {
+    const id = await projectWithSlide("Harvest menu");
+    const page = await openPage();
+    await settled(page, `/carousel/${id}`);
+    await page.waitForSelector('button[aria-label="Select slide 1"]', { timeout: 15_000 });
+    await chooseFromMenu(page, "More actions", "Save as template");
+    await toastShown(page, 'Saved "Harvest menu" as a template.');
+    expect(await shownToasts(page)).toEqual([{ text: 'Saved "Harvest menu" as a template.', alert: false }]);
+    expect((await templatesNamed("Harvest menu")).map((t) => t.slides.length)).toEqual([1]);
+
+    await settled(page, "/projects");
+    await chooseFromMenu(page, "Actions for Harvest menu", "Save as template");
+    await toastShown(page, 'Saved "Harvest menu" as a template for Northwind Coffee.');
+    expect((await shownToasts(page)).at(-1)).toEqual({ text: 'Saved "Harvest menu" as a template for Northwind Coffee.', alert: false });
+    expect(await templatesNamed("Harvest menu")).toHaveLength(2);
+    await page.close();
+  }, 60_000);
+
+  it("says why a template was not saved, marked as a failure and never as saved (#158)", async () => {
+    // The project is removed after the page has loaded it, so the server really refuses the save.
+    const page = await openPage(1440, 900, { expectFailedRequests: true });
+    const fromEditor = await projectWithSlide("Withdrawn draft");
+    await settled(page, `/carousel/${fromEditor}`);
+    await page.waitForSelector('button[aria-label="Select slide 1"]', { timeout: 15_000 });
+    expect((await api(`/api/carousels/${fromEditor}`, { method: "DELETE" })).status).toBe(200);
+    await chooseFromMenu(page, "More actions", "Save as template");
+    await toastShown(page, "Couldn't save the template: ");
+    const editorToasts = await shownToasts(page);
+    expect(editorToasts).toHaveLength(1);
+    expect(editorToasts[0].text).toMatch(/^Couldn't save the template: \S/);
+    expect(editorToasts[0].alert).toBe(true);
+    expect(await templatesNamed("Withdrawn draft")).toEqual([]);
+
+    const fromTile = await projectWithSlide("Vanishing draft");
+    await settled(page, "/projects");
+    await page.waitForSelector('button[aria-label="Actions for Vanishing draft"]', { timeout: 15_000 });
+    expect((await api(`/api/carousels/${fromTile}`, { method: "DELETE" })).status).toBe(200);
+    await chooseFromMenu(page, "Actions for Vanishing draft", "Save as template");
+    await toastShown(page, "Couldn't save the template: ");
+    const tileToasts = await shownToasts(page);
+    expect(tileToasts.filter((t) => t.text.startsWith("Saved"))).toEqual([]);
+    expect(tileToasts.at(-1)).toMatchObject({ alert: true });
+    expect(tileToasts.at(-1)!.text).toMatch(/^Couldn't save the template: \S/);
+    expect(await templatesNamed("Vanishing draft")).toEqual([]);
+    await page.close();
+  }, 60_000);
 
   it("shows the brands error on Projects and Templates rather than an empty library", async () => {
     const file = path.join(app.dataDir, "brands.json");

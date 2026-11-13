@@ -47,7 +47,7 @@ export function ProjectTile({
   const brandName = brandDisplayName(brand);
   const def = FORMATS[project.format];
   const href = `/carousel/${encodeURIComponent(project.id)}`;
-  const failed = (what: string) => (err: unknown) => toast(`${what}: ${err instanceof Error ? err.message : "the app did not answer."}`);
+  const failed = (what: string) => (err: unknown) => toast(`${what}: ${err instanceof Error ? err.message : "the app did not answer."}`, { tone: "alert" });
 
   return (
     <div className={`@container relative min-w-0 ${size}`}>
