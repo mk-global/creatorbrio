@@ -38,7 +38,7 @@ function oneSlideCarousel(aspectRatio: AspectRatio): Carousel {
         html: `<div style="width:100%;height:100%;background:linear-gradient(160deg,#f7f3e9,#e94560);font-family:'Playfair Display',serif;color:#1a1a2e;padding:80px;box-sizing:border-box">
           <h1 style="font-size:110px;margin:0">Reel cover</h1>
           <p style="font-size:44px;font-style:italic">Synthetic fidelity check</p>
-          <img src="/uploads/fixture.png" style="display:block;width:300px;height:300px" />
+          <img src="/uploads/6b2c3d4e-5f6a-4b7c-9d8e-9f0a1b2c3d4e.png" style="display:block;width:300px;height:300px" />
         </div>`,
         previousVersions: [],
         order: 0,
@@ -70,7 +70,7 @@ describe.skipIf(!chromium)("single PNG download through the real renderer", () =
     await mkdir(path.join(workdir, "public", "uploads"), { recursive: true });
     await mkdir(path.join(workdir, "data"), { recursive: true });
     await writeFile(
-      path.join(workdir, "public", "uploads", "fixture.png"),
+      path.join(workdir, "public", "uploads", "6b2c3d4e-5f6a-4b7c-9d8e-9f0a1b2c3d4e.png"),
       await sharp({
         create: { width: 300, height: 300, channels: 3, background: { r: 22, g: 160, b: 133 } },
       })

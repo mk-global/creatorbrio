@@ -1,7 +1,6 @@
 import puppeteer, { type Browser, type Page } from "puppeteer";
-import { readFile } from "fs/promises";
-import path from "path";
 import sharp from "sharp";
+import { imageTypeOf, readUpload } from "./upload-files";
 import { wrapSlideHtml, extractFontFamilies, usesItalic } from "./slide-html";
 import { getInlinedFontCSS, type FontInstances } from "./fonts";
 import { UnprintableSlideError, unprintableSlideError } from "./export-pdf";
@@ -76,6 +75,9 @@ function replaceBrowser(
   const next = closed.then(() =>
     puppeteer.launch({
       headless: true,
+      // Read at each launch rather than once when Puppeteer loads, so a
+      // browser named after that (as the export tests do) is the one used.
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
     })
   );
@@ -134,36 +136,49 @@ async function withBrowser<T>(render: (browser: Browser) => Promise<T>): Promise
   }
 }
 
+/** An `/uploads/` reference in a `src` attribute or a CSS `url()`, up to the character that ends it. */
+const UPLOAD_REFERENCE = /(?:src=["']|url\(["']?)(\/uploads\/[^"'\s)]+)/g;
+
 /**
- * Inline all image references in slide HTML.
- * Replaces /uploads/xxx.png paths with data: URIs.
+ * Replaces each uploaded image a slide references, in `src` attributes and
+ * CSS `url()`, with a `data:` URI of its bytes, so the export page needs no
+ * server to load it.
+ *
+ * Slide HTML is untrusted (#145), so only a reference to one file directly
+ * under `/uploads/` is read, through `readUpload()`, the same confined reader
+ * that serves uploads to the preview: it accepts only the names the app
+ * creates, inside the real uploads folder, never through a link. The bytes
+ * must then be a PNG, JPEG or WebP image. Any other reference is left as it
+ * is and never read; with no server behind the export page it does not load,
+ * as a path the preview cannot serve does not load there either. Every
+ * occurrence of a reference is replaced, and each file is read once.
  */
-async function inlineImages(html: string): Promise<string> {
-  const uploadDir = path.resolve(process.cwd(), "public");
-  const imgRegex = /(?:src=["']|url\(["']?)(\/uploads\/[^"'\s)]+)/g;
-  const matches = [...html.matchAll(imgRegex)];
-
-  let result = html;
-  for (const match of matches) {
-    const imgPath = match[1];
-    try {
-      const fullPath = path.join(uploadDir, imgPath);
-      const buffer = await readFile(fullPath);
-      const ext = path.extname(imgPath).toLowerCase();
-      const mime =
-        ext === ".png"
-          ? "image/png"
-          : ext === ".jpg" || ext === ".jpeg"
-            ? "image/jpeg"
-            : "image/webp";
-      const base64 = buffer.toString("base64");
-      result = result.replace(imgPath, `data:${mime};base64,${base64}`);
-    } catch {
-      // Keep original path — Puppeteer can fetch from localhost
+export async function inlineImages(html: string): Promise<string> {
+  const inlined = new Map<string, string | null>();
+  const dataUri = async (reference: string): Promise<string | null> => {
+    if (inlined.has(reference)) return inlined.get(reference)!;
+    const name = reference.slice("/uploads/".length);
+    let uri: string | null = null;
+    if (!name.includes("/")) {
+      const file = await readUpload([name]);
+      const type = file && imageTypeOf(file.bytes);
+      if (file && type) uri = `data:${type};base64,${file.bytes.toString("base64")}`;
     }
-  }
+    inlined.set(reference, uri);
+    return uri;
+  };
 
-  return result;
+  let result = "";
+  let copied = 0;
+  for (const match of html.matchAll(UPLOAD_REFERENCE)) {
+    const reference = match[1];
+    const uri = await dataUri(reference);
+    if (uri === null) continue;
+    const start = match.index + match[0].length - reference.length;
+    result += html.slice(copied, start) + uri;
+    copied = start + reference.length;
+  }
+  return result + html.slice(copied);
 }
 
 /**

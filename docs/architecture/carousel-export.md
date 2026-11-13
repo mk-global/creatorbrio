@@ -33,6 +33,11 @@ Slides are stored as body-level HTML, without `<html>`, `<head>`, or `<!DOCTYPE>
 `wrapSlideHtml()` in [`src/lib/slide-html.ts`](../../src/lib/slide-html.ts) wraps that body into a full document with font loading and fixed dimensions.
 The same function feeds both the sandboxed preview iframe and the Puppeteer export, which renders each slide at its exact pixel size.
 
+Before a slide is loaded for export, each uploaded image it references in a `src` attribute or a CSS `url()` is replaced with a `data:` URI of its bytes, because the export page has no server behind it.
+Slide HTML is untrusted, so only a reference to one file directly under `/uploads/`, in the name form the app gives uploads and generated images, is read, through `readUpload()` in [`src/lib/upload-files.ts`](../../src/lib/upload-files.ts), the same confined reader that serves uploads to the preview ([#145](https://github.com/mk-global/creatorbrio/issues/145)).
+It never follows a link or leaves the real uploads folder, and the bytes must be a PNG, JPEG or WebP image, labelled by what they are.
+Any other reference is left as it is and never read; in the export it does not load.
+
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
 With `?format=single-png`, a carousel with exactly one slide is answered with that slide's PNG itself, the same bytes the ZIP would contain.
