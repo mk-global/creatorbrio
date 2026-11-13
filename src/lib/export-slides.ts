@@ -235,14 +235,16 @@ export function describeExportFailure(error: unknown): string {
  * wait is bounded: a slide that cannot finish loading is still captured rather
  * than hanging the export.
  *
- * `scripts: false` loads the slide without running its scripts, as the
- * preview's sandboxed iframe shows it. The PNG export keeps the default.
+ * The slide's scripts never run, for the PNG and the PDF alike: slide HTML is
+ * untrusted (#130), and the preview's sandboxed iframe never runs them, so
+ * every export shows the slide as the person approved it there. The waits
+ * below are the export's own, evaluated by Puppeteer, and run either way.
  */
 async function withLoadedSlide<T>(
   slide: Slide,
   aspectRatio: AspectRatio,
   capture: (page: Page) => Promise<T>,
-  options: { fontInstances?: FontInstances; scripts?: boolean } = {}
+  options: { fontInstances?: FontInstances } = {}
 ): Promise<T> {
   const { width, height } = DIMENSIONS[aspectRatio];
 
@@ -266,7 +268,7 @@ async function withLoadedSlide<T>(
 
     try {
       await page.setViewport({ width, height, deviceScaleFactor: 1 });
-      if (options.scripts === false) await page.setJavaScriptEnabled(false);
+      await page.setJavaScriptEnabled(false);
 
       // `load` rather than `domcontentloaded`: it waits for stylesheets and image
       // bytes. Previously the page was screenshotted as soon as the DOM parsed,
@@ -465,7 +467,7 @@ export async function exportSlidePdf(
       }
       return pdf;
     },
-    { fontInstances: "static", scripts: false }
+    { fontInstances: "static" }
   );
 }
 

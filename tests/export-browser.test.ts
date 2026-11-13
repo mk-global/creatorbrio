@@ -428,12 +428,12 @@ describe("export browser", () => {
       expect(addedStyles[0]).not.toMatch(/position/);
     });
 
-    it("leaves the PNG export's loading exactly as it was", async () => {
+    it("loads the PNG export with scripts off before its content, and otherwise as it was (#130)", async () => {
       const { exportSlide } = await freshModule();
 
       await exportSlide(slides(1)[0], "4:5");
 
-      expect(pageSetup).toEqual([["load"]]);
+      expect(pageSetup).toEqual([["scripts:false", "load"]]);
       expect(addedStyles).toEqual([]);
     });
 
