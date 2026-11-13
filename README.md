@@ -250,7 +250,7 @@ The full plan, with its workstreams, qualification gates and the 113 product req
 - **Custom font uploads and style presets** exist in the API but cannot be used yet ([#159](https://github.com/mk-global/creatorbrio/issues/159)).
 - **The Video Studio is early.** It imports by file path only, makes Instagram Reels only (1080×1920, 30 fps, up to 90 seconds), has no transitions, speed changes or effects, and has been verified with synthetic media only. Preview sync is within a frame while playing but can lag briefly at the start of playback and when a clip begins ([#151](https://github.com/mk-global/creatorbrio/issues/151)).
 - **Platforms.** Developed on macOS and tested in CI on Linux; Windows is untested.
-- **Open security issues.** Carousel export can read files outside `public/uploads` ([#145](https://github.com/mk-global/creatorbrio/issues/145)) and runs slide scripts in its headless browser ([#130](https://github.com/mk-global/creatorbrio/issues/130)), and several dependencies have known advisories ([#155](https://github.com/mk-global/creatorbrio/issues/155)). CreatorBrio is a single-user app meant to run on your own machine; do not expose it to a network.
+- **Open security issues.** Carousel export runs slide scripts in its headless browser ([#130](https://github.com/mk-global/creatorbrio/issues/130)), and some dependencies have known advisories ([#162](https://github.com/mk-global/creatorbrio/issues/162), [#167](https://github.com/mk-global/creatorbrio/issues/167)). CreatorBrio is a single-user app meant to run on your own machine; do not expose it to a network.
 
 ## Your data
 

@@ -5,7 +5,7 @@
  * word is placeholder copy written for this test.
  *
  * Each slide lists the phrases a reader must be able to select and search on
- * that slide's page. The cover expects `/uploads/cover.jpg` to exist.
+ * that slide's page. The cover expects `/uploads/7c3d4e5f-6a7b-4c8d-8e9f-0a1b2c3d4e5f.png`, an upload's name holding JPEG bytes, to exist.
  */
 
 const SERIF = "'Cormorant Garamond', serif";
@@ -39,7 +39,7 @@ export const TEN_PAGE_CAROUSEL: TenPageSlide[] = [
   slide(
     1,
     ["When weight changes in midlife,", "what deserves a closer look?", "A ten-page field guide"],
-    `<img src="/uploads/cover.jpg" style="position:absolute;left:0;top:0;width:100%;height:56%;object-fit:cover">
+    `<img src="/uploads/7c3d4e5f-6a7b-4c8d-8e9f-0a1b2c3d4e5f.png" style="position:absolute;left:0;top:0;width:100%;height:56%;object-fit:cover">
      <div style="position:absolute;left:96px;right:96px;top:61%">
        <h1 style="font-family:${SERIF};font-weight:600;font-size:84px;line-height:1.02">When weight changes in midlife,<br>what deserves a closer look?</h1>
        <p style="font-size:30px;margin-top:28px;color:${C.terracotta}">A ten-page field guide</p>

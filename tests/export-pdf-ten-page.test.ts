@@ -57,7 +57,7 @@ describe.skipIf(!chromium || !pdfTools)("a ten-page LinkedIn document", () => {
     workdir = await mkdtemp(path.join(tmpdir(), "creatorbrio-ten-page-"));
     await mkdir(path.join(workdir, "public", "uploads"), { recursive: true });
     await mkdir(path.join(workdir, "data"), { recursive: true });
-    await writeFile(path.join(workdir, "public", "uploads", "cover.jpg"), await photoJpeg(1600, 1200, 3));
+    await writeFile(path.join(workdir, "public", "uploads", "7c3d4e5f-6a7b-4c8d-8e9f-0a1b2c3d4e5f.png"), await photoJpeg(1600, 1200, 3));
     process.chdir(workdir);
 
     const slidesModule = await import("@/lib/export-slides");

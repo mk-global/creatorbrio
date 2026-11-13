@@ -82,7 +82,7 @@ function vectorSlide(): string {
 /** A full-bleed uploaded photograph with text over it. */
 function photoSlide(): string {
   return `<div style="width:100%;height:100%;position:relative;font-family:${SANS}">
-    <img src="/uploads/photo.jpg" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
+    <img src="/uploads/5a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d.png" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
     <h2 style="position:absolute;left:80px;bottom:140px;right:80px;font-size:72px;color:#ffffff;font-weight:700">Text over a photograph</h2>
   </div>`;
 }
@@ -112,7 +112,9 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
     workdir = await mkdtemp(path.join(tmpdir(), "creatorbrio-native-pdf-"));
     await mkdir(path.join(workdir, "public", "uploads"), { recursive: true });
     await mkdir(path.join(workdir, "data"), { recursive: true });
-    await writeFile(path.join(workdir, "public", "uploads", "photo.jpg"), await photoJpeg(1600, 2000, 7));
+    // An upload's name, as the export inlines only those (#145), holding JPEG
+    // bytes, which it labels by content, so the photo path stays JPEG.
+    await writeFile(path.join(workdir, "public", "uploads", "5a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d.png"), await photoJpeg(1600, 2000, 7));
     process.chdir(workdir);
 
     ({ exportAllSlidePdfs } = await import("@/lib/export-slides"));
@@ -256,7 +258,7 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
     const box = (inner: string, style = "") =>
       `<div style="width:100%;height:100%;background:#fff;font-family:${SANS};font-size:56px;padding:90px;${style}">${inner}</div>`;
     const photo = (style = "") =>
-      `<img src="/uploads/photo.jpg" style="width:600px;height:400px;display:block;${style}">`;
+      `<img src="/uploads/5a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d.png" style="width:600px;height:400px;display:block;${style}">`;
 
     // Every effect probed against Chromium's PDF backend. Each one must either
     // print its text as text, or be refused before a picture of it is shipped.
@@ -467,7 +469,7 @@ describe.skipIf(!chromium || !pdfTools)("native PDF export through the real rend
 
     it("accepts a slide that is only a photograph", async () => {
       const pdf = await exportPdf(
-        [slide(`<img src="/uploads/photo.jpg" style="width:100%;height:100%;object-fit:cover">`)],
+        [slide(`<img src="/uploads/5a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d.png" style="width:100%;height:100%;object-fit:cover">`)],
         "4:5"
       );
       await withPdfFile(pdf, (file) => expect(pdfImages(file)).toHaveLength(1));
