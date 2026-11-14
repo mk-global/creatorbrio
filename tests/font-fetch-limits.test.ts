@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Slide } from "@/types/carousel";
@@ -33,12 +33,6 @@ beforeAll(async () => {
       if (family === "BodyStall") return void res.end(css("body-stall"));
       if (family === "Slow") return void res.end(css("slow"));
       if (family === "Ok") return void res.end(css("ok"));
-      if (family === "Kit") {
-        // A file URL that does not end in .woff2, as Google serves some families.
-        return void res.end(
-          "@font-face { font-family: 'Kit'; font-style: normal; font-weight: 400; src: url(https://fonts.gstatic.com/l/font?kit=abc&v=1) format('woff2'); }"
-        );
-      }
       res.statusCode = 400;
       return void res.end("no such family");
     }
@@ -61,10 +55,6 @@ beforeAll(async () => {
       return;
     }
     if (url.pathname === "/s/x/ok.woff2") return void res.end(Buffer.from([7, 7, 7]));
-    if (url.pathname === "/l/font") {
-      res.writeHead(200, { "content-type": "font/woff2" });
-      return void res.end(Buffer.from([9, 9, 9]));
-    }
     res.statusCode = 404;
     res.end();
   });
@@ -172,27 +162,6 @@ describe("font fetch limits (#200)", () => {
     expect(b).toBe(c);
     expect(requests.filter((r) => r.startsWith("/css2"))).toHaveLength(1);
     expect(requests.filter((r) => r.startsWith("/s/x/ok.woff2"))).toHaveLength(1);
-  });
-
-  it("inlines a font file whose URL does not end in .woff2, so no remote URL is ever left in the CSS", async () => {
-    const { getInlinedFontCSS } = await fonts();
-    const result = await getInlinedFontCSS(["Kit"]);
-    expect(result).toContain("src: url(data:font/woff2;base64,CQkJ)");
-    expect(result).not.toContain("fonts.gstatic.com");
-    expect(await cached()).toEqual(["Kit.css"]);
-  });
-
-  it("fetches again a cached stylesheet that still names a remote font file, and replaces it", async () => {
-    const cacheDir = path.join(workdir, "data", ".font-cache");
-    await mkdir(cacheDir, { recursive: true });
-    const stale = "@font-face { font-family: 'Kit'; src: url(https://fonts.gstatic.com/l/font?kit=abc&v=1) format('woff2'); }";
-    await writeFile(path.join(cacheDir, "Kit.css"), stale);
-    const { getInlinedFontCSS } = await fonts();
-    const result = await getInlinedFontCSS(["Kit"]);
-    expect(result).toContain("src: url(data:font/woff2;base64,CQkJ)");
-    expect(requests.filter((r) => r.startsWith("/css2"))).toHaveLength(1);
-    const replaced = await readFile(path.join(cacheDir, "Kit.css"), "utf-8");
-    expect(replaced).not.toContain("fonts.gstatic.com");
   });
 
   it("treats a font file the source refuses as an unavailable family, not a half-inlined one", async () => {

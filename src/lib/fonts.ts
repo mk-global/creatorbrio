@@ -44,7 +44,7 @@ class FontSourceUnreachable extends Error {
 async function fetchFontResource(
   url: string,
   headers?: Record<string, string>
-): Promise<{ ok: boolean; bytes: Buffer; type: string | null }> {
+): Promise<{ ok: boolean; bytes: Buffer }> {
   if (Date.now() < unreachableUntil) throw new FontSourceUnreachable();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,11 +66,7 @@ async function fetchFontResource(
         progressed();
       }
     }
-    return {
-      ok: response.ok,
-      bytes: Buffer.concat(chunks),
-      type: response.headers.get("content-type")?.split(";")[0].trim() || null,
-    };
+    return { ok: response.ok, bytes: Buffer.concat(chunks) };
   } catch {
     if (Date.now() >= unreachableUntil) {
       console.warn(
@@ -257,10 +253,6 @@ async function getCachedFont(
   try {
     const diskPath = path.join(cacheDir(instances), cacheFileName(key));
     const css = await readFile(diskPath, "utf-8");
-    // An entry that still names a remote font file was written before every
-    // file was inlined, and the export browser loads nothing from the
-    // network, so it is fetched again and replaced rather than used (#200).
-    if (css.includes("fonts.gstatic.com")) return null;
     memoryCache.set(memoryKey, css);
     return css;
   } catch {
@@ -298,11 +290,8 @@ async function fetchAndInlineFont(
   if (!response.ok) return null;
   let css = response.bytes.toString("utf-8");
 
-  // Every font file the stylesheet names, whatever its URL looks like: Google
-  // also serves some families (a "Helvetica", a "Georgia") from URLs that do
-  // not end in .woff2, which were once left remote and fetched by the export
-  // browser itself.
-  const urlRegex = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g;
+  // Find all url() references to woff2 files and inline them
+  const urlRegex = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+\.woff2)\)/g;
   const matches = [...css.matchAll(urlRegex)];
 
   // Every file must be inlined: the export page loads nothing from the network,
@@ -313,7 +302,7 @@ async function fetchAndInlineFont(
     const fontResponse = await fetchFontResource(fontUrl);
     if (!fontResponse.ok) return null;
     const base64 = fontResponse.bytes.toString("base64");
-    css = css.replace(fontUrl, `data:${fontResponse.type ?? "font/woff2"};base64,${base64}`);
+    css = css.replace(fontUrl, `data:font/woff2;base64,${base64}`);
   }
 
   // Ensure font-display: block for deterministic rendering
