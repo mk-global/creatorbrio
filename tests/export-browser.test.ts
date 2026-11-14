@@ -342,6 +342,7 @@ beforeEach(async () => {
     .toBuffer();
   browsers = [];
   screenshotGate = null;
+  // What a real page reports after setContent(), which writes into it without navigating.
   pageUrl = () => "about:blank";
   hangs = () => false;
   printable = () => ({ hasText: true, visibleText: "", problem: null });

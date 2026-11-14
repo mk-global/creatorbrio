@@ -613,7 +613,11 @@ async function withLoadedSlide<T>(
       });
 
     // The page must still be the slide's own document: whatever it was led
-    // to instead is never captured.
+    // to instead is never captured. setContent() writes the slide into the new
+    // page with document.open() and document.write(), never navigating, so the
+    // slide's own document keeps the page's first URL, about:blank. Any other
+    // URL means the page was navigated, by a route the request refusal does
+    // not see.
     if (page.url() !== "about:blank") throw new SlideLeftDocumentError();
     return await capture(page);
   })();
