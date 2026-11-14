@@ -259,6 +259,21 @@ function retireBrowser(state: ExportBrowserState, lease: BrowserLease, mode: "cl
 }
 
 /**
+ * Shuts the export browser down and waits until every export browser this
+ * process launched has shut down: closed cleanly when it can be, so Puppeteer
+ * removes its temporary profile, and its process group killed after
+ * `closeGraceMs` otherwise. An export already running in it fails; one started
+ * afterwards launches a new browser. For a process that is about to end, such
+ * as a test worker (#204), which would otherwise leave the browser for its own
+ * exit to take down.
+ */
+export async function closeExportBrowser(): Promise<void> {
+  const state = exportBrowserState();
+  if (state.current) retireBrowser(state, state.current, "close");
+  await state.shutdown;
+}
+
+/**
  * The browser for the next export, decided without waiting so that concurrent
  * exports see each other's choice.
  *
