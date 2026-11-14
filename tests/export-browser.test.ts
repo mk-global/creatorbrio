@@ -63,6 +63,7 @@ let loadedDocuments: string[];
 /** The browser process, for tests that check it is killed. */
 interface FakeProcess {
   pid: number;
+  spawnargs: string[];
   exitCode: number | null;
   signalCode: string | null;
   once(event: "exit", listener: () => void): void;
@@ -75,6 +76,8 @@ let signalled: [number, string][];
 let fakeProcesses: Map<number, { exit(): void }>;
 /** When true, opening a browser context never finishes until the browser is killed. */
 let contextsHang: boolean;
+/** Flags the fake browser's command line carries beyond the executable, for the sandbox checks. */
+let extraSpawnArgs: string[];
 /** When true, launched fake browsers have a process the code can kill. */
 let supervised: boolean;
 
@@ -116,6 +119,7 @@ function fakeBrowser(): FakeBrowser {
     const listeners: (() => void)[] = [];
     child = {
       pid,
+      spawnargs: ["chrome", ...extraSpawnArgs],
       exitCode: null,
       signalCode: null,
       once: (_event, listener) => void listeners.push(listener),
@@ -354,6 +358,7 @@ beforeEach(async () => {
   supervised = false;
   loadedDocuments = [];
   contextsHang = false;
+  extraSpawnArgs = [];
 });
 
 describe("export browser", () => {
@@ -762,6 +767,15 @@ describe("export browser", () => {
   });
 });
 
+/** Stands in for process.kill: records the signal and lets the fake process exit. */
+function interceptKill() {
+  return vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+    signalled.push([pid, String(signal)]);
+    fakeProcesses.get(Math.abs(pid))?.exit();
+    return true;
+  }) as typeof process.kill);
+}
+
 // #198: a browser that stays connected but stops completing captures must not
 // block later exports or need the server restarted. Fake timers make every
 // deadline exact; the defaults are used, so these also pin their values.
@@ -775,15 +789,6 @@ describe("unhealthy export browser (#198)", () => {
       () => null,
       (error: Error) => error.message
     );
-  }
-
-  /** Stands in for process.kill: records the signal and lets the fake process exit. */
-  function interceptKill() {
-    return vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
-      signalled.push([pid, String(signal)]);
-      fakeProcesses.get(Math.abs(pid))?.exit();
-      return true;
-    }) as typeof process.kill);
   }
 
   it("renders each export in its own browser context and closes it afterwards", async () => {
@@ -947,6 +952,56 @@ describe("unhealthy export browser (#198)", () => {
   });
 });
 
+// #197: the export browser keeps Chromium's process sandbox on, and never
+// renders in a browser that has any part of it turned off.
+describe("export browser sandbox (#197)", () => {
+  it("launches the export browser with no flag that turns the sandbox off", async () => {
+    const { exportSlide, EXPORT_CHROME_ARGS } = await freshModule();
+    await exportSlide(slides(1)[0], "4:5");
+    const options = launch.mock.calls[0][0] as { args: string[] };
+    // Every flag the export browser runs with; none turns any part of the sandbox off.
+    expect(options.args).toEqual(["--disable-gpu", "--host-resolver-rules=MAP * ~NOTFOUND"]);
+    expect(EXPORT_CHROME_ARGS).toEqual(options.args);
+    const { sandboxDisablingFlags } = await import("@/lib/video/render/chrome");
+    expect(sandboxDisablingFlags(options.args)).toEqual([]);
+  });
+
+  it("refuses and kills a browser whose command line turns the sandbox off, and says so", async () => {
+    supervised = true;
+    const kill = interceptKill();
+    try {
+      const { exportSlide } = await freshModule();
+      extraSpawnArgs = ["--no-sandbox"];
+      await expect(exportSlide(slides(1)[0], "4:5")).rejects.toThrow(
+        "Chromium was started with its security sandbox turned off, so the export stopped."
+      );
+      expect(signalled).toEqual([[-browsers[0].process()!.pid, "SIGKILL"]]);
+      expect(browsers[0].openPages).toBe(0);
+
+      extraSpawnArgs = [];
+      await expect(exportSlide(slides(1)[0], "4:5")).resolves.toBeInstanceOf(Buffer);
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it("explains a system without a usable sandbox instead of falling back, and tries again on the next export", async () => {
+    const { exportSlide, describeExportFailure } = await freshModule();
+    launch.mockImplementationOnce(async () => {
+      throw new Error("Failed to launch the browser process!\n[0101/000000.000000:FATAL:zygote_host_impl_linux.cc(128)] No usable sandbox!");
+    });
+    const failure = await exportSlide(slides(1)[0], "4:5").catch((error: Error) => error);
+    expect(describeExportFailure(failure)).toMatch(
+      /^Chromium could not start its security sandbox on this system, so slides could not be rendered\. CreatorBrio never renders slides without it/
+    );
+    await expect(exportSlide(slides(1)[0], "4:5")).resolves.toBeInstanceOf(Buffer);
+    expect(launch).toHaveBeenCalledTimes(2);
+    for (const call of launch.mock.calls) expect((call[0] as { args: string[] }).args).not.toContain("--no-sandbox");
+  });
+});
+
+
 // #196: the export browser loads nothing from the network. The fake checks the
 // configuration; tests/export-network.test.ts checks real Chromium against a
 // local listener.
@@ -958,6 +1013,33 @@ describe("export browser network (#196)", () => {
     expect(options.args).toContain("--host-resolver-rules=MAP * ~NOTFOUND");
     expect(browsers[0].sessions).toHaveLength(1);
     expect(browsers[0].sessions[0].sent).toEqual([["Fetch.enable", { patterns: [{ urlPattern: "*" }] }]]);
+  });
+
+  it("kills a browser whose requests could not be refused, never using it, and launches a new one for the next export", async () => {
+    supervised = true;
+    const kill = interceptKill();
+    try {
+      const { exportSlide } = await freshModule();
+      launch.mockImplementationOnce(async () => {
+        const browser = fakeBrowser();
+        browser.target = () => ({
+          createCDPSession: async () => {
+            throw new Error("Protocol error: Target closed");
+          },
+        });
+        browsers.push(browser);
+        return browser;
+      });
+      await expect(exportSlide(slides(1)[0], "4:5")).rejects.toThrow();
+      expect(signalled).toEqual([[-browsers[0].process()!.pid, "SIGKILL"]]);
+      expect(browsers[0].openPages).toBe(0);
+
+      await expect(exportSlide(slides(1)[0], "4:5")).resolves.toBeInstanceOf(Buffer);
+      expect(launch).toHaveBeenCalledTimes(2);
+      expect(browsers[1].sessions[0].sent[0][0]).toBe("Fetch.enable");
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it("cancels a navigation, so the page and its frames stay as they are, and fails every other request", async () => {
