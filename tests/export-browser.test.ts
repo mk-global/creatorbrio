@@ -39,12 +39,26 @@ interface FakeBrowser {
   newPage(): Promise<unknown>;
   createBrowserContext(): Promise<FakeContext>;
   process(): FakeProcess | null;
+  target(): { createCDPSession(): Promise<FakeSession> };
+  /** The browser-wide protocol sessions opened on it, with what was sent and the handlers registered. */
+  sessions: FakeSession[];
   /** When set, close() never finishes, as a wedged browser's does not. */
   closeHangs: boolean;
   /** Rejects when the browser's process is killed. */
   death: Promise<never>;
   close(): Promise<void>;
 }
+
+/** A browser-wide DevTools session. */
+interface FakeSession {
+  sent: [string, unknown][];
+  handlers: Map<string, (event: unknown) => void>;
+  on(event: string, handler: (event: unknown) => void): void;
+  send(method: string, params?: unknown): Promise<unknown>;
+}
+
+/** Every document an export loaded, in order. */
+let loadedDocuments: string[];
 
 /** The browser process, for tests that check it is killed. */
 interface FakeProcess {
@@ -88,6 +102,8 @@ let documentTree: (html: string) => unknown;
 let frameChecks: (html: string) => (Check | Error)[];
 /** A protocol failure reading the document, keyed by slide HTML, or null. */
 let documentError: (html: string) => Error | null;
+/** The URL a page reports once its document loaded, keyed by its HTML. */
+let pageUrl: (html: string) => string;
 /** When set, pages opened from now on wait for it before their screenshot. */
 let screenshotGate: Promise<void> | null;
 /** Whether a page's screenshot never finishes, keyed by its HTML (the health check loads `<p>ok</p>`). */
@@ -126,6 +142,19 @@ function fakeBrowser(): FakeBrowser {
     closes: [],
     isConnected: () => browser.connected,
     process: () => child,
+    sessions: [],
+    target: () => ({
+      async createCDPSession() {
+        const session: FakeSession = {
+          sent: [],
+          handlers: new Map(),
+          on: (event, handler) => void session.handlers.set(event, handler),
+          send: async (method, params) => void session.sent.push([method, params]),
+        };
+        browser.sessions.push(session);
+        return session;
+      },
+    }),
     closeHangs: false,
     death,
     async createBrowserContext() {
@@ -161,12 +190,14 @@ function fakeBrowser(): FakeBrowser {
         setContent: async (content: string) => {
           setup.push("load");
           html = content;
+          loadedDocuments.push(content);
         },
         addStyleTag: async ({ content }: { content: string }) => {
           setup.push("style");
           addedStyles.push(content);
         },
         waitForFunction: async () => {},
+        url: () => pageUrl(html),
         // The text check is the only evaluation whose result is used.
         evaluate: async (fn: { name: string }) => {
           if (fn.name === "bodyIsTheSlide") {
@@ -311,6 +342,8 @@ beforeEach(async () => {
     .toBuffer();
   browsers = [];
   screenshotGate = null;
+  // What a real page reports after setContent(), which writes into it without navigating.
+  pageUrl = () => "about:blank";
   hangs = () => false;
   printable = () => ({ hasText: true, visibleText: "", problem: null });
   printed = (html) => textPdf(html.includes("Slide 2") ? "Second" : "Any");
@@ -324,6 +357,7 @@ beforeEach(async () => {
   signalled = [];
   fakeProcesses = new Map();
   supervised = false;
+  loadedDocuments = [];
   contextsHang = false;
   extraSpawnArgs = [];
 });
@@ -926,8 +960,11 @@ describe("export browser sandbox (#197)", () => {
     const { exportSlide, EXPORT_CHROME_ARGS } = await freshModule();
     await exportSlide(slides(1)[0], "4:5");
     const options = launch.mock.calls[0][0] as { args: string[] };
-    expect(options.args).toEqual(["--disable-gpu"]);
-    expect(EXPORT_CHROME_ARGS).toEqual(["--disable-gpu"]);
+    // Every flag the export browser runs with; none turns any part of the sandbox off.
+    expect(options.args).toEqual(["--disable-gpu", "--host-resolver-rules=MAP * ~NOTFOUND"]);
+    expect(EXPORT_CHROME_ARGS).toEqual(options.args);
+    const { sandboxDisablingFlags } = await import("@/lib/video/render/chrome");
+    expect(sandboxDisablingFlags(options.args)).toEqual([]);
   });
 
   it("refuses and kills a browser whose command line turns the sandbox off, and says so", async () => {
@@ -965,3 +1002,87 @@ describe("export browser sandbox (#197)", () => {
   });
 });
 
+
+// #196: the export browser loads nothing from the network. The fake checks the
+// configuration; tests/export-network.test.ts checks real Chromium against a
+// local listener.
+describe("export browser network (#196)", () => {
+  it("launches the export browser resolving no host, and intercepts every request before any export runs", async () => {
+    const { exportSlide } = await freshModule();
+    await exportSlide(slides(1)[0], "4:5");
+    const options = launch.mock.calls[0][0] as { args: string[] };
+    expect(options.args).toContain("--host-resolver-rules=MAP * ~NOTFOUND");
+    expect(browsers[0].sessions).toHaveLength(1);
+    expect(browsers[0].sessions[0].sent).toEqual([["Fetch.enable", { patterns: [{ urlPattern: "*" }] }]]);
+  });
+
+  it("kills a browser whose requests could not be refused, never using it, and launches a new one for the next export", async () => {
+    supervised = true;
+    const kill = interceptKill();
+    try {
+      const { exportSlide } = await freshModule();
+      launch.mockImplementationOnce(async () => {
+        const browser = fakeBrowser();
+        browser.target = () => ({
+          createCDPSession: async () => {
+            throw new Error("Protocol error: Target closed");
+          },
+        });
+        browsers.push(browser);
+        return browser;
+      });
+      await expect(exportSlide(slides(1)[0], "4:5")).rejects.toThrow();
+      expect(signalled).toEqual([[-browsers[0].process()!.pid, "SIGKILL"]]);
+      expect(browsers[0].openPages).toBe(0);
+
+      await expect(exportSlide(slides(1)[0], "4:5")).resolves.toBeInstanceOf(Buffer);
+      expect(launch).toHaveBeenCalledTimes(2);
+      expect(browsers[1].sessions[0].sent[0][0]).toBe("Fetch.enable");
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it("cancels a navigation, so the page and its frames stay as they are, and fails every other request", async () => {
+    const { exportSlide } = await freshModule();
+    await exportSlide(slides(1)[0], "4:5");
+    const [session] = browsers[0].sessions;
+    const paused = session.handlers.get("Fetch.requestPaused")!;
+    paused({ requestId: "n1", resourceType: "Document", request: { url: "http://127.0.0.1:9/" } });
+    paused({ requestId: "i1", resourceType: "Image", request: { url: "http://127.0.0.1:9/x.png" } });
+    paused({ requestId: "s1", resourceType: "Stylesheet", request: { url: "https://example.com/a.css" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.sent.slice(1)).toEqual([
+      ["Fetch.fulfillRequest", { requestId: "n1", responseCode: 204 }],
+      ["Fetch.failRequest", { requestId: "i1", errorReason: "BlockedByClient" }],
+      ["Fetch.failRequest", { requestId: "s1", errorReason: "BlockedByClient" }],
+    ]);
+  });
+
+  it("loads every slide as an export document under the export policy, with no stylesheet link", async () => {
+    const { exportSlide, exportSlidePdf } = await freshModule();
+    const { EXPORT_DOCUMENT_CSP } = await import("@/lib/slide-html");
+    await exportSlide({ ...slides(1)[0], html: '<p style="font-family: Inter">Slide 1</p>' }, "4:5");
+    await exportSlidePdf({ ...slides(1)[0], html: '<p style="font-family: Inter">Slide 1</p>' }, "4:5");
+    expect(loadedDocuments).toHaveLength(2);
+    for (const document of loadedDocuments) {
+      expect(document).toContain(`<meta http-equiv="Content-Security-Policy" content="${EXPORT_DOCUMENT_CSP}">`);
+      expect(document).not.toContain("fonts.googleapis.com");
+    }
+  });
+
+  it("never captures a page that is no longer the slide's own document, as PNG or PDF", async () => {
+    const { exportSlide, exportSlidePdf, describeExportFailure } = await freshModule();
+    pageUrl = (html) => (html.includes("Away") ? "http://127.0.0.1:9/" : "about:blank");
+    const away = { ...slides(1)[0], html: "<p>Away</p>" };
+    const png = await exportSlide(away, "4:5").catch((error: unknown) => error);
+    const pdf = await exportSlidePdf(away, "4:5").catch((error: unknown) => error);
+    for (const error of [png, pdf]) {
+      expect((error as Error).name).toBe("SlideLeftDocumentError");
+      expect(describeExportFailure(error)).toMatch(/tried to open another page/);
+    }
+    // The browser is healthy, so the next slide exports on it.
+    await expect(exportSlide(slides(1)[0], "4:5")).resolves.toBeInstanceOf(Buffer);
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+});

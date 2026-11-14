@@ -36,12 +36,13 @@ class FontSourceUnreachable extends Error {
 /**
  * Fetches `url`, abandoning it when no headers or body bytes arrive for
  * `fontFetchLimits.stallMs`. A stall or a failed connection marks the font
- * source unreachable; an HTTP error status is an answer and does not.
+ * source unreachable; an HTTP error status is an answer and does not. `type`
+ * is the response's media type, without parameters, or "" when it has none.
  */
 async function fetchFontResource(
   url: string,
   headers?: Record<string, string>
-): Promise<{ ok: boolean; bytes: Buffer }> {
+): Promise<{ ok: boolean; bytes: Buffer; type: string }> {
   if (Date.now() < unreachableUntil) throw new FontSourceUnreachable();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -63,7 +64,8 @@ async function fetchFontResource(
         progressed();
       }
     }
-    return { ok: response.ok, bytes: Buffer.concat(chunks) };
+    const type = response.headers.get("content-type")?.split(";")[0].trim() ?? "";
+    return { ok: response.ok, bytes: Buffer.concat(chunks), type };
   } catch {
     if (Date.now() >= unreachableUntil) {
       console.warn(
@@ -239,6 +241,10 @@ async function getCachedFont(
   try {
     const diskPath = path.join(cacheDir(instances), cacheFileName(key));
     const css = await readFile(diskPath, "utf-8");
+    // An entry that still names a remote font file was written before every
+    // file was inlined, and the export browser loads nothing from the
+    // network, so it is fetched again and replaced rather than used (#196).
+    if (css.includes("fonts.gstatic.com")) return null;
     memoryCache.set(memoryKey, css);
     return css;
   } catch {
@@ -276,8 +282,11 @@ async function fetchAndInlineFont(
   if (!response.ok) return null;
   let css = response.bytes.toString("utf-8");
 
-  // Find all url() references to woff2 files and inline them
-  const urlRegex = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+\.woff2)\)/g;
+  // Every font file the stylesheet names, whatever its URL looks like: Google
+  // also serves some families (its Helvetica and Georgia substitutes) from
+  // URLs that do not end in .woff2, which were once left remote for the export
+  // browser to download, and it now loads nothing from the network (#196).
+  const urlRegex = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g;
   const matches = [...css.matchAll(urlRegex)];
 
   // Every file must be inlined: the export page loads nothing from the network,
@@ -288,7 +297,7 @@ async function fetchAndInlineFont(
     const fontResponse = await fetchFontResource(fontUrl);
     if (!fontResponse.ok) return null;
     const base64 = fontResponse.bytes.toString("base64");
-    css = css.replace(fontUrl, `data:font/woff2;base64,${base64}`);
+    css = css.replace(fontUrl, `data:${fontResponse.type || "font/woff2"};base64,${base64}`);
   }
 
   // Ensure font-display: block for deterministic rendering
