@@ -85,6 +85,7 @@ A slide that misses its deadline marks the browser for replacement and starts on
 - A browser that passes is replaced as soon as no export is using it, and the export fails with a message naming the slide that took too long.
 
 The browser is also replaced after 50 slides once no export is using it; otherwise it stays open between exports.
+`closeExportBrowser()` shuts it down within the same bounds, failing any export still in it; the next export launches a new one. The test setup calls it after each test file ([#204](https://github.com/mk-global/creatorbrio/issues/204)).
 Why Chromium stopped completing captures in the outage that led to this is not known; a browser that stays connected but completes no capture is recovered this way whatever the cause.
 The route does not stop an export when its request is abandoned; the slide deadlines bound how long that work runs.
 
