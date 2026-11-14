@@ -112,6 +112,17 @@ Every behavior change needs automated coverage proportional to its risk.
 Every bug fix needs a regression test that fails on the old behavior and passes after the fix.
 Do not disable or weaken existing tests to make a change pass.
 
+### Browsers launched by the tests
+
+A test run owns every headless browser it launches ([#204](https://github.com/mk-global/creatorbrio/issues/204)).
+`tests/global-setup.ts` creates a folder for the run under the system temporary folder, in `creatorbrio-test-runs/`, and points Puppeteer's temporary profiles there, for the test workers and for the app servers the browser tests start.
+After each test file, `tests/setup/close-export-browser.ts` closes the export browser that file launched, so Puppeteer removes its profile while the worker still runs.
+When the run ends, any browser whose profile is in the run's folder and is still running fails the run, after being stopped, and the folder is removed with every profile left in it.
+Only processes whose command line names that folder are ever stopped; the browsers you use, the running app's export browser and another checkout's test run are never matched.
+A run whose runner was killed before its end, for example with `kill -9`, is cleaned up by the next run, once the recorded owner process is no longer running.
+A suite that launches its own browser closes it in its own `afterAll` or `finally`; one launched with its own `userDataDir` is outside the census.
+The census reads processes with `ps`, so it runs on macOS and Linux; on Windows, which is untested, a test run has none.
+
 ## Changelog and release notes
 
 Pull requests never edit [`CHANGELOG.md`](../CHANGELOG.md), and nobody edits it by hand.
