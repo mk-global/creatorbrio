@@ -3,8 +3,8 @@
  * flags, and the checks that keep its OS sandbox on.
  *
  * The overlay browser never shares anything with the carousel export's
- * browser (`src/lib/export-slides.ts`), which still runs with its sandbox off
- * (#130).
+ * browser (`src/lib/export-slides.ts`); both keep the OS sandbox on, and the
+ * export refuses a browser by the same `sandboxDisablingFlags()` (#197).
  */
 import { existsSync } from "node:fs";
 import path from "node:path";

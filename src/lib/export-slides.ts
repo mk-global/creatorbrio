@@ -3,6 +3,7 @@ import sharp from "sharp";
 import { imageTypeOf, readUpload } from "./upload-files";
 import { wrapSlideHtml, extractFontFamilies, usesItalic } from "./slide-html";
 import { getInlinedFontCSS, type FontInstances } from "./fonts";
+import { sandboxDisablingFlags } from "./video/render/chrome";
 import { UnprintableSlideError, unprintableSlideError } from "./export-pdf";
 import { inspectPdf } from "./pdf-content";
 import {
@@ -160,18 +161,61 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
   }
 }
 
-/** Launches a browser once every retired one has shut down, and makes it current. */
-function launchBrowser(state: ExportBrowserState): BrowserLease {
-  const launch = state.shutdown.then(() =>
-    puppeteer.launch({
+/**
+ * The flags the export browser is launched with, on top of Puppeteer's
+ * defaults. Chromium's process sandbox stays on (#197): slide HTML is
+ * untrusted, and with the sandbox each renderer runs confined by the operating
+ * system instead of with the server's full access. Never add a flag that turns
+ * any part of it off; a browser started with one is refused.
+ */
+export const EXPORT_CHROME_ARGS: readonly string[] = Object.freeze(["--disable-gpu"]);
+
+/**
+ * The export browser could not start because the operating system cannot
+ * provide its process sandbox (on Linux, unprivileged user namespaces and
+ * Chrome's setuid helper are both unavailable), or it was started with part of
+ * the sandbox turned off. The export never falls back to running without it.
+ */
+export class ExportSandboxError extends Error {
+  constructor(detail: "unavailable" | "disabled") {
+    super(
+      detail === "unavailable"
+        ? "Chromium could not start its security sandbox on this system, so slides could not be rendered. CreatorBrio never renders slides without it; see the export browser section of docs/architecture/carousel-export.md."
+        : "Chromium was started with its security sandbox turned off, so the export stopped. CreatorBrio never renders slides without it."
+    );
+    this.name = "ExportSandboxError";
+  }
+}
+
+/** Launches Chromium with its sandbox on, and refuses one whose command line turns any part of it off. */
+async function launchSandboxed(): Promise<Browser> {
+  let browser: Browser;
+  try {
+    browser = await puppeteer.launch({
       headless: true,
       // Read at each launch rather than once when Puppeteer loads, so a
       // browser named after that (as the export tests do) is the one used.
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+      args: [...EXPORT_CHROME_ARGS],
       protocolTimeout: exportBrowserLimits.pdfSlideMs + PROTOCOL_GRACE_MS,
-    })
-  );
+    });
+  } catch (error) {
+    // Chromium's own words when the kernel offers no sandbox it can use.
+    if (/no usable sandbox/i.test(error instanceof Error ? error.message : String(error))) {
+      throw new ExportSandboxError("unavailable");
+    }
+    throw error;
+  }
+  if (sandboxDisablingFlags(browser.process()?.spawnargs ?? []).length > 0) {
+    await killBrowser(browser);
+    throw new ExportSandboxError("disabled");
+  }
+  return browser;
+}
+
+/** Launches a browser once every retired one has shut down, and makes it current. */
+function launchBrowser(state: ExportBrowserState): BrowserLease {
+  const launch = state.shutdown.then(launchSandboxed);
   const lease: BrowserLease = { launch, inFlight: 0, rendered: 0, retire: false, probe: null, killed: false };
   state.current = lease;
   // A launch that fails is forgotten, so the next export tries again instead of reusing the failure.
@@ -376,7 +420,7 @@ export function describeExportFailure(error: unknown): string {
 
   // Written for the person already; matched by name, since `next dev` can load
   // a second copy of this module whose classes are different objects.
-  if (name === "SlideTimeoutError" || name === "ExportBrowserReplacedError") return message;
+  if (name === "SlideTimeoutError" || name === "ExportBrowserReplacedError" || name === "ExportSandboxError") return message;
 
   // Puppeteer words a missing or damaged browser several different ways
   // depending on whether the path was configured, downloaded or corrupt. All of
