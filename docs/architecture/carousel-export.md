@@ -81,7 +81,10 @@ A slide that misses its deadline marks the browser for replacement and starts on
 
 The browser is also replaced after 50 slides once no export is using it; otherwise it stays open between exports.
 Why Chromium stopped completing captures in the outage that led to this is not known; a browser that stays connected but completes no capture is recovered this way whatever the cause.
-The route does not stop an export when its request is abandoned; the slide deadlines bound how long that work runs.
+An export whose request is abandoned, because the person closed the tab or the connection dropped before the file arrived, stops ([#203](https://github.com/mk-global/creatorbrio/issues/203)).
+The route passes the request's abort signal to the export, which then starts no further slide, stops waiting for the slides in progress and closes its browser context, which closes their pages.
+This is not the browser's fault, so it starts no health check and never replaces the browser, and another export running in the same browser carries on.
+The route logs that the export stopped, without naming the carousel, and answers status 499, which no client reads.
 
 ## Native PDF limits
 
