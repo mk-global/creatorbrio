@@ -118,15 +118,36 @@ function escapeAttribute(value: string): string {
  * This is THE shared rendering contract between preview (iframe) and export
  * (Puppeteer).
  */
+/**
+ * The Content-Security-Policy of an export document (#196): everything a slide
+ * shows is inlined before it loads, so only `data:` images, fonts and media
+ * and inline styles may load, and nothing else. Frames stay allowed here only
+ * so that their navigations reach the export browser's interceptor, which
+ * cancels them and leaves the frame empty; a frame the policy refused would
+ * show Chromium's error page in the slide instead.
+ */
+export const EXPORT_DOCUMENT_CSP =
+  "default-src 'none'; img-src data:; font-src data:; media-src data:; style-src 'unsafe-inline'; frame-src *; base-uri 'none'; form-action 'none'";
+
 export function wrapSlideHtml(
   slideHtml: string,
   aspectRatio: AspectRatio,
-  options?: { inlineFontCss?: string }
+  options?: { inlineFontCss?: string; forExport?: boolean }
 ): string {
   const { width, height } = DIMENSIONS[aspectRatio];
 
   let fontBlock = "";
-  if (options?.inlineFontCss) {
+  if (options?.forExport) {
+    // An export document loads nothing from the network: its fonts are the
+    // inlined ones or none, never a stylesheet link, under a policy that
+    // refuses anything not inlined.
+    fontBlock = [
+      `<meta http-equiv="Content-Security-Policy" content="${EXPORT_DOCUMENT_CSP}">`,
+      options.inlineFontCss ? `<style>${options.inlineFontCss}</style>` : "",
+    ]
+      .filter(Boolean)
+      .join("\n  ");
+  } else if (options?.inlineFontCss) {
     // For export: self-contained base64 @font-face CSS, no network needed.
     fontBlock = `<style>${options.inlineFontCss}</style>`;
   } else {

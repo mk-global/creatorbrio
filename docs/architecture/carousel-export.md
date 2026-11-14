@@ -38,6 +38,19 @@ Slide HTML is untrusted, so only a reference to one file directly under `/upload
 It never follows a link or leaves the real uploads folder, and the bytes must be a PNG, JPEG or WebP image, labelled by what they are.
 Any other reference is left as it is and never read; in the export it does not load.
 
+An export loads nothing from the network, for the PNG and the PDF alike ([#196](https://github.com/mk-global/creatorbrio/issues/196)).
+Everything a slide shows is inlined before its page loads: uploads as above, and Google Fonts by the font inliner, so the export document carries the inlined font CSS and never a stylesheet link.
+Anything else a slide references, on the internet or on this machine, does not load, and the slide is exported without it, as a broken image or an empty frame.
+Three layers refuse it, each covering what the others cannot:
+
+- The export browser resolves no host name at all, IP addresses and `localhost` included, so it cannot open a connection.
+- The browser refuses every request any of its pages or frames makes: a navigation, such as a frame's source or a `meta` refresh, is cancelled, so a frame stays empty and the page stays on the slide; any other request fails.
+- The export document carries a Content-Security-Policy, `EXPORT_DOCUMENT_CSP` in [`src/lib/slide-html.ts`](../../src/lib/slide-html.ts), that allows only `data:` images, fonts and media and inline styles.
+  Frames are left to the browser's refusal, which leaves them empty, because a frame the policy refused would show Chromium's error page in the slide.
+
+A page that is no longer the slide's own document when it is about to be captured is never captured; the export fails with a message naming the problem.
+The preview is unchanged.
+
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
 With `?format=single-png`, a carousel with exactly one slide is answered with that slide's PNG itself, the same bytes the ZIP would contain.
