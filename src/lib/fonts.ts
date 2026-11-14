@@ -168,6 +168,10 @@ async function getCachedFont(
   try {
     const diskPath = path.join(cacheDir(instances), cacheFileName(key));
     const css = await readFile(diskPath, "utf-8");
+    // An entry that still names a remote font file was written before every
+    // file was inlined, and the export browser loads nothing from the
+    // network, so it is fetched again and replaced rather than used (#196).
+    if (css.includes("fonts.gstatic.com")) return null;
     memoryCache.set(memoryKey, css);
     return css;
   } catch {
@@ -207,8 +211,11 @@ async function fetchAndInlineFont(
   if (!response.ok) return null;
   let css = await response.text();
 
-  // Find all url() references to woff2 files and inline them
-  const urlRegex = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+\.woff2)\)/g;
+  // Every font file the stylesheet names, whatever its URL looks like: Google
+  // also serves some families (its Helvetica and Georgia substitutes) from
+  // URLs that do not end in .woff2, which were once left remote for the export
+  // browser to download, and it now loads nothing from the network (#196).
+  const urlRegex = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g;
   const matches = [...css.matchAll(urlRegex)];
 
   for (const match of matches) {
@@ -218,7 +225,8 @@ async function fetchAndInlineFont(
       if (!fontResponse.ok) continue;
       const buffer = await fontResponse.arrayBuffer();
       const base64 = Buffer.from(buffer).toString("base64");
-      css = css.replace(fontUrl, `data:font/woff2;base64,${base64}`);
+      const type = fontResponse.headers.get("content-type")?.split(";")[0].trim() || "font/woff2";
+      css = css.replace(fontUrl, `data:${type};base64,${base64}`);
     } catch {
       // Keep the original URL - Puppeteer can still fetch it
     }

@@ -40,6 +40,8 @@ Any other reference is left as it is and never read; in the export it does not l
 
 An export loads nothing from the network, for the PNG and the PDF alike ([#196](https://github.com/mk-global/creatorbrio/issues/196)).
 Everything a slide shows is inlined before its page loads: uploads as above, and Google Fonts by the font inliner, so the export document carries the inlined font CSS and never a stylesheet link.
+The font inliner inlines every font file a stylesheet names, whatever its address looks like: Google serves some families, such as its Helvetica and Georgia substitutes, from addresses that do not end in `.woff2`, which were once left for the export browser to download.
+A cached stylesheet that still names a remote font file is fetched again and replaced.
 Anything else a slide references, on the internet or on this machine, does not load, and the slide is exported without it, as a broken image or an empty frame.
 Three layers refuse it, each covering what the others cannot:
 
