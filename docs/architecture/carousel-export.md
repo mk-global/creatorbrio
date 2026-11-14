@@ -38,10 +38,15 @@ Slide HTML is untrusted, so only a reference to one file directly under `/upload
 It never follows a link or leaves the real uploads folder, and the bytes must be a PNG, JPEG or WebP image, labelled by what they are.
 Any other reference is left as it is and never read; in the export it does not load.
 
+The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined.
+It inlines every font file a stylesheet names, whatever its address looks like: Google serves some families, such as its Helvetica and Georgia substitutes, from addresses that do not end in `.woff2`, which were once left for the export browser to download.
+A cached stylesheet that still names a remote font file is fetched again and replaced.
+Each font request is abandoned when nothing arrives for 10 seconds, headers or body, rather than after a fixed total, so a large family that downloads steadily is never cut off ([#200](https://github.com/mk-global/creatorbrio/issues/200)).
+A request that stalls or cannot connect marks the font source unreachable for 60 seconds, during which every export falls back at once instead of waiting again.
+A family with any file that could not be fetched renders in the fallback font and is not cached, so the next export tries it again.
+
 An export loads nothing from the network, for the PNG and the PDF alike ([#196](https://github.com/mk-global/creatorbrio/issues/196)).
 Everything a slide shows is inlined before its page loads: uploads as above, and Google Fonts by the font inliner, so the export document carries the inlined font CSS and never a stylesheet link.
-The font inliner inlines every font file a stylesheet names, whatever its address looks like: Google serves some families, such as its Helvetica and Georgia substitutes, from addresses that do not end in `.woff2`, which were once left for the export browser to download.
-A cached stylesheet that still names a remote font file is fetched again and replaced.
 Anything else a slide references, on the internet or on this machine, does not load, and the slide is exported without it, as a broken image or an empty frame.
 Three layers refuse it, each covering what the others cannot:
 
