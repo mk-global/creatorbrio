@@ -38,6 +38,13 @@ Slide HTML is untrusted, so only a reference to one file directly under `/upload
 It never follows a link or leaves the real uploads folder, and the bytes must be a PNG, JPEG or WebP image, labelled by what they are.
 Any other reference is left as it is and never read; in the export it does not load.
 
+The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined.
+Each font request is abandoned when nothing arrives for 10 seconds, headers or body, rather than after a fixed total, so a large family that downloads steadily is never cut off ([#200](https://github.com/mk-global/creatorbrio/issues/200)).
+A request that stalls or cannot connect marks the font source unreachable for 60 seconds, during which every export falls back at once instead of waiting again.
+A family with any file that could not be fetched renders in the fallback font and is not cached, so the next export tries it again; slides exported together share one download of the same family.
+Every font file the stylesheet names is inlined, whatever its address looks like: Google serves some families, such as its Helvetica and Georgia substitutes, from addresses that do not end in `.woff2`, which were once left remote and downloaded by the export browser itself.
+A cached stylesheet that still names a remote font file, written before that, is fetched again and replaced.
+
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
 With `?format=single-png`, a carousel with exactly one slide is answered with that slide's PNG itself, the same bytes the ZIP would contain.
