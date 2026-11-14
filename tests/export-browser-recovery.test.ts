@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Slide } from "@/types/carousel";
 import { appBrowser, inCi } from "./helpers/app-browser";
+import { alive, ownExportBrowser } from "./helpers/export-browser-processes";
 
 // #198: the real export browser can stay connected while it stops completing
 // captures. Freezing the browser's GPU process, which produces the frames a
@@ -23,52 +23,18 @@ const slide = (text: string, background: string): Slide => ({
   notes: "",
 });
 
-interface Proc {
-  pid: number;
-  ppid: number;
-  args: string;
-}
-
-function processes(): Proc[] {
-  return execFileSync("ps", ["-axo", "pid=,ppid=,args="], { encoding: "utf8" })
-    .split("\n")
-    .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
-    .filter((m): m is RegExpMatchArray => m !== null)
-    .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), args: m[3] }));
-}
-
 /**
- * This test process's own export browser, found by parentage only, and the
- * process to freeze: its GPU process, which produces the frames a capture
- * waits for. Where Chrome has no separate GPU process, the browser process
- * itself is frozen, which leaves the connection open while nothing completes.
+ * The process to freeze in this test process's export browser: its GPU
+ * process, which produces the frames a capture waits for. Where Chrome has no
+ * separate GPU process, the browser process itself is frozen, which leaves the
+ * connection open while nothing completes.
  */
-function ownExportBrowser(): { browserPid: number; freezePid: number } {
-  const all = processes();
-  // Children of this process that run the browser executable (the `ps` above is a child too).
-  const roots = all.filter((p) => p.ppid === process.pid && p.args.includes(browser!) && !p.args.includes("--type="));
-  expect(roots, "exactly one export browser launched by this test process").toHaveLength(1);
-  const tree = new Set([roots[0].pid]);
-  for (let grew = true; grew; ) {
-    grew = false;
-    for (const p of all) {
-      if (tree.has(p.ppid) && !tree.has(p.pid)) {
-        tree.add(p.pid);
-        grew = true;
-      }
-    }
-  }
-  const descendants = all.filter((p) => p.pid !== roots[0].pid && tree.has(p.pid));
-  const gpu = descendants.filter((p) => p.args.includes("--type=gpu-process"));
+function freezeTarget(): { browserPid: number; freezePid: number } {
+  const { browser: root, children } = ownExportBrowser(browser!);
+  const gpu = children.filter((p) => p.type === "gpu-process");
   expect(gpu.length, "at most one GPU process").toBeLessThanOrEqual(1);
-  const types = descendants.map((p) => p.args.match(/--type=([\w-]+)/)?.[1] ?? "other");
-  console.info(`export browser ${roots[0].pid}: freezing ${gpu.length ? "its GPU process" : "the browser process"}; children ${types.join(", ")}`);
-  return { browserPid: roots[0].pid, freezePid: gpu[0]?.pid ?? roots[0].pid };
-}
-
-function alive(pid: number): boolean {
-  const row = processes().find((p) => p.pid === pid);
-  return row !== undefined && !/<defunct>/.test(row.args);
+  console.info(`export browser ${root.pid}: freezing ${gpu.length ? "its GPU process" : "the browser process"}; children ${children.map((p) => p.type).join(", ")}`);
+  return { browserPid: root.pid, freezePid: gpu[0]?.pid ?? root.pid };
 }
 
 describe.skipIf(!browser && !inCi)("export browser recovery in Chromium (#198)", () => {
@@ -103,7 +69,7 @@ describe.skipIf(!browser && !inCi)("export browser recovery in Chromium (#198)",
 
     // The cold launch and first export run under the default limits.
     const before = await exportAllSlides(slides, "4:5");
-    const { browserPid, freezePid } = ownExportBrowser();
+    const { browserPid, freezePid } = freezeTarget();
     process.kill(freezePid, "SIGSTOP");
     frozen = freezePid;
 
@@ -136,7 +102,7 @@ describe.skipIf(!browser && !inCi)("export browser recovery in Chromium (#198)",
 
     const after = await exportAllSlides(slides, "4:5");
     expect(after.map((s) => Buffer.compare(s.buffer, before[after.indexOf(s)].buffer))).toEqual([0, 0]);
-    expect(ownExportBrowser().browserPid).not.toBe(browserPid);
+    expect(ownExportBrowser(browser!).browser.pid).not.toBe(browserPid);
   }, 90_000);
 
   it("produces the same files for concurrent exports as for the same exports one after another", async () => {
