@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  censusAvailable,
   createTestRun,
   endAbandonedRuns,
   endTestRun,
@@ -60,7 +61,7 @@ afterEach(async () => {
   await rm(base, { recursive: true, force: true });
 });
 
-describe("test run browser census (#204)", () => {
+describe.skipIf(!censusAvailable)("test run browser census (#204)", () => {
   it("counts only processes naming a path inside the run's folder, not a sibling sharing its name's start", async () => {
     const run = createTestRun(base);
     const inside = standIn(path.join(run.workers, "puppeteer_dev_chrome_profile-a"));
@@ -87,6 +88,41 @@ describe("test run browser census (#204)", () => {
     expect(await exits(serverBrowser)).toBe(true);
     expect(await exits(unrelated)).toBe(false);
     expect(existsSync(run.root)).toBe(false);
+  });
+
+  it("stops a found process's whole group, so a child without the profile path on its command line goes too", async () => {
+    const run = createTestRun(base);
+    const childPidFile = path.join(base, "child.pid");
+    // A group leader naming the run's folder, which starts a child that does not.
+    const leader = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const c = require("node:child_process").spawn("sleep", ["600"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(childPidFile)}, String(c.pid)); setTimeout(() => {}, 600000);`,
+        "--",
+        `--user-data-dir=${path.join(run.workers, "puppeteer_dev_chrome_profile-a")}`,
+      ],
+      { detached: true, stdio: "ignore" }
+    );
+    started.push(leader);
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(childPidFile) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    const child = Number(await readFile(childPidFile, "utf8"));
+    expect(processesInside(run.root)).toEqual([leader.pid]);
+
+    expect((await endTestRun(run)).survivors).toBe(1);
+    expect(await exits(leader)).toBe(true);
+    const childGone = async () => {
+      for (const until = Date.now() + 2_000; Date.now() < until; await new Promise((r) => setTimeout(r, 50))) {
+        try {
+          process.kill(child, 0);
+        } catch {
+          return true;
+        }
+      }
+      return false;
+    };
+    expect(await childGone()).toBe(true);
   });
 
   it("reports a clean run as clean", async () => {

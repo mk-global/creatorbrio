@@ -17,9 +17,10 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { builtAppMissing } from "./helpers/studio-app";
-import { createTestRun, endAbandonedRuns, endTestRun } from "./helpers/browser-census";
+import { censusAvailable, createTestRun, endAbandonedRuns, endTestRun } from "./helpers/browser-census";
 
-export default async function setup(): Promise<() => Promise<void>> {
+export default async function setup(): Promise<(() => Promise<void>) | void> {
+  if (!censusAvailable) return buildForCi();
   const abandoned = await endAbandonedRuns();
   if (abandoned.runs > 0) {
     console.log(

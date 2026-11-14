@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Slide } from "@/types/carousel";
 import { appBrowser, inCi } from "./helpers/app-browser";
-import { processesInside, profilesInside } from "./helpers/browser-census";
+import { censusAvailable, processesInside, profilesInside } from "./helpers/browser-census";
 
 // #204: closeExportBrowser() shuts the real export browser down within its
 // bound and leaves no process or profile behind, also when it interrupts an
@@ -20,7 +20,8 @@ const slide = (n: number): Slide => ({
   notes: "",
 });
 
-describe.skipIf(!browser && !inCi)("closing the real export browser (#204)", () => {
+// The run's browser folder exists only where the census runs (not on Windows).
+describe.skipIf((!browser && !inCi) || !censusAvailable)("closing the real export browser (#204)", () => {
   let previousExecutable: string | undefined;
   let originalCwd: string;
   let work: string;

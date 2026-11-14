@@ -12,11 +12,17 @@
  *
  * Browsers launched with their own `userDataDir` (the overlay renderer and the
  * render parity tests) are not seen here; they close in their own suites.
+ *
+ * It reads processes with `ps`, so it runs on macOS and Linux only; on
+ * Windows, where CreatorBrio is untested, a test run has no census.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+/** Whether this platform can take the census. */
+export const censusAvailable = process.platform !== "win32";
 
 /** The folder that holds one folder per test run. */
 export function runsFolder(base: string = tmpdir()): string {
@@ -65,14 +71,24 @@ export function processesInside(folder: string): number[] {
   return pids;
 }
 
-/** Kills every process inside `folder` and waits, bounded, for them to go; returns how many there were. */
+/**
+ * Kills every process inside `folder`, with its process group when it leads
+ * one, as the export browser's own shutdown does, and waits, bounded, for them
+ * to go; returns how many there were. A process group's ID is its leader's
+ * process ID, which is not reused while the group exists, so the group killed
+ * is the found process's own or none.
+ */
 export async function stopProcessesInside(folder: string, waitMs = 5_000): Promise<number> {
   const found = processesInside(folder);
   for (const pid of found) {
     try {
-      process.kill(pid, "SIGKILL");
+      process.kill(-pid, "SIGKILL");
     } catch {
-      // Already gone.
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
     }
   }
   const deadline = Date.now() + waitMs;

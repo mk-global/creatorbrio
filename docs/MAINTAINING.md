@@ -121,6 +121,7 @@ When the run ends, any browser whose profile is in the run's folder and is still
 Only processes whose command line names that folder are ever stopped; the browsers you use, the running app's export browser and another checkout's test run are never matched.
 A run whose runner was killed before its end, for example with `kill -9`, is cleaned up by the next run, once the recorded owner process is no longer running.
 A suite that launches its own browser closes it in its own `afterAll` or `finally`; one launched with its own `userDataDir` is outside the census.
+The census reads processes with `ps`, so it runs on macOS and Linux; on Windows, which is untested, a test run has none.
 
 ## Changelog and release notes
 
