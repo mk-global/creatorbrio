@@ -7,6 +7,77 @@ const FONT_CACHE_DIR = path.resolve(process.cwd(), "data", ".font-cache");
 // In-memory cache (survives across requests, lost on restart)
 const memoryCache = new Map<string, string>();
 
+/**
+ * Bounds on fetching a font for an export (#200). A request is abandoned when
+ * nothing arrives for `stallMs`, headers or body, rather than after a fixed
+ * total: a slow but working download keeps going (a CJK family's static
+ * instances are over a thousand files and took 77 s on a good connection),
+ * while a server that accepts the connection and never answers costs one
+ * stall. That stall, or a connection that fails, marks the font source
+ * unreachable for `unreachableMs`, during which every font request falls back
+ * at once instead of waiting out a stall of its own.
+ */
+export const fontFetchLimits = {
+  stallMs: 10_000,
+  unreachableMs: 60_000,
+};
+
+/** Until when font requests fall back without trying, after the font source stopped answering. */
+let unreachableUntil = 0;
+
+/** The font source did not answer in time, or could not be reached. */
+class FontSourceUnreachable extends Error {
+  constructor() {
+    super("The font source did not answer");
+    this.name = "FontSourceUnreachable";
+  }
+}
+
+/**
+ * Fetches `url`, abandoning it when no headers or body bytes arrive for
+ * `fontFetchLimits.stallMs`. A stall or a failed connection marks the font
+ * source unreachable; an HTTP error status is an answer and does not.
+ */
+async function fetchFontResource(
+  url: string,
+  headers?: Record<string, string>
+): Promise<{ ok: boolean; bytes: Buffer }> {
+  if (Date.now() < unreachableUntil) throw new FontSourceUnreachable();
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const progressed = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), fontFetchLimits.stallMs);
+  };
+  progressed();
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal });
+    progressed();
+    const chunks: Uint8Array[] = [];
+    if (response.body) {
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        progressed();
+      }
+    }
+    return { ok: response.ok, bytes: Buffer.concat(chunks) };
+  } catch {
+    if (Date.now() >= unreachableUntil) {
+      console.warn(
+        `[fonts] the font source did not answer within ${fontFetchLimits.stallMs / 1000} s or could not be reached; ` +
+          `exports use fallback fonts for the next ${fontFetchLimits.unreachableMs / 1000} s`
+      );
+    }
+    unreachableUntil = Date.now() + fontFetchLimits.unreachableMs;
+    throw new FontSourceUnreachable();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Google serves woff2 only to browsers that advertise support for it.
 const WOFF2_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -196,32 +267,28 @@ async function fetchAndInlineFont(
   instances: FontInstances
 ): Promise<string | null> {
   const url = googleFontsUrl(family, { italic, display: "block" });
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": instances === "static" ? STATIC_WOFF2_USER_AGENT : WOFF2_USER_AGENT,
-    },
+  const response = await fetchFontResource(url, {
+    "User-Agent": instances === "static" ? STATIC_WOFF2_USER_AGENT : WOFF2_USER_AGENT,
   });
 
   // 400 here means the family has no such cut. That is an expected answer, not
   // an error, and the caller treats a null result as "nothing to add".
   if (!response.ok) return null;
-  let css = await response.text();
+  let css = response.bytes.toString("utf-8");
 
   // Find all url() references to woff2 files and inline them
   const urlRegex = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+\.woff2)\)/g;
   const matches = [...css.matchAll(urlRegex)];
 
+  // Every file must be inlined: the export page loads nothing from the network,
+  // so a file that could not be fetched makes the whole variant unavailable,
+  // rendered with the fallback font and never cached half-inlined (#200).
   for (const match of matches) {
     const fontUrl = match[1];
-    try {
-      const fontResponse = await fetch(fontUrl);
-      if (!fontResponse.ok) continue;
-      const buffer = await fontResponse.arrayBuffer();
-      const base64 = Buffer.from(buffer).toString("base64");
-      css = css.replace(fontUrl, `data:font/woff2;base64,${base64}`);
-    } catch {
-      // Keep the original URL - Puppeteer can still fetch it
-    }
+    const fontResponse = await fetchFontResource(fontUrl);
+    if (!fontResponse.ok) return null;
+    const base64 = fontResponse.bytes.toString("base64");
+    css = css.replace(fontUrl, `data:font/woff2;base64,${base64}`);
   }
 
   // Ensure font-display: block for deterministic rendering
