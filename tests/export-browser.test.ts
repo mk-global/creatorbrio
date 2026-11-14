@@ -913,3 +913,83 @@ describe("unhealthy export browser (#198)", () => {
     );
   });
 });
+
+// #203: an export whose request is abandoned starts no further slide, closes
+// its context at once, and leaves the browser and other exports alone.
+describe("abandoned exports (#203)", () => {
+  it("starts no further slide once abandoned, closes its context at once, and keeps the browser", async () => {
+    {
+      const { exportAllSlides } = await freshModule();
+      const held = deferred();
+      screenshotGate = held.promise;
+      const controller = new AbortController();
+      const abandoned = exportAllSlides(slides(7), "4:5", { signal: controller.signal }).then(
+        () => null,
+        (error: Error) => error.name
+      );
+      await vi.waitFor(() => expect(browsers[0]?.openPages).toBe(3));
+      controller.abort();
+
+      expect(await abandoned).toBe("ExportAbandonedError");
+      expect(pageSetup).toHaveLength(3);
+      expect(browsers[0].openPages).toBe(0);
+      expect(browsers[0].contexts.every((context) => !context.open)).toBe(true);
+      held.resolve();
+      screenshotGate = null;
+
+      // Not the browser's fault: no health check and no replacement.
+      expect(browsers[0].contexts).toHaveLength(1);
+      await exportAllSlides(slides(2), "4:5");
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(browsers[0].closes).toEqual([]);
+    }
+  });
+
+  it("never starts an export whose request was already abandoned", async () => {
+    const { exportAllSlides, exportAllSlidePdfs } = await freshModule();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(exportAllSlides(slides(2), "4:5", { signal: controller.signal })).rejects.toThrow(
+      "The export was cancelled before it finished."
+    );
+    await expect(exportAllSlidePdfs(slides(2), "4:5", { signal: controller.signal })).rejects.toThrow(
+      "The export was cancelled before it finished."
+    );
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it("stops an abandoned PDF export the same way", async () => {
+    const { exportAllSlidePdfs } = await freshModule();
+    printed = () => new Promise<Uint8Array>(() => {});
+    const controller = new AbortController();
+    const abandoned = exportAllSlidePdfs(slides(5), "4:5", { signal: controller.signal }).then(
+      () => null,
+      (error: Error) => error.name
+    );
+    await vi.waitFor(() => expect(browsers[0]?.openPages).toBe(3));
+    controller.abort();
+    expect(await abandoned).toBe("ExportAbandonedError");
+    expect(pageSetup).toHaveLength(3);
+    expect(browsers[0].openPages).toBe(0);
+    expect(browsers[0].contexts.every((context) => !context.open)).toBe(true);
+  });
+
+  it("does not disturb a concurrent export of another carousel", async () => {
+    const { exportAllSlides } = await freshModule();
+    const held = deferred();
+    screenshotGate = held.promise;
+    const controller = new AbortController();
+    const abandoned = exportAllSlides(slides(6), "4:5", { signal: controller.signal }).catch((error: Error) => error.name);
+    await vi.waitFor(() => expect(browsers[0]?.openPages).toBe(3));
+    screenshotGate = null;
+    const other = exportAllSlides(slides(4), "4:5");
+    controller.abort();
+
+    expect(await abandoned).toBe("ExportAbandonedError");
+    const done = await other;
+    expect(done.map((s) => s.name)).toEqual(["slide-1.png", "slide-2.png", "slide-3.png", "slide-4.png"]);
+    expect(launch).toHaveBeenCalledTimes(1);
+    held.resolve();
+  });
+});
+

@@ -74,6 +74,28 @@ export class ExportBrowserReplacedError extends Error {
 }
 
 /**
+ * The person stopped waiting: the export's request was abandoned (#203). The
+ * export starts no further slide and closes its browser context; this is not a
+ * failure of the browser, so it never triggers the health check.
+ */
+export class ExportAbandonedError extends Error {
+  constructor() {
+    super("The export was cancelled before it finished.");
+    this.name = "ExportAbandonedError";
+  }
+}
+
+/** Options every whole-carousel export takes. */
+export interface ExportOptions {
+  /** Aborted when the person abandons the export; no further slide starts once it is. */
+  signal?: AbortSignal;
+}
+
+function stopIfAbandoned(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new ExportAbandonedError();
+}
+
+/**
  * One launched export browser and the exports using it.
  *
  * Exports are counted per browser rather than per server, so an export still
@@ -414,9 +436,10 @@ async function withLoadedSlide<T>(
   slide: Slide,
   aspectRatio: AspectRatio,
   capture: (page: Page) => Promise<T>,
-  options: { deadlineMs: number; fontInstances?: FontInstances }
+  options: { deadlineMs: number; fontInstances?: FontInstances; signal?: AbortSignal }
 ): Promise<T> {
   const { width, height } = DIMENSIONS[aspectRatio];
+  stopIfAbandoned(options.signal);
 
   // Get inlined font CSS
   const fontFamilies = extractFontFamilies(slide.html);
@@ -433,6 +456,8 @@ async function withLoadedSlide<T>(
     inlineFontCss: inlinedFontCss,
   });
 
+  // Fonts and images may have taken a while; a slide abandoned meanwhile never opens its page.
+  stopIfAbandoned(options.signal);
   const { state, lease, context } = session;
   let page: Page | null = null;
   const render = (async () => {
@@ -496,8 +521,15 @@ async function withLoadedSlide<T>(
   const late = new Promise<"late">((resolve) => {
     timer = setTimeout(() => resolve("late"), options.deadlineMs);
   });
+  let onAbandoned: (() => void) | undefined;
+  const abandoned = new Promise<"abandoned">((resolve) => {
+    onAbandoned = () => resolve("abandoned");
+    options.signal?.addEventListener("abort", onAbandoned, { once: true });
+  });
   try {
-    const outcome = await Promise.race([render, late]);
+    const outcome = await Promise.race([render, late, abandoned]);
+    // The person left: the page closes below and the slide stops, with no health check.
+    if (outcome === "abandoned") throw new ExportAbandonedError();
     if (outcome === "late") {
       await missedDeadline(state, lease);
       throw lease.killed ? new ExportBrowserReplacedError() : new SlideTimeoutError(options.deadlineMs / 1000);
@@ -509,13 +541,19 @@ async function withLoadedSlide<T>(
     throw error;
   } finally {
     clearTimeout(timer);
+    if (onAbandoned) options.signal?.removeEventListener("abort", onAbandoned);
     const opened = page as Page | null;
     if (opened) await settlesWithin(opened.close(), exportBrowserLimits.contextMs);
   }
 }
 
 /** Renders one slide to a PNG in the export's session. */
-async function renderPng(session: ExportSession, slide: Slide, aspectRatio: AspectRatio): Promise<Buffer> {
+async function renderPng(
+  session: ExportSession,
+  slide: Slide,
+  aspectRatio: AspectRatio,
+  signal?: AbortSignal
+): Promise<Buffer> {
   const { width, height } = DIMENSIONS[aspectRatio];
 
   const screenshotBuffer = await withLoadedSlide(
@@ -527,7 +565,7 @@ async function renderPng(session: ExportSession, slide: Slide, aspectRatio: Aspe
         type: "png",
         clip: { x: 0, y: 0, width, height },
       }),
-    { deadlineMs: exportBrowserLimits.pngSlideMs }
+    { deadlineMs: exportBrowserLimits.pngSlideMs, signal }
   );
 
   // Post-process with Sharp: enforce sRGB
@@ -624,7 +662,12 @@ export async function exportSlidePdf(
 }
 
 /** Prints one slide to a one-page PDF in the export's session; see `exportSlidePdf`. */
-async function printPdf(session: ExportSession, slide: Slide, aspectRatio: AspectRatio): Promise<Uint8Array> {
+async function printPdf(
+  session: ExportSession,
+  slide: Slide,
+  aspectRatio: AspectRatio,
+  signal?: AbortSignal
+): Promise<Uint8Array> {
   const { width, height } = DIMENSIONS[aspectRatio];
 
   return withLoadedSlide(
@@ -673,7 +716,7 @@ async function printPdf(session: ExportSession, slide: Slide, aspectRatio: Aspec
       }
       return pdf;
     },
-    { deadlineMs: exportBrowserLimits.pdfSlideMs, fontInstances: "static" }
+    { deadlineMs: exportBrowserLimits.pdfSlideMs, fontInstances: "static", signal }
   );
 }
 
@@ -683,6 +726,9 @@ async function printPdf(session: ExportSession, slide: Slide, aspectRatio: Aspec
  * first slide number.
  */
 function batchFailure(settled: PromiseSettledResult<unknown>[], first: number): { reason: unknown } | null {
+  // An abandoned export is reported as abandoned, whatever else its slides did.
+  const abandoned = settled.find((o) => o.status === "rejected" && o.reason instanceof ExportAbandonedError);
+  if (abandoned) return { reason: (abandoned as PromiseRejectedResult).reason };
   for (const [batchIdx, outcome] of settled.entries()) {
     if (outcome.status === "fulfilled") continue;
     const slideNumber = first + batchIdx;
@@ -703,16 +749,20 @@ function batchFailure(settled: PromiseSettledResult<unknown>[], first: number): 
  */
 export async function exportAllSlidePdfs(
   slides: Slide[],
-  aspectRatio: AspectRatio
+  aspectRatio: AspectRatio,
+  options: ExportOptions = {}
 ): Promise<Uint8Array[]> {
   const CONCURRENCY = 3;
+  const { signal } = options;
+  stopIfAbandoned(signal);
 
   return withExportSession(async (session) => {
     const results: Uint8Array[] = [];
     for (let i = 0; i < slides.length; i += CONCURRENCY) {
+      stopIfAbandoned(signal);
       const batch = slides.slice(i, i + CONCURRENCY);
       const settled = await Promise.allSettled(
-        batch.map((slide) => printPdf(session, slide, aspectRatio))
+        batch.map((slide) => printPdf(session, slide, aspectRatio, signal))
       );
       const failure = batchFailure(settled, i + 1);
       if (failure) throw failure.reason;
@@ -732,18 +782,21 @@ export async function exportAllSlidePdfs(
 export async function exportAllSlides(
   slides: Slide[],
   aspectRatio: AspectRatio,
-  onProgress?: (current: number, total: number) => void
+  options: ExportOptions & { onProgress?: (current: number, total: number) => void } = {}
 ): Promise<{ name: string; buffer: Buffer }[]> {
   const CONCURRENCY = 3;
+  const { signal, onProgress } = options;
+  stopIfAbandoned(signal);
 
   return withExportSession(async (session) => {
     const results: { name: string; buffer: Buffer }[] = [];
     for (let i = 0; i < slides.length; i += CONCURRENCY) {
+      stopIfAbandoned(signal);
       const batch = slides.slice(i, i + CONCURRENCY);
       const settled = await Promise.allSettled(
         batch.map(async (slide, batchIdx) => {
           const idx = i + batchIdx;
-          const buffer = await renderPng(session, slide, aspectRatio);
+          const buffer = await renderPng(session, slide, aspectRatio, signal);
           onProgress?.(idx + 1, slides.length);
           return { name: `slide-${idx + 1}.png`, buffer };
         })
