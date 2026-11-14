@@ -21,6 +21,21 @@ const slide = (n: number): Slide => ({
 });
 
 // The run's browser folder exists only where the census runs (not on Windows).
+/**
+ * Waits, within a bound, until no profile is left in `folder`, then returns
+ * what is left. A browser that closes cleanly has its profile removed before
+ * its close resolves; one killed after `closeGraceMs`, as on a loaded machine,
+ * has it removed by Puppeteer a moment after its process exits, after
+ * closeExportBrowser() returned (#212). A profile never removed still fails.
+ */
+async function profilesLeft(folder: string, waitMs = 10_000): Promise<string[]> {
+  const deadline = Date.now() + waitMs;
+  while (profilesInside(folder).length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return profilesInside(folder);
+}
+
 describe.skipIf((!browser && !inCi) || !censusAvailable)("closing the real export browser (#204)", () => {
   let previousExecutable: string | undefined;
   let originalCwd: string;
@@ -57,12 +72,12 @@ describe.skipIf((!browser && !inCi) || !censusAvailable)("closing the real expor
     await closeExportBrowser();
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(processesInside(profiles)).toEqual([]);
-    expect(profilesInside(profiles)).toEqual([]);
+    expect(await profilesLeft(profiles)).toEqual([]);
 
     await expect(exportSlide(slide(2), "1:1")).resolves.toBeInstanceOf(Buffer);
     await closeExportBrowser();
     expect(processesInside(profiles)).toEqual([]);
-    expect(profilesInside(profiles)).toEqual([]);
+    expect(await profilesLeft(profiles)).toEqual([]);
   }, 60_000);
 
   it("closes a browser in the middle of an export, which fails, within its bound and leaving nothing behind", async () => {
@@ -85,8 +100,23 @@ describe.skipIf((!browser && !inCi) || !censusAvailable)("closing the real expor
     expect(closing).not.toBeNull();
     expect(closedAt - requestedAt).toBeLessThan(10_000);
     expect(processesInside(profiles)).toEqual([]);
-    expect(profilesInside(profiles)).toEqual([]);
+    expect(await profilesLeft(profiles)).toEqual([]);
   }, 90_000);
+
+  it("leaves no process when a browser that does not close in time is killed, and its profile is removed after", async () => {
+    const { exportSlide, closeExportBrowser, exportBrowserLimits } = await import("@/lib/export-slides");
+    const grace = exportBrowserLimits.closeGraceMs;
+    exportBrowserLimits.closeGraceMs = 1;
+    try {
+      await exportSlide(slide(1), "1:1");
+      expect(processesInside(profiles).length).toBeGreaterThan(0);
+      await closeExportBrowser();
+      expect(processesInside(profiles)).toEqual([]);
+      expect(await profilesLeft(profiles)).toEqual([]);
+    } finally {
+      exportBrowserLimits.closeGraceMs = grace;
+    }
+  }, 60_000);
 
   it("returns at once when no export browser was launched", async () => {
     const { closeExportBrowser } = await import("@/lib/export-slides");
