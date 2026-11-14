@@ -67,6 +67,9 @@ The trim moves the page box, not the drawing, so the sliver falls below the box 
 
 One headless Chromium in the server process renders every export, launched by the first export and shared by those after it, and each export renders in its own browser context, closed when the export ends ([#198](https://github.com/mk-global/creatorbrio/issues/198)).
 At most one browser is alive at a time: a new one is launched only after the previous one has shut down.
+It runs with Chromium's process sandbox on ([#197](https://github.com/mk-global/creatorbrio/issues/197)), so each renderer loading untrusted slide HTML is confined by the operating system rather than running with the server's access; on macOS that is the system sandbox, on Linux Chromium's namespace or setuid sandbox with a seccomp filter.
+A browser whose command line turns any part of the sandbox off is killed and the export refused, and where the system cannot provide the sandbox (on Linux, when unprivileged user namespaces are blocked and Chrome's setuid helper is not installed) the export fails saying so.
+There is no setting to export without it; on such a Linux system, use a Chrome whose setuid sandbox helper is installed (Google Chrome's packages install one) or allow unprivileged user namespaces.
 Every shutdown is bounded: a clean close gets 2 seconds, after which the browser's whole process group is killed and its exit awaited.
 
 Every slide has a deadline from opening its page to its capture: 60 seconds for a PNG and 120 seconds for a PDF page.
