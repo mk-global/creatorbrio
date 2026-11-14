@@ -221,7 +221,7 @@ describe("export while the design agent is generating", () => {
     const entries = readZipEntries(Buffer.from(await exported.arrayBuffer()));
     expect(entries.map((e) => e.name)).toEqual(["slide-1.png", "slide-2.png"]);
     const saved = await getCarousel(carousel.id);
-    expect(exportAllSlidesMock).toHaveBeenCalledWith(saved!.slides, "4:5");
+    expect(exportAllSlidesMock).toHaveBeenCalledWith(saved!.slides, "4:5", { signal: expect.any(AbortSignal) });
   });
 
   it("holds back a failed run's partial slides until the user confirms them", async () => {
