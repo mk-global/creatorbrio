@@ -995,6 +995,8 @@ describe("abandoned exports (#203)", () => {
     expect(done.map((s) => s.name)).toEqual(["slide-1.png", "slide-2.png", "slide-3.png", "slide-4.png"]);
     expect(launch).toHaveBeenCalledTimes(1);
     held.resolve();
+  });
+});
 
 // #197: the export browser keeps Chromium's process sandbox on, and never
 // renders in a browser that has any part of it turned off.
