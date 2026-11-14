@@ -95,7 +95,7 @@ export async function POST(
       // Printed natively from the same slide documents as the PNGs, so text
       // stays selectable text instead of a picture of it.
       const pdfBytes = await mergeSlidePdfs(
-        await exportAllSlidePdfs(carousel.slides, carousel.aspectRatio),
+        await exportAllSlidePdfs(carousel.slides, carousel.aspectRatio, { signal: request.signal }),
         carousel.aspectRatio,
         { title: carousel.name }
       );
@@ -108,10 +108,9 @@ export async function POST(
     }
 
     // Export all slides to PNG buffers
-    const pngBuffers = await exportAllSlides(
-      carousel.slides,
-      carousel.aspectRatio
-    );
+    const pngBuffers = await exportAllSlides(carousel.slides, carousel.aspectRatio, {
+      signal: request.signal,
+    });
 
     if (format === "single-png") {
       // The exact bytes the ZIP would hold as slide-1.png, not re-encoded.
@@ -161,6 +160,12 @@ export async function POST(
       },
     });
   } catch (error) {
+    // The person left before the export finished (#203): its rendering has
+    // stopped, nobody reads this answer, and it is not a failure.
+    if (error instanceof Error && error.name === "ExportAbandonedError") {
+      console.info("[export] stopped: the request was abandoned before the export finished");
+      return NextResponse.json({ error: error.message }, { status: 499 });
+    }
     if (error instanceof PdfExportError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }

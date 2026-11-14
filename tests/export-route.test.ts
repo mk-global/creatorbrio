@@ -134,7 +134,7 @@ describe("PNG ZIP export (unchanged)", () => {
     await exportRequest();
 
     expect(exportAllSlidesMock).toHaveBeenCalledTimes(1);
-    expect(exportAllSlidesMock).toHaveBeenCalledWith(c.slides, "9:16");
+    expect(exportAllSlidesMock).toHaveBeenCalledWith(c.slides, "9:16", { signal: expect.any(AbortSignal) });
   });
 
   it("treats ?format=png exactly like no format", async () => {
@@ -203,7 +203,7 @@ describe("LinkedIn PDF export", () => {
 
     expect(response.status).toBe(200);
     expect(exportAllSlidePdfsMock).toHaveBeenCalledTimes(1);
-    expect(exportAllSlidePdfsMock).toHaveBeenCalledWith(c.slides, "4:5");
+    expect(exportAllSlidePdfsMock).toHaveBeenCalledWith(c.slides, "4:5", { signal: expect.any(AbortSignal) });
     expect(exportAllSlidesMock).not.toHaveBeenCalled();
   });
 
@@ -312,7 +312,7 @@ describe("single PNG download", () => {
     await exportRequest("?format=single-png");
 
     expect(exportAllSlidesMock).toHaveBeenCalledTimes(1);
-    expect(exportAllSlidesMock).toHaveBeenCalledWith(c.slides, "4:5");
+    expect(exportAllSlidesMock).toHaveBeenCalledWith(c.slides, "4:5", { signal: expect.any(AbortSignal) });
   });
 
   it("refuses a multi-slide carousel before rendering, pointing to the ZIP", async () => {
@@ -495,3 +495,49 @@ describe("export errors", () => {
     expect(body.error).toMatch(/^Slide 2 did not print as a single page at the slide's size\./);
   });
 });
+
+// #203: an export whose request is abandoned stops; the route hands the
+// renderer the request's own signal and answers the abandonment quietly.
+describe("abandoned export requests (#203)", () => {
+  it("gives the renderer the request's own abort signal, for the ZIP, the single PNG and the PDF", async () => {
+    for (const [query, slides, mock] of [
+      ["", 2, exportAllSlidesMock],
+      ["?format=single-png", 1, exportAllSlidesMock],
+      ["?format=pdf", 2, exportAllSlidePdfsMock],
+    ] as const) {
+      exportAllSlidesMock.mockReset();
+      exportAllSlidePdfsMock.mockReset();
+      getCarouselMock.mockResolvedValue(carousel("4:5", slides));
+      exportAllSlidesMock.mockResolvedValue(await renderedPngs("4:5", slides));
+      exportAllSlidePdfsMock.mockRejectedValue(new Error("not rendered in this test"));
+      const controller = new AbortController();
+      await POST(
+        new Request(`http://localhost:3000/api/carousels/c1/export${query}`, { method: "POST", signal: controller.signal }),
+        { params: Promise.resolve({ id: "c1" }) }
+      ).catch(() => undefined);
+      const { signal } = (mock.mock.calls[0] as unknown[])[2] as { signal: AbortSignal };
+      expect(signal.aborted).toBe(false);
+      controller.abort();
+      expect(signal.aborted).toBe(true);
+    }
+  });
+
+  it("answers an abandoned export with 499 and logs it as information, not an error", async () => {
+    const { ExportAbandonedError } = await import("@/lib/export-slides");
+    getCarouselMock.mockResolvedValue(carousel("4:5", 3));
+    exportAllSlidesMock.mockRejectedValue(new ExportAbandonedError());
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const response = await exportRequest();
+      expect(response.status).toBe(499);
+      expect(await response.json()).toEqual({ error: "The export was cancelled before it finished." });
+      expect(error).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith("[export] stopped: the request was abandoned before the export finished");
+    } finally {
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+});
+

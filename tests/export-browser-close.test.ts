@@ -73,11 +73,13 @@ describe.skipIf((!browser && !inCi) || !censusAvailable)("closing the real expor
     const exported = exportAllSlides(
       Array.from({ length: 12 }, (_, i) => slide(i + 1)),
       "4:5",
-      () => {
-        // After the first slide, with the rest still to render.
-        if (closing) return;
-        requestedAt = Date.now();
-        closing = closeExportBrowser().then(() => void (closedAt = Date.now()));
+      {
+        onProgress: () => {
+          // After the first slide, with the rest still to render.
+          if (closing) return;
+          requestedAt = Date.now();
+          closing = closeExportBrowser().then(() => void (closedAt = Date.now()));
+        },
       }
     );
     await expect(exported).rejects.toThrow();
