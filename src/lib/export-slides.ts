@@ -1,4 +1,4 @@
-import puppeteer, { type Browser, type BrowserContext, type Page } from "puppeteer";
+import puppeteer, { type Browser, type BrowserContext, type Page, type Protocol } from "puppeteer";
 import sharp from "sharp";
 import { imageTypeOf, readUpload } from "./upload-files";
 import { wrapSlideHtml, extractFontFamilies, usesItalic } from "./slide-html";
@@ -63,6 +63,18 @@ export class SlideTimeoutError extends Error {
         "Try again; if it happens again, simplify that slide."
     );
     this.name = "SlideTimeoutError";
+  }
+}
+
+/**
+ * The slide's page was no longer the document it was given when it was about
+ * to be captured (#196). The export browser cancels every navigation, so this
+ * is not expected to happen; if it ever does, nothing is captured.
+ */
+export class SlideLeftDocumentError extends Error {
+  constructor() {
+    super("A slide tried to open another page instead of showing its own content, so it was not exported. Ask the design agent to remove the redirect or frame from that slide.");
+    this.name = "SlideLeftDocumentError";
   }
 }
 
@@ -168,7 +180,11 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
  * system instead of with the server's full access. Never add a flag that turns
  * any part of it off; a browser started with one is refused.
  */
-export const EXPORT_CHROME_ARGS: readonly string[] = Object.freeze(["--disable-gpu"]);
+export const EXPORT_CHROME_ARGS: readonly string[] = Object.freeze([
+  "--disable-gpu",
+  // Resolves no host at all, IP addresses and localhost included (#196).
+  "--host-resolver-rules=MAP * ~NOTFOUND",
+]);
 
 /**
  * The export browser could not start because the operating system cannot
@@ -215,7 +231,7 @@ async function launchSandboxed(): Promise<Browser> {
 
 /** Launches a browser once every retired one has shut down, and makes it current. */
 function launchBrowser(state: ExportBrowserState): BrowserLease {
-  const launch = state.shutdown.then(launchSandboxed);
+  const launch = state.shutdown.then(launchExportBrowser);
   const lease: BrowserLease = { launch, inFlight: 0, rendered: 0, retire: false, probe: null, killed: false };
   state.current = lease;
   // A launch that fails is forgotten, so the next export tries again instead of reusing the failure.
@@ -223,6 +239,48 @@ function launchBrowser(state: ExportBrowserState): BrowserLease {
     if (state.current === lease) state.current = null;
   });
   return lease;
+}
+
+/** Launches the export browser: sandboxed (#197), and loading nothing from the network (#196). */
+async function launchExportBrowser(): Promise<Browser> {
+  const browser = await launchSandboxed();
+  try {
+    await refuseEveryRequest(browser);
+  } catch (error) {
+    // A browser whose requests could not be refused is never used.
+    await killBrowser(browser);
+    throw error;
+  }
+  return browser;
+}
+
+/**
+ * Makes the export browser load nothing from the network (#196). Every page in
+ * it is untrusted slide HTML whose own content is inlined before it loads, so
+ * any request it makes is refused, in three layers, each covering what the
+ * others cannot:
+ *
+ * - `--host-resolver-rules` in `EXPORT_CHROME_ARGS` resolves no host at all,
+ *   IP addresses and loopback included, so the browser cannot open a
+ *   connection, not even the early one Chromium makes for a navigation before
+ *   any request is seen;
+ * - this browser-wide interceptor refuses every request from every page and
+ *   frame: a navigation (a frame's source, a refresh) is cancelled, so a frame
+ *   stays empty and the slide stays on its own document, and anything else
+ *   fails;
+ * - the export document's Content-Security-Policy (`EXPORT_DOCUMENT_CSP`)
+ *   refuses every subresource that is not inlined.
+ */
+async function refuseEveryRequest(browser: Browser): Promise<void> {
+  const session = await browser.target().createCDPSession();
+  session.on("Fetch.requestPaused", (event: Protocol.Fetch.RequestPausedEvent) => {
+    const refused =
+      event.resourceType === "Document"
+        ? session.send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: 204 })
+        : session.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
+    refused.catch(() => {});
+  });
+  await session.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
 }
 
 /** Kills the browser's whole process group, as Puppeteer itself does, and waits a bounded time for it to exit. */
@@ -435,7 +493,14 @@ export function describeExportFailure(error: unknown): string {
 
   // Written for the person already; matched by name, since `next dev` can load
   // a second copy of this module whose classes are different objects.
-  if (name === "SlideTimeoutError" || name === "ExportBrowserReplacedError" || name === "ExportSandboxError") return message;
+  if (
+    name === "SlideTimeoutError" ||
+    name === "ExportBrowserReplacedError" ||
+    name === "ExportSandboxError" ||
+    name === "SlideLeftDocumentError"
+  ) {
+    return message;
+  }
 
   // Puppeteer words a missing or damaged browser several different ways
   // depending on whether the path was configured, downloaded or corrupt. All of
@@ -454,7 +519,7 @@ export function describeExportFailure(error: unknown): string {
   if (name === "TimeoutError" || /timeout|timed out/i.test(message)) {
     return (
       "A slide took too long to render and the export timed out. " +
-      "Check that any images the slide references are reachable, then try again."
+      "Try again; if it happens again, simplify that slide."
     );
   }
 
@@ -513,6 +578,7 @@ async function withLoadedSlide<T>(
   // Build self-contained HTML
   const fullHtml = wrapSlideHtml(inlinedHtml, aspectRatio, {
     inlineFontCss: inlinedFontCss,
+    forExport: true,
   });
 
   // Fonts and images may have taken a while; a slide abandoned meanwhile never opens its page.
@@ -571,6 +637,13 @@ async function withLoadedSlide<T>(
         console.warn("[export] image decode wait failed; capturing anyway");
       });
 
+    // The page must still be the slide's own document: whatever it was led
+    // to instead is never captured. setContent() writes the slide into the new
+    // page with document.open() and document.write(), never navigating, so the
+    // slide's own document keeps the page's first URL, about:blank. Any other
+    // URL means the page was navigated, by a route the request refusal does
+    // not see.
+    if (page.url() !== "about:blank") throw new SlideLeftDocumentError();
     return await capture(page);
   })();
   // Abandoned when the deadline passes; it then fails as its page or browser closes.

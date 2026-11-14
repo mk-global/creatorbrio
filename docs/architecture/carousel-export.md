@@ -39,9 +39,24 @@ It never follows a link or leaves the real uploads folder, and the bytes must be
 Any other reference is left as it is and never read; in the export it does not load.
 
 The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined.
+It inlines every font file a stylesheet names, whatever its address looks like: Google serves some families, such as its Helvetica and Georgia substitutes, from addresses that do not end in `.woff2`, which were once left for the export browser to download.
+A cached stylesheet that still names a remote font file is fetched again and replaced.
 Each font request is abandoned when nothing arrives for 10 seconds, headers or body, rather than after a fixed total, so a large family that downloads steadily is never cut off ([#200](https://github.com/mk-global/creatorbrio/issues/200)).
 A request that stalls or cannot connect marks the font source unreachable for 60 seconds, during which every export falls back at once instead of waiting again.
 A family with any file that could not be fetched renders in the fallback font and is not cached, so the next export tries it again.
+
+An export loads nothing from the network, for the PNG and the PDF alike ([#196](https://github.com/mk-global/creatorbrio/issues/196)).
+Everything a slide shows is inlined before its page loads: uploads as above, and Google Fonts by the font inliner, so the export document carries the inlined font CSS and never a stylesheet link.
+Anything else a slide references, on the internet or on this machine, does not load, and the slide is exported without it, as a broken image or an empty frame.
+Three layers refuse it, each covering what the others cannot:
+
+- The export browser resolves no host name at all, IP addresses and `localhost` included, so it cannot open a connection.
+- The browser refuses every request any of its pages or frames makes: a navigation, such as a frame's source or a `meta` refresh, is cancelled, so a frame stays empty and the page stays on the slide; any other request fails.
+- The export document carries a Content-Security-Policy, `EXPORT_DOCUMENT_CSP` in [`src/lib/slide-html.ts`](../../src/lib/slide-html.ts), that allows only `data:` images, fonts and media and inline styles.
+  Frames are left to the browser's refusal, which leaves them empty, because a frame the policy refused would show Chromium's error page in the slide.
+
+A page that is no longer the slide's own document when it is about to be captured is never captured; the export fails with a message naming the problem.
+The preview is unchanged.
 
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
