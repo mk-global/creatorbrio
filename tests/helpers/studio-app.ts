@@ -90,6 +90,9 @@ export async function startBuiltApp(port: number, options: { chromium?: string; 
   const home = path.join(workdir, "home");
   await mkdir(home);
   const env: NodeJS.ProcessEnv = { PATH: bin, HOME: home, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", ...(options.chromium ? { PUPPETEER_EXECUTABLE_PATH: options.chromium } : {}) };
+  // The server's export browser keeps its profile in the test run's folder, so
+  // the run's census sees it and removes what the server's exit leaves (#204).
+  if (process.env.CREATORBRIO_TEST_APP_BROWSER_DIR) env.PUPPETEER_TMP_DIR = process.env.CREATORBRIO_TEST_APP_BROWSER_DIR;
   if (options.claudeStub) {
     const stub = path.join(workdir, "claude-stub");
     await writeFile(stub, '#!/bin/sh\necho "test stub: no design runs in tests" >&2\nexit 97\n');
