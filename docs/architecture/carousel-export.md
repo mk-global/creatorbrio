@@ -41,7 +41,7 @@ Any other reference is left as it is and never read; in the export it does not l
 The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined.
 Each font request is abandoned when nothing arrives for 10 seconds, headers or body, rather than after a fixed total, so a large family that downloads steadily is never cut off ([#200](https://github.com/mk-global/creatorbrio/issues/200)).
 A request that stalls or cannot connect marks the font source unreachable for 60 seconds, during which every export falls back at once instead of waiting again.
-A family with any file that could not be fetched renders in the fallback font and is not cached, so the next export tries it again; slides exported together share one download of the same family.
+A family with any file that could not be fetched renders in the fallback font and is not cached, so the next export tries it again.
 
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.

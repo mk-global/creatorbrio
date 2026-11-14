@@ -155,15 +155,6 @@ describe("font fetch limits (#200)", () => {
     expect(await cached()).toEqual(["Slow.css"]);
   });
 
-  it("shares one download between slides that need the same font at the same time", async () => {
-    const { getInlinedFontCSS } = await fonts();
-    const [a, b, c] = await Promise.all([getInlinedFontCSS(["Ok"]), getInlinedFontCSS(["Ok"]), getInlinedFontCSS(["Ok"])]);
-    expect(a).toBe(b);
-    expect(b).toBe(c);
-    expect(requests.filter((r) => r.startsWith("/css2"))).toHaveLength(1);
-    expect(requests.filter((r) => r.startsWith("/s/x/ok.woff2"))).toHaveLength(1);
-  });
-
   it("treats a font file the source refuses as an unavailable family, not a half-inlined one", async () => {
     const { getInlinedFontCSS } = await fonts();
     // The stylesheet answers, but the server has no such file.

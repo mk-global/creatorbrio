@@ -25,9 +25,6 @@ export const fontFetchLimits = {
 /** Until when font requests fall back without trying, after the font source stopped answering. */
 let unreachableUntil = 0;
 
-/** Font variants being fetched, so slides exported together share one download. */
-const inFlight = new Map<string, Promise<string | null>>();
-
 /** The font source did not answer in time, or could not be reached. */
 class FontSourceUnreachable extends Error {
   constructor() {
@@ -199,27 +196,16 @@ async function cssForVariant(
   const cached = await getCachedFont(key, instances);
   if (cached !== null) return cached;
 
-  const memoryKey = `${instances}::${key}`;
-  const pending = inFlight.get(memoryKey);
-  if (pending) return pending;
-  const fetching = (async () => {
-    try {
-      const css = await fetchAndInlineFont(family, italic, instances);
-      if (css) {
-        await cacheFont(key, instances, css);
-        return css;
-      }
-    } catch {
-      // Font not available - skip silently, system font fallback will be used
-    }
-    return null;
-  })();
-  inFlight.set(memoryKey, fetching);
   try {
-    return await fetching;
-  } finally {
-    inFlight.delete(memoryKey);
+    const css = await fetchAndInlineFont(family, italic, instances);
+    if (css) {
+      await cacheFont(key, instances, css);
+      return css;
+    }
+  } catch {
+    // Font not available - skip silently, system font fallback will be used
   }
+  return null;
 }
 
 /**
