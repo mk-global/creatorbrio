@@ -1,6 +1,12 @@
 # Independent architecture review brief
 
-**Status:** requested review, no implementation authorization. **Date:** 2026-11-17.  
+**Status:** completed record.
+This brief commissioned the independent review of the proposal merged in PR #215.
+The review was delivered on 2026-11-17 and is [preserved verbatim](reviews/2026-11-17-pr215-independent-review.md); each finding has a recorded resolution or status in the [decision register](DECISION-REGISTER.md), and some remain open.
+The brief is kept unchanged below as the record of what the reviewer was asked to do.
+
+**Original date:** 2026-11-17.
+
 **Scope:** independently challenge the [future platform RFC](ARCHITECTURE-RFC.md) and [roadmap](ROADMAP.md) against the current CreatorBrio repository. The point is to find bad assumptions, not rubber-stamp a desired result.
 
 ## Review mandate

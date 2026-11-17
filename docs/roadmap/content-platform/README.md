@@ -1,48 +1,43 @@
-# Future content operations platform
+# Content automation platform
 
-**Status:** PROPOSAL FOR INDEPENDENT REVIEW, not an approved ADR, feature commitment, or implementation authorization.  
-**Date:** 2026-11-17  
-**Tracking:** [documentation ticket #214](https://github.com/mk-global/creatorbrio/issues/214)  
-**Owner of present Video Studio roadmap:** [Video Studio roadmap](../video-studio/README.md)
+**Status:** Revision 2, reconciled under [#216](https://github.com/mk-global/creatorbrio/issues/216).
+Founder decisions FD-A to FD-E are ACCEPTED product requirements; the architecture, migration and sequence are PROPOSED until accepted in the [decision register](DECISION-REGISTER.md).
+Nothing here authorizes implementation by itself; each milestone needs its own admitted issues.
 
-## Why this exists
+**Date:** 2026-11-17.
 
-CreatorBrio could evolve from a local-first creation studio into a **self-hostable open-source social-content operations product** that accepts a creator's goal and carries a job from documented research, through explicit approvals, to asset production, publishing, and confirmed notifications. The same domain system should later support a managed multi-tenant SaaS and a native mobile client. This is an architectural exploration, not a decision to replace the current product or its roadmap.
+**Present-day authority:** the [root README](../../../README.md), the [architecture documentation](../../architecture/README.md) and the [Video Studio roadmap](../video-studio/README.md).
 
-### Proposed user outcome
+## What this is
 
-A user enters a topic, objective, audience, brand, intended format, destination accounts, desired schedule, and optional source footage. The system:
-
-1. Researches evidence, competing formats, hooks, audience context and claims, recording provenance and uncertainty. It must not claim it can guarantee virality or rights to reuse competitor footage.
-2. Produces a research report, proposed script/storyboard/creative direction, and first **human approval gate**. Revision or rejection remains possible.
-3. On approval, creates or assembles a versioned production package, including appropriate video/carousel, captions, cover art, subtitles, metadata and rights manifest. It may also refuse when capabilities or source rights are missing.
-4. Displays the exact files and copy to be published for a second **human approval gate**.
-5. Freezes a publication manifest, schedules permitted destinations, publishes only the approved version, reconciles ambiguous external outcomes, and sends durable in-app notifications plus optional email/push messages.
-6. Records publication IDs, URLs, provider results, cost, and later attributable performance, distinguishing correlation from causation.
-
-The user sees **one product and one end-to-end job**, not three separate products for research, creation and posting.
-
-## What already exists and must remain true
-
-Current-state facts are defined by [the root README](../../../README.md), [architecture overview](../../architecture/README.md), [Video Studio implementation roadmap](../video-studio/README.md), and [Video Production API](../../architecture/video-production-api.md).
-
-- CreatorBrio already supports brand-aware carousel/LinkedIn document/Reel-cover creation and exports.
-- Video Studio has a local Production API, file-backed durable production store, media registry and verified render/export paths, with scoped human/agent authority. It is still early, with real-world creative acceptance and advanced AI editing outstanding.
-- The present application is local-first, bound to loopback, uses Claude CLI for certain agent flows, and stores data primarily on the filesystem. The current local authentication scheme does **not** provide hosted multi-tenant isolation.
-- The existing Video Studio roadmap owns its accepted implementation program, contracts and release gates; this future-platform proposal does not amend, supersede or relabel any of those as complete.
-- ContentEngine is retired and **is not a dependency, integration or migration target**.
-- An external social publishing automation project may exist for the maintainers; its implementation and terms are **not verified here**. Do not assume it is product-ready, distributable, or licensed for inclusion.
+CreatorBrio is becoming one AI-powered social content automation product.
+A person gives an idea, objective, topic, source video or prompt; CreatorBrio researches it, proposes directions, hooks, scripts, covers, captions and a production plan; the person approves the research; CreatorBrio produces the content; the person approves the exact publishing package; CreatorBrio schedules or publishes it and reports the result.
+It stays local-first and open source, and later serves a hosted edition and mobile clients from the same domain and API.
 
 ## Reading order
 
-1. [Architecture RFC](ARCHITECTURE-RFC.md): target logical architecture, interfaces, isolation, deployment, failure semantics, technology candidates and decision register.
-2. [Outcome-based roadmap](ROADMAP.md): stage gates from technical proof to local OSS, SaaS and mobile.
-3. [Independent review brief](ARCHITECTURE-REVIEW.md): challenge questions, evidence requirements, review format and go/no-go criteria.
+1. [ARCHITECTURE-RFC.md](ARCHITECTURE-RFC.md): the target architecture, module boundaries, domain model, execution model, threat model, portability and commercial model.
+2. [ROADMAP.md](ROADMAP.md): the phases from today's product, and the first milestone with its acceptance criteria.
+3. [SOCIAL-AUTOMATION-MIGRATION.md](SOCIAL-AUTOMATION-MIGRATION.md): how the existing publisher moves into this repository without a second domain, approval system or scheduler.
+4. [DECISION-REGISTER.md](DECISION-REGISTER.md): every decision with its status, including the resolution or status of each finding of the independent review (some remain open), and the questions only the founder can answer.
+5. [OSS-RESEARCH.md](OSS-RESEARCH.md): the open-source and platform research behind each technology decision.
+6. Reviews:
+   - [2026-11-17 independent review of PR #215](reviews/2026-11-17-pr215-independent-review.md), preserved verbatim;
+   - [2026-11-17 adversarial self-review of this revision](reviews/2026-11-17-reconciliation-self-review.md).
+7. [ARCHITECTURE-REVIEW.md](ARCHITECTURE-REVIEW.md): the brief that commissioned the independent review, kept as a record.
+
+## What changed from the proposal merged in #215
+
+- The product boundary is decided by the founder: one product, one repository (FD-A, FD-B).
+- The duplicate domain entities are gone; carousels and Production v2 stay authoritative, with one shared research and approval contract.
+- The Social Automation publisher, assessed read-only, supplies the publishing domain: its fingerprinted package is the frozen publication manifest and its runner is the one publication scheduler.
+- The workflow engine, PostgreSQL, tenancy, outbox and mobile client move to the stages that need them; the local product uses domain state and durable jobs.
+- Agent containment is the first milestone, because a process running as the person's operating-system user, today's Design Agent with its shell included, can read every local secret (see the [Production API documentation](../../architecture/video-production-api.md#what-this-does-and-does-not-protect-against)), and it is a precondition for integrating publishing.
+- Self-hosted publishing is bring-your-own-app by founder decision (FD-D), replacing the review's open question on publishing distribution.
 
 ## Authority and change control
 
-- **Present facts**: merged code and existing architecture/Video Studio documentation win over this proposal.
-- **Future platform choices**: this RFC proposes options and criteria; it is not an accepted ADR and does not authorize code changes.
-- **Unresolved conflicts**: maintain the present contract until a separately reviewed ADR and migration plan resolve them. Do not silently change the current file store, agent tooling, export or editor contracts.
-- **Delivery**: future implementation requires open issues and normal independent review, per [maintaining guide](../../MAINTAINING.md).
-- **Licensing**: preserve the current MIT license and provenance; review dependencies, provider terms, asset rights and distribution model before promising any hosted or plug-in functionality.
+- Present facts: merged code and the architecture documentation win over these documents.
+- Accepted Video Studio decisions are not amended here; the [RFC](ARCHITECTURE-RFC.md#13-required-amendments-to-accepted-documents-each-its-own-governed-change) lists the amendments that need their own governed change.
+- Licensing: CreatorBrio stays MIT with its provenance; imported code needs its author's licence decision first.
+- ContentEngine is retired and is not a dependency or migration source.
