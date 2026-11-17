@@ -27,6 +27,7 @@ Re-check notes:
   - GPL and LGPL builds (for example FFmpeg and Piper) are allowed only as optional external tools, as separate, user-installed processes, never linked or shipped in the repository;
   - the one pre-existing case is sharp's dynamically linked LGPL libvips, which stays pending the `spec/08` clarification in the [RFC](ARCHITECTURE-RFC.md#13-required-amendments-to-accepted-documents-each-its-own-governed-change), and no new LGPL library is adopted;
   - AGPL code, GPL application code, source-available or field-restricted components and non-commercial code are excluded from the product: reference only, no code copied;
+  - GPL tools a user installs themselves (FFmpeg, Piper, ComfyUI) differ from AGPL services (SearXNG, Garage): the excluded "GPL application code" means copying GPL code into the product, which calling a separate user-installed tool never does, while the conservative policy follows `spec/08`'s exclusion of AGPL, and a user-supplied service keeps CreatorBrio from distributing or operating (and possibly modifying) AGPL software in its hosted edition, where the network-use clause would apply to that service, so such a service stays user-supplied only;
   - non-commercial weights are never defaults.
 - Nothing was installed, cloned into the repository or copied.
 
@@ -123,7 +124,7 @@ Engine wait primitives each weaken an approval: one drops a signal sent before i
 | FFmpeg | LGPL core, GPL with `--enable-gpl` | INTEGRATE as a user-installed process (unchanged) |
 | FLUX.2 [klein] 4B with mflux | Apache-2.0 weights; MIT runner | ADOPT as the image service's reference model |
 | Z-Image, Qwen-Image, diffusers | Apache-2.0 | INTEGRATE (optional, Linux runner) |
-| ComfyUI | GPL-3.0 | INTEGRATE as an optional user-run backend over HTTP |
+| ComfyUI | GPL-3.0 | INTEGRATE as an optional user-installed external tool over HTTP (`spec/08`'s separate-process class, like FFmpeg and Piper); no ComfyUI code is copied |
 | VEED OpenEdit | Apache-2.0 with NOTICE | STUDY |
 | HyperFrames | Apache-2.0, requires GSAP | REJECT as a dependency (Video Studio G1) |
 | Remotion | Source-available | REJECT |

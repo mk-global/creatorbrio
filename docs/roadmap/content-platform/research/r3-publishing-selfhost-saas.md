@@ -99,7 +99,7 @@ Limitations:
 
 **Instagram.**
 - Images must be JPEG, at most 8 MB, aspect 4:5 to 1.91:1, width 320 to 1440 px, sRGB [F] (<https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/media>).
-  CreatorBrio exports PNG through Puppeteer today, so the publisher must transcode each slide to sRGB JPEG and verify size; 1080 x 1350 (4:5) is within limits.
+  CreatorBrio exports PNG through Puppeteer today, so CreatorBrio converts each slide to sRGB JPEG and verifies the size before staging, and the person approves the converted bytes; 1080 x 1350 (4:5) is within limits.
 - Carousels hold up to 20 images or videos, all cropped to the first item's ratio; captions cannot be set on children [F].
 - The publishing quota is contradictory in Meta's own pages: the guide still says 100 posts per 24 h, while the `media_publish` and `content_publishing_limit` references say 50 ("currently 50") [F].
   Read `config.quota_total` at runtime instead of hard-coding either number.

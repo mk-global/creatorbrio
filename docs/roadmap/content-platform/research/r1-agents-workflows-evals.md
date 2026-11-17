@@ -172,7 +172,8 @@ Inputs refreshed rather than repeated: section 7, section 12 and finding P1-1 of
 - Maintenance: `@mastra/core` 1.83.0 published 2026-11-12; weekly minor releases; last commit 2026-11-17; about 29.6k stars [F].
 - Licence: root LICENSE.md says content under any directory named `ee/` is under `ee/LICENSE`, and everything else is Apache-2.0 [F].
 - `ee/LICENSE` is the "MASTRA ENTERPRISE EDITION LICENSE Version 2.0, Effective September 22nd, 2026" and states, in its preamble (quoted as one passage): "Enterprise Features are made available in source-available form.
-  They are not open source. ... it does not permit Production Use, and it does not permit redistribution." [F]
+  They are not open source.
+  ... it does not permit Production Use, and it does not permit redistribution." [F]
 - Licence surprise: npm declares `@mastra/core` 1.83.0 as Apache-2.0 [F], yet the published tarball contains `dist/auth/ee/*`, `dist/agent-builder/ee/*` and a shared chunk `dist/ee-iTj2bRDt-By_B9ngH.js` [F] (unpkg file listing).
 - That chunk's embedded source path is `../_internals/auth/dist/capabilities-*.js`, and in the source tree `capabilities.ts` exists only under `packages/_internals/auth/src/ee/` [F]; it contains the EE licence client, FGA permission helpers and an EE telemetry bridge [F].
 - Non-EE chunks import it with top-level static `import` statements, for example `import { i as MastraFGAPermissions } from "./ee-iTj2bRDt-By_B9ngH.js";` in `utils-*.js` and a similar line in `evented-execution-*.js` (workflows); `channels-*.js` and `agent-controller-*.js` also reference it [F].

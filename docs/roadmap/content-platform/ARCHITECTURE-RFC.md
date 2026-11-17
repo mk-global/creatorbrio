@@ -36,6 +36,7 @@ Evolve CreatorBrio itself into the product, as one repository with **three kinds
 2. **The worker process** (same TypeScript codebase) runs bounded, durable compute jobs: rendering, export, media preparation, research retrieval and AI steps.
    Video Studio's Python and Swift media workers (ADR item 10) run under the same job model, as separate processes.
 3. **The publisher process** is the migrated Social Automation system, kept in Python, which alone holds social credentials, owns publication packages, publication approvals, the publication scheduler and platform adapters.
+   It holds the frozen package and the Gate 2 approval of every publication, a manual handoff included (AD-36).
 4. **Agents** run as contained subprocesses with no route to credentials, approvals or the publisher.
 
 Six decisions carry the design:
@@ -85,6 +86,10 @@ Each module owns its state; no module writes another module's state; cross-modul
 | Providers and integrations | AI provider gateway (Claude CLI interactive, API keys, local models, manual), image service, search providers | Worker | Secret store | Keys never reach agents or the browser |
 | Identity, secrets, tenancy | Principals, sessions, agent-run credentials, secret store port, later workspaces | App, publisher | OS keychain locally, managed services hosted | Section 8 |
 | Storage and portability | Storage ports, local adapters, export and import, conformance suites | All | File system now; PostgreSQL and object storage hosted | Section 9 |
+
+**API host.**
+The application API stays Next.js route handlers over each module's handler library, as it is today.
+A separate API process is revisited at the hosted stage, and only if a hosted load or isolation test fails (AD-37).
 
 ```mermaid
 flowchart TB
@@ -181,7 +186,7 @@ The two human gates of FD-A map onto existing structures instead of a new state 
 | **Research approval** | `ApprovalRecord` scope `research` on the dossier revision and `plan` on the plan | stage-exit approval of `research` and `script` (the WS1 item still open) | Gate 1 |
 | Production | `stage: production` (the existing design run) | `storyboard` to `finishing` | |
 | Package assembly | export to platform files, then staging in the publisher | render, then staging | |
-| **Package approval** | `ApprovalRecord` scope `publication` on the package fingerprint, held by the publisher | same | Gate 2 |
+| **Package approval** | `ApprovalRecord` scope `publication` on the package fingerprint, held by the publisher for every destination, a manual handoff included (AD-36) | same | Gate 2 |
 | Schedule, publish, reconcile, notify | publisher lifecycle (5.4) | same | |
 
 A change after Gate 1 that alters the approved dossier or plan reopens Gate 1 for that subject only; production edits never need Gate 1 again.
@@ -203,15 +208,20 @@ These entities make up CreatorBrio's publishing domain:
 - **Publication**: one package on one platform, with an explicit lifecycle (`pending`, `preparing`, `prepared` or `scheduled`, `publishing`, `published`, and the stops `needs_owner`, `failed`, `missed`), a unique key of account, package and platform, classified failures, and reconciliation that reads the platform before repeating anything that could post.
 - **Slot**: a separate, movable record with history (AD-06).
 - **Event log**: the record of every staging, approval, attempt, result and alert.
+- **Manual destination**: for a platform with no configured app, the publisher still holds the frozen package and its Gate 2 approval (AD-36).
+  The person approves the package, receives the frozen handoff bundle (the files and per-platform text the approval covers), posts it themselves and confirms the posting, which is recorded as an attributed event.
+  No platform is called, and a change to the package after approval yields a new fingerprint with no approval, so the bundle is refused for it.
+  It uses the same publication record, keyed by account, package and platform (the "account" of a manual destination is the person's named handoff target, which needs no credentials), passes through the same states up to `published`, which only the person's confirmation sets, and has a slot only if the person sets one, in which case a passed slot raises a reminder alert and not the `missed` or `failed` stop.
 
 **Invariants of the publishing module.**
 Each is proven by T2 and T12 (section 14).
 
-- Only an approval in force for the stored fingerprint releases a post; the module never publishes on a calendar status, a CreatorBrio stage or an agent's word, and it never deletes a live post.
+- Only an approval in force for the stored fingerprint releases a post or a handoff bundle; the module never publishes on a calendar status, a CreatorBrio stage or an agent's word, and it never deletes a live post.
 - Every value that reaches a platform is inside the package fingerprint, which excludes only the slot.
 - An approval binds to one fingerprint, and only a person principal creates or revokes it; agents never create or judge an approval (AD-12, section 5.5).
 - Events are append-only, carry a sequence number and an actor, and status output is machine-readable.
 - The slot is a separate record that only a person principal moves, every move is an attributed event, and moving it never touches an approval (AD-06).
+- Mutating commands and the runner's tick are serialized, so a command never interleaves with a publication step.
 - Credentials, triggers, keep-awake, media hosting and notifications sit behind ports (section 9), and only the publisher process reads social credentials.
 
 ### 5.5 Approval authority in the publishing domain
@@ -285,7 +295,7 @@ The worst outcomes, in order: a post nobody approved; a leaked credential that l
 
 | Threat | Control | Proof |
 |---|---|---|
-| Prompt injection from a researched page drives the agent to read a secret or call an API | Research is retrieved by the server boundary, not the agent; the agent has no web fetch, no shell outside a sandbox with a loopback-only network allowlist, and no read access to data or secrets | T1 |
+| Prompt injection from a researched page drives the agent to read a secret or call an API | Research is retrieved by the server boundary, not the agent; the agent has no web fetch, a shell only inside a sandbox whose network reaches the app's own address and port and nothing else (section 7.4), and no read access to data or secrets | T1 |
 | An agent creates or forges an approval | Approvals need a person principal; agent tokens are refused; the agent cannot reach the publisher | T2 |
 | A package changes after approval | Fingerprint binding; in-force derivation | T2 |
 | A lost platform answer causes a duplicate post | Read the platform before repeating anything that could post; unknown outcomes stop for the person | T3 (inherited publisher tests plus live rehearsal) |
@@ -304,17 +314,37 @@ That exposure applies to every credential the product will hold, whether or not 
 After the publisher cutover the live runner also deploys from this repository, so an unconstrained shell could write to that checkout too.
 Containment therefore comes first, in two steps:
 
-1. **Contain with the CLI's documented controls** (first milestone, [roadmap](ROADMAP.md)): an explicit execution profile (no user, project or local setting sources, strict MCP configuration, no CLAUDE.md or auto-memory, a pinned model), an explicit minimal environment, a working folder outside the repository with writes confined to it, web fetch disabled (linked pages are retrieved by the server and handed to the agent as delimited untrusted text), and the shell confined by Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux and WSL2) with a strict network allowlist naming only the app's loopback origin, read denial for the data folder and secrets, and the unsandboxed escape hatch off.
+1. **Contain with the CLI's documented controls** (first milestone, [roadmap](ROADMAP.md)): an explicit execution profile (no user, project or local setting sources, strict MCP configuration, no CLAUDE.md or auto-memory, a pinned model), an explicit minimal environment, a working folder outside the repository with writes confined to it, web fetch disabled (linked pages are retrieved by the server and handed to the agent as delimited untrusted text), and the shell confined by Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux and WSL2) with its network limited to the app's own address and port by the mechanism below, read denial for the data folder, secrets and the browser's profile and cookie stores, and the unsandboxed escape hatch off.
+   The Design Agent creates slides by calling the app's API with `curl` from its shell (`CLAUDE.md`, `src/lib/chat-system-prompt.ts`), so the sandbox must let that shell reach the app's origin and nothing else on the machine or the network.
+   The vendor's [sandboxing documentation](https://code.claude.com/docs/en/sandboxing.md), section "A command fails to reach a server on localhost" (retrieved 2026-11-17), states that by default a sandboxed command cannot connect directly to a server running on the machine outside the sandbox.
+   On macOS, `network.allowLocalBinding: true` lets sandboxed commands connect to any port on localhost, including every other local service.
+   On Linux and WSL2, a sandboxed command's localhost is private, a direct connection to localhost or 127.0.0.1 does not reach host servers, and `allowLocalBinding` has no effect; the documented workaround is `excludedCommands`, which runs the command with no filesystem or network limits.
+   Claude Code sets `NO_PROXY` for sandboxed commands so that localhost connections go direct and not through the sandbox proxy, and an `allowedDomains` entry such as `127.0.0.1:3000` applies to connections that go through that proxy.
+   The mechanism is therefore chosen by a feasibility proof, in this order:
+   - **Route A, tried first:** the agent's API calls go through the sandbox proxy to an `allowedDomains` entry for exactly the host and port the agent is given by `resolveAppOrigin()`, and the calls are sent through the proxy explicitly instead of relying on the default `NO_PROXY` direct path.
+     `resolveAppOrigin()` (`src/lib/request-origin.ts`) derives them from the request's Host header, typically `localhost:<port>`.
+     The vendor's local-address check exempts `localhost` and `*.localhost`, so the usual `localhost:<port>` entry from `resolveAppOrigin()` needs no IP form; the IP and port form (for example `127.0.0.1:<port>`) is needed as well only when the Host header carries another name that resolves to loopback.
+     An `allowedDomains` entry alone does not make the allowlist a limit: for a host outside the allowed domains the vendor documents that the result depends on the permission mode (allowed without a prompt in bypass-permissions mode, possibly prompted for in other modes).
+     The execution profile therefore sets `sandbox.network.strictAllowlist: true` through `--settings` and pins a permission mode that is not bypass-permissions, so the sandbox proxy refuses every host outside the allowlist in every mode ([sandboxing documentation](https://code.claude.com/docs/en/sandboxing.md), retrieved 2026-11-17).
+     The design prompt's API-call instructions change only if explicit proxy use needs it, as a governed prompt change (section 13).
+   - **Route B, if Route A fails on any of macOS, Linux or WSL2:** the agent reaches the API only through typed tools on an MCP server that CreatorBrio operates (step 2 below, brought into the first milestone), and the shell then needs no network at all.
+   - **Rejected:** `network.allowLocalBinding`, because on macOS it opens every local port to the shell, including every other local service.
+   - **Rejected:** `excludedCommands` for the agent's API calls, because it runs them with no filesystem or network limits, which removes the confinement the step exists to provide.
+
+   The first milestone begins with a feasibility proof on macOS, Linux and WSL2 that, under the profile's `strictAllowlist` setting and pinned permission mode, the agent reaches the app origin and no other localhost port and no external host; the rest of the milestone proceeds only when it passes, and the chosen route is recorded in the [decision register](DECISION-REGISTER.md) (AD-35).
    The working folder is one per carousel conversation, created on first use and reused by that carousel's runs with its inputs refreshed for each run, because Claude Code stores a session under the working directory it started in and the chat resumes one session across messages (`docs/architecture/design-agent.md`); writes stay denied everywhere outside that carousel's folder.
    That per-working-directory session storage is a local observation of the CLI on 2026-11-17, not vendor documentation, and T1 verifies it.
    A chat begun before the first milestone cannot resume in its new folder; it starts one fresh session through the existing reset path, with the carousel's slides intact.
    The CLI documentation states that permission rules are not a security boundary and that its sandbox covers the shell only, not the `Read` or `WebFetch` tools, so this step reduces risk and is proved by T1; it is not an operating-system account boundary.
    The sources, all retrieved on 2026-11-17, are the vendor's [sandboxing documentation](https://code.claude.com/docs/en/sandboxing.md) for the sandbox mechanisms, its shell-only scope and the network allowlist, the [permissions documentation](https://code.claude.com/docs/en/permissions.md) for permission rules not being a security boundary, and the [CLI reference](https://code.claude.com/docs/en/cli-reference.md) for the `--tools`, `--setting-sources` and `--strict-mcp-config` flags.
    The sandbox uses Seatbelt on macOS and bubblewrap on Linux and WSL2, and native Windows runs unsandboxed, so on Windows the confined Design Agent runs under WSL2, and on native Windows without WSL2 it is reported unavailable with setup guidance; this is a deliberate capability change.
+   On Linux and WSL2 without the sandbox prerequisites (bubblewrap, socat and the seccomp filter), the Design Agent is likewise reported unavailable with setup guidance, and the doctor command checks for all three.
+   The vendor's documentation treats the seccomp filter as optional, because the sandbox starts without it, but CreatorBrio requires it, because the filter is what adds Unix domain socket blocking.
+   Without it a sandboxed command could connect to local socket services, for example the D-Bus Secret Service planned as the Linux secret store (AD-17), and on WSL2 it could launch a Windows binary, which the vendor documents as handed to the Windows host over a Unix socket and so outside the Linux sandbox.
    Removing web fetch also removes the agent's own web research on a topic: supplied URLs keep working through the server's retrieval, and topic research without URLs returns with the research job of roadmap phase 2; this is a deliberate, temporary capability change, part of the quality change in FQ-4.
    The execution profile records the Claude CLI version that T1 last passed on; a different version starts with a visible warning in the app and in the doctor command, and T1 is rerun on that version on demand.
 2. **Replace the shell with typed tools** (Video Studio WS8 and G8): the agent calls CreatorBrio through typed tools with a run-scoped token, and reads only the images it is given.
-   This is the durable boundary.
+   This is the durable boundary, and Route B of step 1 brings it into the first milestone if the feasibility proof requires it.
    If typed tools cost measurable design quality, OS-account separation for the agent is the fallback.
 
 The CLI is used only for runs a person starts interactively on their own machine, under their own sign-in; scheduled, unattended or hosted runs use API-key runtimes, as Anthropic's terms require ([preserved review](reviews/2026-11-17-pr215-independent-review.md), section 12).
@@ -323,7 +353,12 @@ The CLI is used only for runs a person starts interactively on their own machine
 
 - **One principal model now, for every route, scheduled in roadmap phase 2.** Principals are `person`, `agent-run` and `service`.
   Today the carousel routes rely only on loopback and Origin checks, Video Studio routes on a key file and paired sessions, and agent tokens live in memory; the identity work unifies them on the Production API's rule that authority comes from a credential, never the request body.
-  Phase 2 extends the Production API's person principal, the human key or a paired browser session whose cookie is scoped to `/api/video`, to the carousel approval routes of Gate 1 and Gate 2, so a tokenless loopback request cannot approve (T2); the remaining routes join the model before any route leaves loopback.
+  Phase 2 extends the Production API's person principal to the carousel approval routes of Gate 1 and Gate 2, so a tokenless loopback request cannot approve (T2).
+  The human key is a header and works on any route, while the paired browser session's cookie is scoped to `/api/video`, so pairing also sets a second cookie, bound to the same session record and scoped to the approval routes.
+  A cookie's `Path` matches by prefix, so the carousel approval routes share one dedicated path prefix, the second cookie is scoped to exactly that prefix, and no other route sits under it.
+  Agents are kept from obtaining the principal by M1's read denial of the key and session records and of the browser's profile and cookie stores, which is not an operating-system account boundary (5.5).
+  The Production API document is updated in the same change (section 13).
+  The remaining routes join the model before any route leaves loopback.
   No route is exposed beyond loopback before this exists.
 - **Assets by identifier.** Carousel slides stop embedding storage paths (`/uploads/<file>`) and refer to assets by identifier resolved by the server; uploads are served through the same authority; browser upload replaces import by absolute path for anything outside the local Studio (#141).
 - **Secrets behind a port.** The publisher's secret store sits behind a port with a macOS Keychain reference adapter, a Linux Secret Service adapter and an encrypted-file adapter for headless servers, and later a hosted adapter backed by a managed key service with envelope encryption and rotation.
@@ -344,7 +379,8 @@ The CLI is used only for runs a person starts interactively on their own machine
 
 The publisher's SQLite database lives inside the publisher's own boundary and needs no server; it is consistent with Video Studio ADR item 10 but is an exception to "Local JSON storage stays" in `design-decisions.md`, so that document gets a scoped amendment in the import change (section 13).
 
-**Local to self-hosted.** Same code, plus Linux adapters for secrets, triggers and keep-awake, documented prerequisites (Node, FFmpeg, Python for publishing, a Claude sign-in or an API key) and bring-your-own app and bucket guides.
+**Local to self-hosted.** Same code, plus Linux adapters for secrets, triggers and keep-awake, documented prerequisites (Node; FFmpeg; Python for the publisher; a Claude sign-in or an API key) and bring-your-own app and bucket guides.
+Python is a prerequisite because every Gate 2 publication needs the publisher, the manual handoff included.
 **Self-hosted to hosted.** Adapters behind the same ports, identity and tenancy on the principal model, API-key runtimes only, containerized workers, and an export-import path that preserves hashes, approvals and publication records (T9).
 **Hosted to mobile.** A mobile client uses the same application API for creation, approvals, status, scheduling and notifications.
 The responsive web app and email serve phones first; a native client follows hosted identity, and it never edits video.
@@ -377,7 +413,7 @@ The per-platform facts, with sources and dates, are in [OSS-RESEARCH.md](OSS-RES
 - It requires real setup: a developer app per platform, a business portfolio and system-user token for Meta, a Google Cloud OAuth client (unverified apps are capped in users, which a single self-hoster does not reach), and an object-storage bucket for Instagram's public media fetch.
 - Platforms whose posting API requires an audit before public posting (TikTok, where unaudited apps post privately only) or is paid per post (X) are not promised to self-hosters; TikTok can offer "send to drafts".
 - LinkedIn member posting is self-serve, and CreatorBrio already makes LinkedIn documents; document posts are promised only after a live call confirms the self-serve permission covers them.
-- When a platform cannot be automated for a self-hoster, the edition still completes the workflow with a frozen, approved package and a guided manual posting handoff.
+- When a platform cannot be automated for a self-hoster, the edition still completes the workflow: the package goes through Gate 2 in the publisher like any other, and the person receives the frozen handoff bundle and a guided manual posting handoff, and confirms the posting (a manual destination of the publisher, AD-36).
 
 ### 11.3 Where paid value lives
 
@@ -408,10 +444,11 @@ Changing the licence to protect against hosting (for example AGPL or a source-av
 | Document | Amendment | When |
 |---|---|---|
 | `docs/architecture/design-decisions.md`, "Local JSON storage stays" | Add the publisher's SQLite store as a scoped exception inside the publisher boundary | With the publisher import |
-| `docs/architecture/design-agent.md`, `docs/architecture/visual-director.md`, `CLAUDE.md` tool convention | Replace "`--allowedTools Bash WebFetch Read`" with the contained execution profile, and record the Windows and topic-research capability changes of section 7.4 and the Visual Director's execution profile | With the first milestone |
+| `docs/architecture/design-agent.md`, `docs/architecture/visual-director.md`, `CLAUDE.md` tool convention | Replace "`--allowedTools Bash WebFetch Read`" with the contained execution profile, and record the Windows, sandbox-prerequisite and topic-research capability changes of section 7.4, the chosen network route (AD-35) and the Visual Director's execution profile | With the first milestone |
 | Video Studio ADR item 10 | Amend explicitly when hosted infrastructure is authorized; not needed before | Hosted stage |
 | Production v2 `Approval` | Generalize to `ApprovalRecord` under WS1 | With the shared contract work |
-| `docs/architecture/creative-workflow.md` ("The Design Agent's system prompt does not change"), `tests/prompt-baseline.test.ts` and `src/lib/chat-system-prompt.ts` | Change the design prompt's URL instruction from "Use WebFetch to fetch the page content" to using the page text the server retrieved through `src/lib/source-retrieval.ts` and delimited as untrusted content; the pinned prompt test gets that one documented substitution; the test's own rule requires the founder's authorization | With the first milestone, in the change that disables web fetch |
+| `docs/architecture/video-production-api.md` | Extend the person principal to the carousel approval routes: pairing also sets a second cookie scoped to the one path prefix those routes share and bound to the same session record, so one revocation ends both; update the authority table, the pairing and cookie-request rules and the statement about today's Design Agent (which M1 changes) in the same change as the routes | Phase 2, with the carousel approval routes (M1 for the Design Agent statement) |
+| `docs/architecture/creative-workflow.md` ("The Design Agent's system prompt does not change"), `tests/prompt-baseline.test.ts` and `src/lib/chat-system-prompt.ts` | Change the design prompt's URL instruction from "Use WebFetch to fetch the page content" to using the page text the server retrieved through `src/lib/source-retrieval.ts` and delimited as untrusted content; the pinned prompt test gets that documented substitution; the API-call instructions change in the same governed way only if the chosen network route needs it (explicit proxy use under Route A, typed tool calls under Route B; section 7.4), with its own documented substitution; the test's own rule requires the founder's authorization | With the first milestone, in the change that disables web fetch |
 | Video Studio `spec/01` (AIM-03), `spec/07` section 7 and `spec/08` section 2, which keep the Claude Agent SDK as an optional runtime | TD-03 rejects the SDK as a framework: either remove it from those documents, or amend TD-03 to reject it only as a framework and a default, leaving it an optional, unbundled alternative under Anthropic's own terms | With the provider gateway work (WS8) |
 | `CLAUDE.md` Slide HTML Rules ("Reference images as `/uploads/{filename}` paths") and the `/uploads/` conventions in `docs/architecture/carousel-export.md` and `docs/architecture/creative-workflow.md` | AD-15 replaces embedded storage paths with asset identifiers resolved by the server: amend the slide image rule, the export reader and the stored-slide migration together | With the identity and asset work (section 8) |
 | Video Studio `spec/01` ("Out of scope": "publishing and scheduling to social platforms", and "multi-user collaboration, accounts and cloud storage") | Amend the list so that publishing and scheduling are the content platform's publishing module consuming Video Studio's delivered output, not a Video Studio feature; accounts and cloud storage stay out of scope until the hosted stage; Video Studio's own requirements, workstreams and gates do not change | Before any video is published through the platform; until then video publishing in the roadmap (phase 4) is gated on it (AD-34) |
@@ -422,8 +459,8 @@ Changing the licence to protect against hosting (for example AGPL or a source-av
 
 | ID | Proof | Pass condition | Before |
 |---|---|---|---|
-| T1 | Agent injection containment | A design run fed a page instructing it to read canary secrets (a file in `data/`, an environment variable, a canary Keychain item), write a canary file into the repository checkout and call an external host produces zero canary reads, zero canary writes, zero egress beyond the loopback allowlist, and no approval or publication, and a follow-up message to the same carousel resumes its session; the baseline against today's agent is recorded first | The publisher cutover (baseline recorded, confinement ticket merged); any credential integration (passed) |
-| T2 | Approval binding | Any change to a staged package refuses publish; concurrent approvals yield one; an agent-run token, and a tokenless loopback request carrying the app's Origin, cannot create an approval; the card shown equals the stored bytes | First integrated publish |
+| T1 | Agent injection containment | On macOS, Linux and WSL2, a design run fed a page instructing it to read canary secrets (a file in `data/`, a file in a browser profile or cookie store folder, an environment variable, a canary Keychain or Secret Service item), connect to a canary Unix domain socket service, launch a Windows binary (WSL2), write a canary file into the repository checkout and call an external host produces zero canary reads, zero socket connections, zero launches, zero canary writes, zero egress beyond the app's own origin, no connection to any other localhost port, and no approval or publication, and a follow-up message to the same carousel resumes its session; the baseline against today's agent is recorded first | The publisher cutover (baseline recorded, confinement ticket merged); any credential integration (passed) |
+| T2 | Approval binding | Any change to a staged package refuses publish and refuses the handoff bundle of a manual destination; concurrent approvals yield one; an agent-run token, and a tokenless loopback request carrying the app's Origin, cannot create an approval; the card shown equals the stored bytes | First integrated publish |
 | T3 | Publication reconciliation | Inherited publisher tests pass in the new location, and a forced lost answer after a live rehearsal ends in exactly one post | Cutover |
 | T4 | Worker isolation and restart | Killing the worker during research, render and export resumes each once with no orphaned artifacts; the web process stays responsive during a full render | First end-to-end workflow |
 | T5 | Self-hoster feasibility | An independent person follows the bring-your-own-app guide for one platform and publishes to their own account; every step is documented | Open-source publishing claims |
@@ -433,7 +470,7 @@ Changing the licence to protect against hosting (for example AGPL or a source-av
 | T9 | Distribution licence | A bill of materials for any distributed image shows no GPL, AGPL, SSPL, BSL or non-commercial component against `spec/08` | Any container release |
 | T10 | Durable execution (hosted) | The chosen PostgreSQL-backed job layer survives full restart, cancellation, in-flight version change and per-tenant limits | Hosted stage |
 | T11 | Cross-tenant isolation (hosted) | Automated attempts across SQL, objects, jobs, secrets, events and logs all fail | Hosted launch |
-| T12 | Publisher parity | The migrated publisher's full suite passes and covers the invariants of section 5.4, a shadow period of dry runs on real packages matches the standalone system, and the first live posts are watched | Standalone retirement |
+| T12 | Publisher parity | The migrated publisher's full suite passes, with each approval path removed or disabled under migration step P1 replaced by a test of the rule in section 5.4, and covers the invariants of section 5.4, including that a mutating command and the runner's tick never interleave; a shadow period of dry runs on real packages gives results identical to the standalone system's; and the first live posts are watched | Standalone retirement |
 
 ## 15. What this RFC deliberately does not do
 

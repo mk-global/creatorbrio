@@ -22,7 +22,8 @@ It also records the departure from the assessment's recommendation, and FQ-9 ask
 
 **1.2 A subprocess command line as the integration interface.**
 Parsing command output is brittle, spawning a process per call adds latency, and calls made while the runner is mid-tick must not race it.
-**Changed:** the migration plan adds contract tests that pin the machine-readable outputs CreatorBrio depends on (section 10).
+**Changed:** RFC 5.4 now lists, among the invariants of the publishing module, that mutating commands and the runner's tick are serialized, so a command never interleaves with a publication step, and T12 proves it.
+The migration plan also adds contract tests that pin the machine-readable outputs CreatorBrio depends on (section 10).
 
 **1.3 The shared contract module could be premature.**
 WS9 has not started research for video, so lifting types now could freeze a shape before its first real use.
@@ -54,9 +55,14 @@ The unified product's rule is that no agent creates or judges an approval, and o
 - **Claude Code's sandbox contains the agent well enough.**
   The vendor states that permission rules are not a security boundary ([permissions documentation](https://code.claude.com/docs/en/permissions.md), retrieved 2026-11-17) and that the sandbox covers the shell but not the `Read` or `WebFetch` tools ([sandboxing documentation](https://code.claude.com/docs/en/sandboxing.md), retrieved 2026-11-17).
   Whether the web fetch switch depends on the CLI version, and whether local IPC (for example to the keychain service) escapes network and file rules, are risks that T1 tests with canaries; they are not taken from vendor documentation.
-  **Changed:** the roadmap now makes T1 the gate for any credential integration (phase 4), with canaries for the `Read` tool and the keychain; if step 1 cannot pass T1, typed tools (step 2) become a prerequisite for phase 4 rather than a follow-up.
+  **Changed:** the roadmap now makes T1 the gate for any credential integration (phase 4), with canaries for the `Read` tool, the keychain, the browser profile and cookie stores, a Unix domain socket connection and, on WSL2, a Windows binary launch (RFC T1); if step 1 cannot pass T1, typed tools (step 2) become a prerequisite for phase 4 rather than a follow-up.
   The execution profile records the CLI version T1 last passed on; a different version starts with a visible warning in the app and in the doctor command, and T1 is rerun on that version on demand.
   The sandbox does not run on native Windows, so there the Design Agent runs under WSL2 or is reported unavailable with setup guidance, a deliberate capability change listed in M1's risks.
+  On Linux and WSL2 without the sandbox prerequisites (bubblewrap, socat and the seccomp filter) it is likewise reported unavailable with setup guidance, and the doctor command checks for all three.
+  The agent's own API calls are a further unproven point: the Design Agent creates slides by calling the app's API from its shell, and the vendor documents that a sandboxed command cannot connect directly to a server outside the sandbox by default, that `network.allowLocalBinding` opens every local port on macOS and has no effect on Linux and WSL2, and that `excludedCommands` runs a command with no filesystem or network limits ([sandboxing documentation](https://code.claude.com/docs/en/sandboxing.md), section "A command fails to reach a server on localhost", retrieved 2026-11-17).
+  Whether the sandbox proxy with an `allowedDomains` entry for the app's address and port reaches the app and nothing else on macOS, Linux and WSL2 is therefore unproven.
+  **Changed:** the first milestone begins with a feasibility proof, on macOS, Linux and WSL2, of Route A (calls through the sandbox proxy to that one `allowedDomains` entry, with `sandbox.network.strictAllowlist` set and a pinned permission mode that is not bypass-permissions, so the proxy refuses every other host in every mode), and falls back to Route B (typed tools on an MCP server that CreatorBrio operates, so the shell needs no network) if the proof fails on any of them.
+  `allowLocalBinding` and `excludedCommands` are rejected, and the chosen route is recorded as AD-35 (RFC 7.4).
 - **Session continuity under confinement.**
   A fresh working folder for every run would break `--resume`, because Claude Code stores a session under the working directory it started in, while the chat is one continuing conversation (`docs/architecture/design-agent.md`).
   That per-working-directory storage is a local observation of the CLI on 2026-11-17, not vendor documentation, and T1 verifies it.

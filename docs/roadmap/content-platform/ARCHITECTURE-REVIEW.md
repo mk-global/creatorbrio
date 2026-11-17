@@ -3,6 +3,8 @@
 **Status:** completed record.
 This brief commissioned the independent review of the proposal merged in PR #215.
 The review was delivered on 2026-11-17 and is [preserved verbatim](reviews/2026-11-17-pr215-independent-review.md); each finding has a recorded resolution or status in the [decision register](DECISION-REGISTER.md), and some remain open.
+The review's overall verdict was "APPROVE WITH REQUIRED CHANGES" for the architectural direction and "REJECT" for readiness to implement the documents as written.
+The documents it reviewed, as they were at the #215 merge, are at [`20542ee` on GitHub](https://github.com/mk-global/creatorbrio/tree/20542ee0c513090db4de6614672bbe271ac28a85/docs/roadmap/content-platform); the relative links in the brief below now open revision 2.
 The brief is kept unchanged below as the record of what the reviewer was asked to do.
 
 **Original date:** 2026-11-17.

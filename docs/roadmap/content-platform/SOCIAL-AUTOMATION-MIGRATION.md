@@ -43,7 +43,7 @@ So 9:16 and single-slide carousels cannot be published as carousels, and convers
 
 ## 2. Decision
 
-**Move the publisher into CreatorBrio as an isolated Python module and process, with its behavior and tests intact; do not rewrite it, and do not copy its folder in and call the integration done.**
+**Move the publisher into CreatorBrio as an isolated Python module and process, with its behavior and tests intact, apart from the recorded P1 changes; do not rewrite it, and do not copy its folder in and call the integration done.**
 
 - Its package, fingerprint, approval-in-force rule, per-platform lifecycle, reconciliation and never-delete-live rules become CreatorBrio's publishing domain (RFC 5.4), so there is no second domain model.
 - Its runner becomes CreatorBrio's only publication scheduler (AD-08), so there is no second scheduler.
@@ -55,7 +55,7 @@ So 9:16 and single-slide carousels cannot be published as carousels, and convers
 
 ```text
 publisher/                     Python package, standard library only
-  src/...                      the imported modules, with behavior and tests intact
+  src/...                      the imported modules, with behavior and tests intact apart from the recorded P1 changes
   tests/                       the imported suite, plus parity and contract tests
   examples/accounts/           example account configuration with placeholders
   docs/                        publisher architecture, packages contract, runbooks, self-hoster guides
@@ -92,12 +92,12 @@ A filtered-history import is possible but not recommended: the history is short,
 | Step | Where | What | Exit criteria |
 |---|---|---|---|
 | P0 | Founder | Answer FQ-1 (MIT licence), FQ-2 (snapshot), FQ-3 (approval authority) | Recorded in the decision register |
-| P1 | Private repository | Prepare the snapshot: configuration is read from a path outside the repository; owner-specific values and documentation are excluded from the snapshot; the suite runs on GitHub-hosted runners | The full suite passes, and the runner deploys and runs |
+| P1 | Private repository | Prepare the snapshot: configuration is read from a path outside the repository; owner-specific values and documentation are excluded from the snapshot; the suite runs on GitHub-hosted runners; any approval path in the snapshot that does not meet the RFC 5.4 invariants is removed or disabled, as a recorded behavior change with replacement tests (the rule that FQ-3 asks the founder to confirm) | The full suite passes, each recorded behavior change has its replacement tests, and the runner deploys and runs |
 | P2 | CreatorBrio | Import the sanitized snapshot under `publisher/`; add a Python job to CreatorBrio's GitHub-hosted CI running the suite with the standard library only (on hosted Linux and macOS runners, never a self-hosted runner, because the repository accepts outside contributions); mark the suite's fake credentials so secret scanners do not flag them; add provenance and the licence record | Scan clean; suite green in CreatorBrio CI; independent review passes |
 | P3 | Founder's machine | Shadow: the runner keeps running from the standalone repository while `dry-run` and read-only status commands run from the CreatorBrio copy against the same packages | Identical results for every package in the window (T12) |
 | P4 | Founder's machine | Cutover, after M1's confinement ticket has merged and T1's baseline is recorded (see below): the runner deploys from a pinned CreatorBrio commit, with the deploy gate testing the `publisher/` tree; the state directory stays where it is | The first live posts after cutover are watched and correct |
 | P5 | Both | Rollback window of at least 30 days and at least ten successful posts across platforms; then archive the standalone repository | No rollback needed; archive recorded |
-| P6 | CreatorBrio | Integration (roadmap phase 4): package builder, publisher client, Gate 2 card, notifications | T2 and the phase 4 acceptance criteria |
+| P6 | CreatorBrio | Integration (roadmap phase 4): package builder, publisher client, Gate 2 card, notifications, the `manual` destination (section 8) | T2 and the phase 4 acceptance criteria |
 
 The database schema is frozen from P3 until P5 ends, so a rollback to the standalone code can open the same database.
 Any schema change waits until the standalone repository is archived.
@@ -120,8 +120,10 @@ The first integration uses the publisher's command-line interface with machine-r
 | Revoke | CreatorBrio to publisher | An approval and a reason; returns which copies will be withdrawn and which stay live |
 | Reslot | CreatorBrio to publisher | A new local slot time, the person principal and a reason; never touches the approval; recorded as an attributed event (AD-06) |
 | Status | CreatorBrio to publisher | Every publication of a package with its state, platform link and stop reason |
+| Handoff | Both ways | For a `manual` destination (section 8): the frozen handoff bundle of an approved package, refused for any other fingerprint, and the person's confirmation that it was posted, recorded for a person principal as an attributed event |
 | Events | Publisher to CreatorBrio | The append-only event log, read from a cursor, for notifications and history |
 
+Mutating commands are serialized with the runner's tick (RFC 5.4), so a call never interleaves with a publication step.
 Approval and reslot operations follow the approval authority of [RFC section 5.5](ARCHITECTURE-RFC.md#55-approval-authority-in-the-publishing-domain); agents never receive a route to this interface, which containment (M1) and typed tools enforce.
 At the hosted stage this interface becomes an authenticated service API with the same operations.
 
@@ -146,6 +148,7 @@ macOS parity comes first; Linux support is claimed only after its adapters pass 
 - The Instagram, Facebook Page and YouTube clients move as they are and are owned by the publishing module.
 - The module defines one adapter surface (`check`, `validate`, `prepare`, `publish` or `schedule`, `find_live`, `insights`) and its conformance tests when the first new adapter is added (roadmap phase 9); the import does not rework the existing clients.
 - New platforms (LinkedIn, TikTok) are built inside the same module against that surface (roadmap phase 9).
+- The manual handoff is a `manual` destination of the same module (roadmap phase 4, AD-36): the publisher holds the frozen package and the Gate 2 approval for a platform that is not automated exactly as for any other, the person receives the frozen handoff bundle and confirms the posting, and no platform is called.
 - The Instagram insights snapshot moves with the publisher and feeds CreatorBrio's performance views later.
 
 ## 9. Credentials and authorization
@@ -165,9 +168,9 @@ macOS parity comes first; Linux support is claimed only after its adapters pass 
 
 ## 10. Proving parity before retiring the standalone system
 
-- The imported suite passes in CreatorBrio CI with no test weakened or removed.
-- New contract tests pin the machine-readable outputs CreatorBrio depends on.
-- The shadow window (P3) shows identical dry-run and status results on real packages.
+- The imported suite passes in CreatorBrio CI with no test weakened or removed, except tests of approval paths removed under P1, each replaced by a test of the RFC 5.4 rule.
+- New contract tests pin the machine-readable outputs CreatorBrio depends on, and a test proves that mutating commands and the runner's tick never interleave (T12).
+- The shadow window (P3) shows identical dry-run and status results on real packages; the P1 changes land in the private repository and the standalone runner deploys them before the window, so both copies carry them.
 - After cutover, the first post on each platform is watched; the standalone runner stays loadable from its last commit for the rollback window.
 - Equivalent or better: any later change to publishing behavior (for example a new adapter) must keep the whole suite green and add tests for its own behavior.
 
@@ -185,8 +188,8 @@ macOS parity comes first; Linux support is claimed only after its adapters pass 
 | Private operational data reaches the public repository | Snapshot, not history; scanner plus a private identifier list; independent review |
 | The deploy gate tests the wrong tree after the move | The deploy command is changed to test `publisher/` at the pinned CreatorBrio commit, with a test that fails if it tests anything else |
 | Two scheduling paths while both copies exist | Only one runner is ever loaded; the shadow uses dry-run and read-only commands |
-| An approval recorded without a person principal | Approve is reachable only through the CreatorBrio server for a person principal or from the person's interactive terminal; agents have no route to it (T2, M1 containment); FQ-3 confirms the rule |
-| Python becomes a prerequisite for self-hosters | Publishing only; the standard library only; documented in setup; phase 6 ships the Python publisher to self-hosters as an accepted consequence (AD-07, FQ-9) |
+| An approval recorded without a person principal | Approve is reachable only through the CreatorBrio server for a person principal or from the person's interactive terminal; agents have no route to it (T2, M1 containment); any approval path that does not meet the rule is removed or disabled at P1; FQ-3 confirms the rule |
+| Python becomes a prerequisite for self-hosters | Needed for every Gate 2 publication, the manual handoff included, because the publisher holds every frozen package and approval; the standard library only; documented in setup; phase 6 ships the Python publisher to self-hosters as an accepted consequence (AD-07, FQ-9) |
 | Duplicate alerts once CreatorBrio notifications exist | One delivery owner per alert, switched in phase 4 |
 | A slot is missed because the machine is off or the lid is closed | Keep-awake covers idle sleep only; a missed slot is a known limit of local-first publishing, surfaced as an alert; a cloud publishing path is decided separately (AD-28) |
 | Fake test credentials trip secret scanning | Marked as fixtures in P2 before the first scan |
