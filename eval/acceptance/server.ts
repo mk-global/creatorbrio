@@ -18,13 +18,19 @@ export type ServerMode = "prod" | "dev";
 const READY_TIMEOUT_MS = 180_000;
 const STOP_GRACE_MS = 5_000;
 
+let runName: string | null = null;
 let runDirectory: string | null = null;
+
+/** This harness run's id, `acceptance-<timestamp>`: its results folder's name, ledger run id and archive folder. */
+export function runId(): string {
+  runName ??= `acceptance-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  return runName;
+}
 
 /** This harness run's results folder, created on first use. */
 export function runDir(): string {
   if (!runDirectory) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    runDirectory = path.join(ROOT, "eval", "results", `acceptance-${stamp}`);
+    runDirectory = path.join(ROOT, "eval", "results", runId());
     mkdirSync(runDirectory, { recursive: true });
   }
   return runDirectory;

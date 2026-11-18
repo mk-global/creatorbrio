@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import type { AspectRatio } from "@/types/carousel";
+import type { BrandSpec } from "./app";
 
 /**
  * The acceptance scenarios for the creative run (#40). Every request and
@@ -7,7 +8,20 @@ import type { AspectRatio } from "@/types/carousel";
  * `expect` is what the deterministic acceptance checks look for.
  */
 
-export type ScenarioId = "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7" | "S8" | "S9";
+export type ScenarioId = "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7" | "S8" | "S9" | "S10";
+
+/**
+ * The brand every harness carousel is created in (#224), so the judges score
+ * brand fidelity against a stated brand. Entirely synthetic: no real brand,
+ * logo or asset. A brand has no separate voice field, so its voice is given
+ * as style keywords, which the Design Agent's prompt already carries.
+ */
+export const SYNTHETIC_BRAND: BrandSpec = {
+  name: "Synthetic Eval Brand 01",
+  colors: { primary: "#1F3A34", secondary: "#2E6B5E", accent: "#E8A33D", background: "#F7F3EA", surface: "#E9E1D0" },
+  fonts: { heading: "Fraunces", body: "Work Sans" },
+  styleKeywords: ["editorial", "calm", "generous whitespace", "voice: plainspoken and warm", "voice: confident, never hype", "voice: short sentences"],
+};
 
 export interface Scenario {
   id: ScenarioId;
@@ -34,7 +48,7 @@ export interface Scenario {
   };
   /** Upload the synthetic founder portrait as a reference first. */
   reference?: boolean;
-  /** A revision of another scenario's carousel, in the same session. */
+  /** A revision of another scenario's carousel, in the same session and the same repetition. */
   revisionOf?: ScenarioId;
   /** Also run as Design-Agent-only and compare blind. */
   compare?: boolean;
@@ -114,6 +128,19 @@ export const SCENARIOS: Scenario[] = [
     expect: { slides: 1 },
     revisionOf: "S2",
     needsImages: true,
+  },
+  {
+    id: "S10",
+    title: "Typography-only revision keeps the brief",
+    kind: "revision",
+    aspectRatio: "4:5",
+    message: "Make every slide's headline noticeably larger and bolder. Keep the five slides, their content and their order as they are.",
+    objective: "Make the headlines of the existing compound-interest carousel more prominent while keeping its teaching content for first-time investors.",
+    audience: "First-time investors with no finance background.",
+    constraints: ["still exactly 5 slides", "the same content in the same order", "purely typographic, no photos", "every headline noticeably larger and bolder than before"],
+    notes: "Only the headlines should change visibly; the step-by-step explanation, the worked example and its numbers stay as they were. Needs no generated images, so revision behaviour is measured whether or not the image service is available.",
+    expect: { slides: 5, generated: "none", typographyOnly: true },
+    revisionOf: "S1",
   },
   {
     id: "S6",

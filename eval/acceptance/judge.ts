@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { getClaudePath } from "@/lib/claude-path";
 import { cleanEnv } from "./server";
+import { modelsFromResult, usageFromCli, type TokenUsage } from "./usage";
 
 /**
  * The creative-outcome judge: one bounded, read-only Claude CLI call that
@@ -66,9 +67,16 @@ export interface PairwiseVerdict {
  */
 export const MIN_READ_TURNS = 3;
 
-export type JudgeCall<T> =
-  | { ok: true; verdict: T; costUsd: number | null; durationMs: number; turns: number | null }
-  | { ok: false; error: string; costUsd: number | null; durationMs: number; turns: number | null };
+interface JudgeMeasures {
+  costUsd: number | null;
+  durationMs: number;
+  turns: number | null;
+  /** The judge's own model usage and models, from its CLI result. */
+  usage?: TokenUsage | null;
+  models?: string[];
+}
+
+export type JudgeCall<T> = ({ ok: true; verdict: T } | { ok: false; error: string }) & JudgeMeasures;
 
 /** What the judge is told about the request; never which arm made a set. */
 export interface JudgeContext {
@@ -80,6 +88,14 @@ export interface JudgeContext {
   constraints: string[];
   brand: string;
   notes: string;
+}
+
+/** The revision judge's verdict: whether the revision kept the brief and made the change asked for. */
+export interface RevisionVerdict {
+  briefKept: Score;
+  requestedChangeMade: Score;
+  unrequestedChanges: { flag: boolean; evidence: string };
+  summary: string;
 }
 
 const scoreSchema = {
@@ -137,6 +153,18 @@ export const PAIRWISE_SCHEMA = {
   },
 };
 
+export const REVISION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["briefKept", "requestedChangeMade", "unrequestedChanges", "summary"],
+  properties: {
+    briefKept: { ...scoreSchema, description: "The revised set still serves the original objective, audience, subject and constraints." },
+    requestedChangeMade: { ...scoreSchema, description: "The revised set visibly makes the change the revision request asked for." },
+    unrequestedChanges: { ...flagSchema, description: "Material changes nobody asked for, such as lost slides, a changed subject or a dropped title." },
+    summary: { type: "string", description: "What changed and what stayed, two sentences." },
+  },
+};
+
 const ANCHORS = `Score each dimension from 1 to 5:
 - 5: an experienced creative director would not change anything material. Rare.
 - 4: clearly good; minor issues only.
@@ -182,6 +210,15 @@ Score both sets on the same dimensions, independently.
 Return your verdict through the StructuredOutput tool.
 
 ${ANCHORS}`;
+
+const REVISION_SYSTEM = `You are a strict creative reviewer of a revision to finished social-media slides made by an AI studio for a creator.
+You see the set before the revision and the set after it. Read every slide image of both sets with the Read tool before scoring.
+Score from 1 to 5, where 5 is rare and means an experienced creative director would not change anything material, 3 means acceptable with a visible weakness, and 1 means it fails:
+- briefKept: the revised set still serves the original objective, audience, subject and explicit constraints.
+- requestedChangeMade: the revised set visibly makes the change the revision request asked for, to a degree a reasonable creator would accept.
+Use null only when a dimension cannot be judged from the images.
+Flag unrequestedChanges for material changes nobody asked for.
+Return your verdict through the StructuredOutput tool.`;
 
 function args(system: string, schema: object, dir: string): string[] {
   return [
@@ -262,13 +299,15 @@ async function call<T>(
     }
     const costUsd = typeof parsed?.total_cost_usd === "number" ? parsed.total_cost_usd : null;
     const turns = typeof parsed?.num_turns === "number" ? parsed.num_turns : null;
-    const fail = (error: string) => ({ ok: false as const, error, costUsd, durationMs, turns });
+    const usage = usageFromCli(parsed?.usage);
+    const models = modelsFromResult(parsed);
+    const fail = (error: string) => ({ ok: false as const, error, costUsd, durationMs, turns, usage, models });
     if (out.timedOut) return fail("timed out");
     if (!parsed) return fail(`no JSON result (exit ${out.code})`);
     if (parsed.subtype === "error_max_budget_usd") return fail("judge budget exceeded");
     if (parsed.is_error || out.code !== 0) return fail(`judge failed: ${String(parsed.subtype ?? out.code)}`);
     if (!valid(parsed.structured_output)) return fail("judge output did not match the schema");
-    return { ok: true, verdict: parsed.structured_output, costUsd, durationMs, turns };
+    return { ok: true, verdict: parsed.structured_output, costUsd, durationMs, turns, usage, models };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -289,6 +328,46 @@ export function judgeOutcome(context: JudgeContext, pngs: string[]): Promise<Jud
         ...files.map((f) => `- ${path.join(dir, f.as)}`),
       ].join("\n"),
     (v): v is OutcomeVerdict => !!v && typeof v === "object" && validScores((v as OutcomeVerdict).scores)
+  );
+}
+
+const validScore = (s: unknown) => {
+  const v = s as { score?: unknown } | null;
+  return !!v && typeof v === "object" && (v.score === null || (typeof v.score === "number" && v.score >= 1 && v.score <= 5));
+};
+
+/**
+ * Judges a revision against the set it revised: whether it kept the brief
+ * and made the change asked for. `context.message` is the revision request;
+ * the objective, audience and constraints are the original brief's.
+ */
+export function judgeRevision(
+  context: JudgeContext & { originalMessage: string },
+  sets: { before: string[]; after: string[] }
+): Promise<JudgeCall<RevisionVerdict>> {
+  const before = sets.before.map((from, i) => ({ from, as: `before-slide-${i + 1}.png` }));
+  const after = sets.after.map((from, i) => ({ from, as: `after-slide-${i + 1}.png` }));
+  return call(
+    REVISION_SYSTEM,
+    REVISION_SCHEMA,
+    [...before, ...after],
+    (dir) =>
+      [
+        contextBlock(context),
+        `The original request the set before was made for, verbatim: ${context.originalMessage}`,
+        "",
+        `Before the revision, ${before.length} slide(s) in order:`,
+        ...before.map((f) => `- ${path.join(dir, f.as)}`),
+        "",
+        `After the revision, ${after.length} slide(s) in order:`,
+        ...after.map((f) => `- ${path.join(dir, f.as)}`),
+      ].join("\n"),
+    (v): v is RevisionVerdict =>
+      !!v &&
+      typeof v === "object" &&
+      validScore((v as RevisionVerdict).briefKept) &&
+      validScore((v as RevisionVerdict).requestedChangeMade) &&
+      typeof (v as RevisionVerdict).unrequestedChanges?.flag === "boolean"
   );
 }
 

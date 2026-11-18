@@ -181,16 +181,24 @@ A legitimately silent step longer than the limit is stopped as `stalled`; Contin
 ### Verifying the workflow end to end
 
 `eval/acceptance/` is an opt-in harness that runs real requests through real CreatorBrio servers it starts on its own ports, using the public API and the real Claude CLI.
-Its scenarios cover a typography-only carousel, a generated cover, five generated images, an uploaded photo, a revision, a linked page, the image service being unavailable, cancellation during the image stage, and a server restart followed by Retry.
-For each it records the stream's stages with timings, the Director's and Design Agent's cost, the run's outcome, the conformance result and the export.
+Its scenarios cover a typography-only carousel, a generated cover, five generated images, an uploaded photo, two revisions (one of the generated cover and one of the typography-only carousel, which needs no generated images), a linked page, the image service being unavailable, cancellation during the image stage, and a server restart followed by Retry.
+Every carousel it makes belongs to a synthetic brand (name, palette, fonts and voice as style keywords) that it creates through the public brands API, so the judge scores brand fidelity against a stated brand.
+For each it records the stream's stages with timings, the Director's and Design Agent's cost, the Design Agent's model token usage (input, output, cache read and cache write, from the server's run log), the run's outcome, the conformance result and the export.
+The Director's token counts and model are not in the server's records, so only its cost, time and turns are reported.
+Recording them needs a product logging change, which is out of scope for the harness and for the work that records the baseline with it.
 For a run with generated images it also checks that every image task was committed with its hash, that each attached file matches that hash, that each image appears on every slide the plan assigned it to, that the running server serves each image with the same bytes, and that every exported file is a PNG at the carousel's size.
 A run that stops because one image could not be made after others were ready is retried, and the retry must reuse each ready image, with the same hash and the same file, rather than make it again.
 The cancellation and restart scenarios also record the run's state right after the stop, and both watch whether the image service goes on with an image it had already started.
 For every completed run it keeps the Director's plan summary and the carousel's Creative Brief for review.
 A bounded, read-only model judge then scores the exported slides on whether the central message, constraints, imagery, priorities, brand and text come through, and a blind pairwise judge compares selected scenarios with the Design Agent working alone.
+A revision is also judged against the set it revised, on whether it kept the brief and made the change asked for.
 It never changes a design, and a test fails only when the harness itself fails.
 
 It costs real model usage and is not part of `npm test`.
+A paid run refuses to start in the repository's primary worktree: the servers it starts read and write that checkout's `data/` folder, which in the primary worktree holds real carousels, brands and uploads.
+Run it from a dedicated linked worktree (`git worktree add <folder> -b <branch>`), which has its own `data/`.
+The check compares `git rev-parse --git-dir` with `--git-common-dir`, and a dry run (`EVAL_DRY=1`) is not subject to it.
+A linked worktree whose `data/` or `public/uploads` is a link that resolves outside the checkout is refused too, since the servers would reach the same live data through it.
 Build first, then run it with `npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts`, selecting scenarios with `EVAL_ONLY`; `EVAL_MODE=dev` runs it against `next dev` instead of a production build.
 Scenarios that generate images need the local image service, which may decline work while the machine is low on free memory, a review is running or other AI work is running.
 Before each of them the harness asks the service's read-only health check whether it would take work, and waits for up to 10 minutes (`EVAL_ADMISSION_WAIT_MS`); a scenario the service does not admit in time is recorded as not run, before any planning cost.
@@ -200,6 +208,61 @@ Before each of them the harness asks the service's read-only health check whethe
 A graceful signal under `next dev` closes open requests, so the run is cancelled rather than cut off, and the scenario records that restart recovery was not exercised.
 A production build keeps the request open until the harness kills the process 5 seconds later.
 Raw results go to `eval/results/`, which is not committed; the service's reason codes appear only there, never in the summary.
+
+`EVAL_REPEAT=n` (1 by default) runs every selected scenario n times, repetition by repetition in the same order, and each run carries a pairing key (`S1#2` is the second repetition of S1), so two runs of the same plan can be compared run for run.
+The summary reports, per scenario, how many runs completed out of those made and how many checks passed out of those run, and then the sample size, median, minimum and maximum of the judge's scores, latency, token usage and cost; results.json keeps every run's raw record.
+Each statistic says which runs it uses: scores and latencies come from completed runs only, and tokens and costs from every run that has them, since a failed run still spends.
+Latency is reported as request latency, the sum of the chat requests' own durations, with the planning, image and design stages and the server's Director and design timings beside it.
+The harness wall time, which also includes judging, export, waits for the image service and the checks, is labelled as such and is not a latency.
+A judge verdict whose turn count is below 3, or missing, did not verifiably read the slides; it is left out of every median and tally, and the summary says how many were.
+
+A paid run needs explicit per-call caps, `DIRECTOR_MAX_BUDGET_USD` and `DESIGN_AGENT_MAX_BUDGET_USD`, which the harness gives to every server it starts and to the Design-Agent-only arm.
+The CLI checks a cap between turns, so one call can end above its cap by the turn that crossed it.
+Every call is therefore limited to its cap plus an explicit overshoot allowance, `EVAL_OVERSHOOT_FRACTION` of the cap (0.25 by default, above 0 and at most 1; zero is refused).
+The allowance is an assumption about how far one turn can carry a call past its cap, not a guarantee, so the worst case is an upper bound only while no call exceeds its limit.
+A call measured above its limit is charged as measured, counted in the settlement and named in the ledger note, so the assumption is checked against every run.
+Before anything starts, a preflight (`eval/acceptance/budget.ts`) computes the plan's worst case: for each scenario and repetition, its Director calls, its Design Agent calls and its judge calls (the judge's own cap is USD 0.60) each at its limit, plus one Design Agent call and two judge calls for each comparison.
+It refuses the run when that exceeds what remains of `EVAL_M1_CAP_USD` (USD 50 by default) after everything in the spending ledger, less `EVAL_HOLD_BACK_USD` (0 by default).
+The hold-back keeps part of the allowance out of the run's reach: the post-containment rerun that #221 compares against the baseline must fit in the same USD 50, so a baseline plan should be sized with that rerun held back.
+The ledger is `EVAL_LEDGER` (`~/.local/share/creatorbrio-m1-eval/ledger.jsonl` by default, mode 600).
+Neither the ledger nor the archive may be inside the repository checkout, links resolved, and a folder the harness creates for them is made mode 700.
+A folder that already exists is never changed: it is used only when it is owned by the user and owner-only, and refused otherwise.
+The ledger is changed only under an exclusive lock file next to it (`<ledger>.lock`, created with O_EXCL), so the preflight's read, check and append are one step across processes.
+A lock older than two minutes is taken to be left by a dead process and is removed; a younger one is waited for up to ten seconds and then refused with an error that names the lock.
+The run reserves its worst case in the ledger before it spends anything and settles it when it ends; a reservation no spend entry settles counts in full.
+Settlement never under-counts.
+Each paid call that started is charged at the cost it measured when it reported one, and otherwise at its per-call limit: a judge that timed out or was killed, a Design Agent run whose log line carries no cost, a Design-Agent-only arm that timed out, a comparison that threw after its paid arm ran (its record is kept, not replaced), a restart scenario that returned early.
+A call counts as started when the chat stream shows its stage (planning for the Director, designing for the Design Agent) or the server log has its line, because a server killed mid-call writes no line.
+An item whose test timed out or never finished, or whose driver failed with a harness error, is charged every call it planned, each at the larger of what it measured and its limit, since what had started cannot be known; an item that never began is charged nothing.
+The total is rounded up.
+A spend entry says "incomplete measurement" with the number of calls charged at their limit whenever any were, and results.json keeps the settlement per plan item with the reason.
+A graceful restart signal (`EVAL_RESTART_SIGNAL` of `SIGINT` or `SIGTERM`) under a production build keeps the request open until the harness kills the process 5 seconds later, so the run can begin designing before the kill and the retry after the restart can design a second time.
+That second Design Agent run is charged, at its limit when the log has no line for it, and the settlement and the ledger note flag it as a call beyond the plan.
+SIGKILL, the default, does not do this.
+If settlement itself fails, nothing smaller is recorded: the reservation stands and counts in full.
+The cumulative cap is enforced by configuration, not by the harness alone: pointing `EVAL_LEDGER` at a fresh file or raising `EVAL_M1_CAP_USD` bypasses it, because the preflight only reads the ledger it is given.
+Each run records the redacted ledger label and the cap it was checked against in results.json (`spend.ledger` and `spend.preflight.capUsd`), so a reviewer can see which ledger and cap a run used.
+Keep one ledger for the whole M1 effort, outside every checkout and worktree, so every run counts against the same total.
+`node eval/acceptance/ledger.ts show` prints the ledger and the remaining allowance, and `node eval/acceptance/ledger.ts add --usd <amount> --note <text> [--run <run id>]` records earlier spend or settles a killed run (Node 22.18 or later; older versions need `--experimental-strip-types`).
+`EVAL_DRY=1` prints the plan, the per-call limits, the worst case, the remaining allowance and the hold-back, starting no server and no model.
+
+Each run records the CLI version the servers and the harness use, the models seen (the Design Agent's from the CLI's session transcripts, since the server log does not name it; the judge's and the Design-Agent-only arm's from their result events; the Director's are not recorded), the SHA-256 of every harness file, the commit, and a fingerprint of the configuration the Design Agent's CLI inherits.
+The fingerprint holds names, sizes and hashes only, never contents:
+
+- the user settings, instructions and rules, managed settings, and the project's instructions, settings, rules and MCP file, by redacted label, size and SHA-256;
+- the `skills`, `agents`, `commands`, `plugins`, `hooks` and `output-styles` trees of `~/.claude` (or `$CLAUDE_CONFIG_DIR`) and the `skills`, `agents` and `commands` trees of the project's `.claude/`, by relative file name, size and SHA-256 per file, and one combined hash per tree;
+- the project's auto-memory folder, `<config dir>/projects/<project folder>/memory`, by file name, size and SHA-256 only, for the working directory and for the repository's main worktree (which linked worktrees may share), located by the CLI's project-folder naming convention; the session transcripts beside it are never read;
+- the MCP server names in the user scope and the project's entry of `~/.claude.json`, and never a command, argument, environment value or URL;
+- the names and the SHA-256 of the values of the model, effort and thinking variables (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `MAX_THINKING_TOKENS`, `CLAUDE_EFFORT` and the other Claude Code variables for models, effort, thinking and output tokens) in the environment the servers receive, and in the checkout's `.env` files the servers load.
+
+Recorded limitations: the harness's `cleanEnv` strips `CLAUDE_CODE_*` and `CLAUDE_EFFORT`, which `/start` passes through, so the environment of a baseline launched by the harness can differ from the app's normal launch.
+The record therefore also lists, by name and value hash, the model-related variables it removed from the invoking shell.
+The Design Agent does not disable auto-memory, unlike the Director (`autoMemoryEnabled: false`), so it can read the project's auto-memory and write to it: a run can change what a later run reads, and the memory tree is fingerprinted once, before the run.
+The memory folder is found by naming convention, so a CLI version or a setting that places it elsewhere is not seen.
+Trees leave out `.git` and `node_modules` folders and `.DS_Store` files, follow symbolic links, leave a file over 16 MB unhashed and stop at 20,000 files, and a tree that hit the limit is marked truncated.
+results.json keeps the per-file table; summary.md shows only the number of items fingerprinted and one combined hash, which two runs must share to be comparable.
+Error messages stored in results.json and summary.md have the home folder and the checkout replaced by `~` and `<checkout>`.
+After the run, results.json, summary.md, the server logs and the exported PNGs are copied to `<EVAL_ARCHIVE_DIR>/<run id>` (`~/.local/share/creatorbrio-m1-eval/acceptance` by default), owner-only, so the evidence outlives the worktree.
 
 ## Typed asset lifecycle
 
