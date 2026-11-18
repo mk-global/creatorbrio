@@ -8,26 +8,31 @@
 # time.
 #
 #   docker build -t creatorbrio-sandbox-proof --build-arg CLAUDE_VERSION=2.1.327 eval/sandbox-route
-#   mkdir -m 777 sandbox-route-results
+#   mkdir -p -m 777 eval/results/sandbox-route
 #   docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
 #     --security-opt systempaths=unconfined -e CLAUDE_CODE_OAUTH_TOKEN \
-#     -v "$PWD/sandbox-route-results:/home/prover/results" creatorbrio-sandbox-proof
+#     -v "$PWD/eval/results/sandbox-route:/home/prover/results" creatorbrio-sandbox-proof
 #
-# The run prints each arm's validity, route verdict, containment findings and
-# untested probes, and writes results.json into the bind-mounted folder, which
-# must be writable by the container's user (hence the permissive mode on the
-# folder made beforehand; remove it afterwards). Use --rm with a bind mount and
-# do not copy results out of a stopped container: a stopped container keeps its
-# configuration, and the sign-in token is part of it.
+# Run these from the repository root. The run prints each arm's validity, route
+# verdict, containment findings and untested probes, and writes results.json
+# into the bind-mounted folder. Always mount the repository's ignored folder
+# eval/results/ (see .gitignore), never a folder in the checkout that Git does
+# not ignore, so a result never reaches a commit. The folder must exist and be
+# writable by the container's user, hence the permissive mode on the folder made
+# beforehand; once the results are copied elsewhere, delete the folder or reset
+# its mode. Use --rm with a bind mount and do not copy results out of a stopped
+# container: a stopped container keeps its configuration, and the sign-in token
+# is part of it.
 #
 # The variant without the vendor's separately installed seccomp package
 # overrides the entrypoint: it uninstalls @anthropic-ai/sandbox-runtime, stops
-# if any seccomp helper file remains on the filesystem (the shared
-# libseccomp library is not one), and runs only three arms.
+# if any seccomp helper file remains on the filesystem (a check by filename; the
+# shared libseccomp library is not one), and runs only three arms. It writes to the
+# same mounted folder.
 #
 #   docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
 #     --security-opt systempaths=unconfined -e CLAUDE_CODE_OAUTH_TOKEN \
-#     -v "$PWD/sandbox-route-results:/home/prover/results" --entrypoint bash creatorbrio-sandbox-proof -c '
+#     -v "$PWD/eval/results/sandbox-route:/home/prover/results" --entrypoint bash creatorbrio-sandbox-proof -c '
 #       npm uninstall -g @anthropic-ai/sandbox-runtime &&
 #       left=$(find / -xdev -iname "*seccomp*" ! -iname "libseccomp*" ! -path "/proc/*" 2>/dev/null) &&
 #       { [ -z "$left" ] || { echo "a seccomp helper remains: $left"; exit 1; }; } &&
