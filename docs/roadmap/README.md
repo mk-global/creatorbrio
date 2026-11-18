@@ -5,7 +5,7 @@ This directory separates **approved or active implementation planning** from **p
 | Track | Authority | Status |
 |---|---|---|
 | [Video Studio](video-studio/README.md) | Implementation program, accepted scope, workstreams, release gates and verified current status | Existing active roadmap |
-| [Content automation platform](content-platform/README.md) | One product from idea through research, two human approvals, production and publishing; the Social Automation publisher migration; self-hosted, hosted and mobile direction | **Reconciled proposal (#216): founder decisions accepted, architecture and sequence proposed** |
+| [Content automation platform](content-platform/README.md) | One product from idea through research, two human approvals, production and publishing; the Social Automation publisher migration; self-hosted, hosted and mobile direction | **Validated proposal (#216, #218): founder decisions accepted, architecture and sequence proposed, first milestone ready to start once its decisions are accepted** |
 
 The content platform documents **do not amend or supersede** Video Studio requirements, architectural decisions, shipped features or security boundaries; the amendments they need are listed in their RFC and go through their own governed changes.
 Do not schedule implementation from them before the decisions are accepted and the milestone's issues are admitted.
