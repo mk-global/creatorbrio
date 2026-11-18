@@ -26,7 +26,8 @@ It stays local-first and open source, and later serves a hosted edition and mobi
 6. Reviews:
    - [2026-11-17 independent review of PR #215](reviews/2026-11-17-pr215-independent-review.md), preserved verbatim;
    - [2026-11-17 adversarial self-review of revision 2](reviews/2026-11-17-reconciliation-self-review.md);
-   - [2026-11-18 final validation before implementation](reviews/2026-11-18-final-validation.md): the evidence, findings and readiness verdicts of revision 3.
+   - [2026-11-18 final validation before implementation](reviews/2026-11-18-final-validation.md): the evidence, findings and readiness verdicts of revision 3;
+   - [2026-11-18 sandbox network-route feasibility proof](reviews/2026-11-18-sandbox-route-proof.md): the first M1 step, which selected Route A (#220).
 7. [ARCHITECTURE-REVIEW.md](ARCHITECTURE-REVIEW.md): the brief that commissioned the independent review, kept as a record.
 
 ## What changed in revision 3 (#218)
