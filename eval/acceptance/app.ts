@@ -3,8 +3,10 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
+import type { Brand } from "@/types/brand";
 import type { AspectRatio, Carousel } from "@/types/carousel";
 import { ROOT } from "./server";
+import { addUsage, usageFromCli, type TokenUsage } from "./usage";
 
 /**
  * A client for a running CreatorBrio app, using only its public HTTP API the
@@ -23,6 +25,10 @@ export interface TimedEvent {
 export interface ChatResult {
   /** Every event except `token`, which is summarised in `tokens`. */
   events: TimedEvent[];
+  /**
+   * The stream's `token` events: streamed text chunks, not model tokens.
+   * Model token usage comes from the server's run log (`ServerCosts`).
+   */
   tokens: { count: number; firstAt: number | null; lastAt: number | null };
   sessionId: string | null;
   durationMs: number;
@@ -58,13 +64,29 @@ export class AppClient {
     return JSON.parse(text) as T;
   }
 
-  async createCarousel(name: string, aspectRatio: AspectRatio): Promise<Carousel> {
+  /** Creates a carousel, in `brandId`'s brand when given (fixed for the carousel's life). */
+  async createCarousel(name: string, aspectRatio: AspectRatio, brandId?: string): Promise<Carousel> {
     const res = await fetch(`${this.origin}/api/carousels`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ name, aspectRatio }),
+      body: JSON.stringify({ name, aspectRatio, ...(brandId ? { brandId } : {}) }),
     });
     return this.json<Carousel>(res, "create carousel");
+  }
+
+  /**
+   * The brand with exactly this configuration, created through the public
+   * API the first time; an existing brand of the same name that differs is
+   * left alone and a new one is created.
+   */
+  async ensureBrand(spec: BrandSpec): Promise<Brand> {
+    const listed = await this.json<{ brands: Brand[] }>(await fetch(`${this.origin}/api/brands`, { headers: this.headers(false) }), "list brands");
+    const found = listed.brands.find((b) => sameBrand(b, spec));
+    if (found) return found;
+    const res = await fetch(`${this.origin}/api/brands`, { method: "POST", headers: this.headers(), body: JSON.stringify(spec) });
+    const created = await this.json<Brand>(res, "create brand");
+    if (!sameBrand(created, spec)) throw new Error("The created brand does not match the synthetic brand the harness asked for");
+    return created;
   }
 
   async getCarousel(id: string): Promise<Carousel> {
@@ -212,6 +234,19 @@ export class AppClient {
   }
 }
 
+/** The brand fields the harness sets; everything else is server-owned or left at its default. */
+export type BrandSpec = Pick<Brand, "name" | "colors" | "fonts" | "styleKeywords">;
+
+export function sameBrand(brand: BrandSpec, spec: BrandSpec): boolean {
+  return (
+    brand.name === spec.name &&
+    JSON.stringify(Object.entries(brand.colors).sort()) === JSON.stringify(Object.entries(spec.colors).sort()) &&
+    brand.fonts.heading === spec.fonts.heading &&
+    brand.fonts.body === spec.fonts.body &&
+    JSON.stringify(brand.styleKeywords) === JSON.stringify(spec.styleKeywords)
+  );
+}
+
 function slideNumber(file: string): number {
   const m = file.match(/(\d+)/);
   return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
@@ -239,7 +274,12 @@ export async function logOffset(logPath: string): Promise<number> {
 export interface LogEntry {
   tag: string;
   fields: Record<string, string | number | boolean | null>;
+  /** The scalar fields of the nested objects in `NESTED_OBJECTS`, when the line has them. */
+  objects?: Record<string, Record<string, string | number | boolean | null>>;
 }
+
+/** Nested objects read from a log line: the Design Agent's token usage on "run finished". */
+const NESTED_OBJECTS = ["designUsage"] as const;
 
 const TAGS = [
   "[director] plan finished",
@@ -279,8 +319,15 @@ export async function logEntries(logPath: string, carouselId: string, fromOffset
       if (open === -1 || text.slice(from, open).trim() !== "") continue;
       const close = matchingBrace(text, open);
       if (close === -1) continue;
-      const fields = scalarFields(text.slice(open + 1, close));
-      if (fields.carouselId === carouselId) entries.push({ at, entry: { tag, fields } });
+      const body = text.slice(open + 1, close);
+      const fields = scalarFields(body);
+      if (fields.carouselId !== carouselId) continue;
+      const objects: NonNullable<LogEntry["objects"]> = {};
+      for (const key of NESTED_OBJECTS) {
+        const nested = nestedObject(body, key);
+        if (nested) objects[key] = nested;
+      }
+      entries.push({ at, entry: { tag, fields, ...(Object.keys(objects).length ? { objects } : {}) } });
     }
   }
   return entries.sort((a, b) => a.at - b.at).map((e) => e.entry);
@@ -306,6 +353,31 @@ function matchingBrace(text: string, open: number): number {
   return -1;
 }
 
+/** The scalar fields of `key: { ... }` at the top level of a log line's object, or null. */
+function nestedObject(body: string, key: string): LogEntry["fields"] | null {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"') quote = c;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") depth--;
+    else if (depth === 0 && body.startsWith(`${key}:`, i) && (i === 0 || /[\s,]/.test(body[i - 1]))) {
+      const rest = body.slice(i + key.length + 1);
+      const open = rest.search(/\S/);
+      if (open === -1 || rest[open] !== "{") return null;
+      const close = matchingBrace(rest, open);
+      return close === -1 ? null : scalarFields(rest.slice(open + 1, close));
+    }
+  }
+  return null;
+}
+
 function scalarFields(body: string): LogEntry["fields"] {
   const fields: LogEntry["fields"] = {};
   const re = /(?:^|[\s{,])(\w+): ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:e[-+]?\d+)?|true|false|null|undefined)/g;
@@ -323,9 +395,16 @@ function scalarFields(body: string): LogEntry["fields"] {
 export interface ServerCosts {
   directorCostUsd: number | null;
   directorMs: number | null;
+  /** The Director's CLI turns; its token counts are not in the server's records. */
+  directorTurns: number | null;
   directorPlan: LogEntry["fields"] | null;
   designCostUsd: number | null;
   designMs: number | null;
+  /** The Design Agent's model token usage, summed over its runs, from the server's "run finished" lines. */
+  designUsage: TokenUsage | null;
+  designTurns: number | null;
+  /** Design runs whose line carried no usage (for example, the CLI never reported a result). */
+  designRunsWithoutUsage: number;
   imagesStaged: number;
   imageMs: number[];
   imageFailures: LogEntry["fields"][];
@@ -345,12 +424,18 @@ export async function serverCosts(logPath: string, carouselId: string, fromOffse
   const finished = entries.filter((e) => e.tag === "[chat] run finished");
   const staged = entries.filter((e) => e.tag === "[creative-run] image staged");
   const director = entries.filter((e) => e.tag === "[director] plan finished");
+  const designed = finished.filter((e) => e.fields.stage === "design");
+  const usages = designed.map((e) => usageFromCli(e.objects?.designUsage));
   return {
     directorCostUsd: sum(planned.map((e) => num(e.fields.costUsd))),
     directorMs: sum(planned.map((e) => num(e.fields.durationMs))),
+    directorTurns: sum(planned.map((e) => num(e.fields.turns))),
     directorPlan: director.at(-1)?.fields ?? null,
     designCostUsd: sum(finished.map((e) => num(e.fields.designCostUsd))),
     designMs: sum(finished.map((e) => num(e.fields.designDurationMs))),
+    designUsage: addUsage(usages),
+    designTurns: sum(designed.map((e) => num(e.fields.designTurns))),
+    designRunsWithoutUsage: usages.filter((u) => !u).length,
     imagesStaged: staged.length,
     imageMs: staged.map((e) => num(e.fields.durationMs) ?? 0),
     imageFailures: entries.filter((e) => e.tag === "[creative-run] image failed").map((e) => e.fields),

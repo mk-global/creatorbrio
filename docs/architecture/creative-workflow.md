@@ -181,13 +181,16 @@ A legitimately silent step longer than the limit is stopped as `stalled`; Contin
 ### Verifying the workflow end to end
 
 `eval/acceptance/` is an opt-in harness that runs real requests through real CreatorBrio servers it starts on its own ports, using the public API and the real Claude CLI.
-Its scenarios cover a typography-only carousel, a generated cover, five generated images, an uploaded photo, a revision, a linked page, the image service being unavailable, cancellation during the image stage, and a server restart followed by Retry.
-For each it records the stream's stages with timings, the Director's and Design Agent's cost, the run's outcome, the conformance result and the export.
+Its scenarios cover a typography-only carousel, a generated cover, five generated images, an uploaded photo, two revisions (one of the generated cover and one of the typography-only carousel, which needs no generated images), a linked page, the image service being unavailable, cancellation during the image stage, and a server restart followed by Retry.
+Every carousel it makes belongs to a synthetic brand (name, palette, fonts and voice as style keywords) that it creates through the public brands API, so the judge scores brand fidelity against a stated brand.
+For each it records the stream's stages with timings, the Director's and Design Agent's cost, the Design Agent's model token usage (input, output, cache read and cache write, from the server's run log), the run's outcome, the conformance result and the export.
+The Director's token counts are not in the server's records, so only its cost, time and turns are reported.
 For a run with generated images it also checks that every image task was committed with its hash, that each attached file matches that hash, that each image appears on every slide the plan assigned it to, that the running server serves each image with the same bytes, and that every exported file is a PNG at the carousel's size.
 A run that stops because one image could not be made after others were ready is retried, and the retry must reuse each ready image, with the same hash and the same file, rather than make it again.
 The cancellation and restart scenarios also record the run's state right after the stop, and both watch whether the image service goes on with an image it had already started.
 For every completed run it keeps the Director's plan summary and the carousel's Creative Brief for review.
 A bounded, read-only model judge then scores the exported slides on whether the central message, constraints, imagery, priorities, brand and text come through, and a blind pairwise judge compares selected scenarios with the Design Agent working alone.
+A revision is also judged against the set it revised, on whether it kept the brief and made the change asked for.
 It never changes a design, and a test fails only when the harness itself fails.
 
 It costs real model usage and is not part of `npm test`.
@@ -200,6 +203,20 @@ Before each of them the harness asks the service's read-only health check whethe
 A graceful signal under `next dev` closes open requests, so the run is cancelled rather than cut off, and the scenario records that restart recovery was not exercised.
 A production build keeps the request open until the harness kills the process 5 seconds later.
 Raw results go to `eval/results/`, which is not committed; the service's reason codes appear only there, never in the summary.
+
+`EVAL_REPEAT=n` (1 by default) runs every selected scenario n times, repetition by repetition in the same order, and each run carries a pairing key (`S1#2` is the second repetition of S1), so two runs of the same plan can be compared run for run.
+The summary reports, per scenario, the sample size, median, minimum and maximum of the judge's scores, latency, token usage and cost, and results.json keeps every run's raw record.
+
+A paid run needs explicit per-call caps, `DIRECTOR_MAX_BUDGET_USD` and `DESIGN_AGENT_MAX_BUDGET_USD`, which the harness gives to every server it starts and to the Design-Agent-only arm.
+Before anything starts, a preflight (`eval/acceptance/budget.ts`) computes the plan's worst case: for each scenario and repetition, its Director calls times the Director cap, its Design Agent calls times the Design Agent cap and its judge calls times the judge's own cap of USD 0.60, plus one Design Agent call and two judge calls for each comparison.
+It refuses the run when that exceeds what remains of `EVAL_M1_CAP_USD` (USD 50 by default) after everything in the spending ledger, `EVAL_LEDGER` (`~/.local/share/creatorbrio-m1-eval/ledger.jsonl` by default, mode 600 in a mode-700 folder).
+The run reserves its worst case in the ledger before it spends anything and records the cost it measured when it ends, also when the harness failed; a reservation no spend entry settles counts in full.
+`node eval/acceptance/ledger.ts show` prints the ledger and the remaining allowance, and `node eval/acceptance/ledger.ts add --usd <amount> --note <text> [--run <run id>]` records earlier spend or settles a killed run (Node 22.18 or later; older versions need `--experimental-strip-types`).
+`EVAL_DRY=1` prints the plan, the worst case and the remaining allowance, starting no server and no model.
+The CLI checks a cap between turns, so a call can end slightly above its cap; keep headroom under the M1 cap.
+
+Each run records the CLI version the servers and the harness use, the models seen (the Design Agent's from the CLI's session transcripts, since the server log does not name it; the judge's and the Design-Agent-only arm's from their result events; the Director's are not recorded), a fingerprint of the configuration the Design Agent's CLI inherits from its working directory (user and project settings, instructions and rules, by redacted label, size and SHA-256 only, never content), the SHA-256 of every harness file and the commit.
+After the run, results.json, summary.md, the server logs and the exported PNGs are copied to `<EVAL_ARCHIVE_DIR>/<run id>` (`~/.local/share/creatorbrio-m1-eval/acceptance` by default), owner-only, so the evidence outlives the worktree.
 
 ## Typed asset lifecycle
 

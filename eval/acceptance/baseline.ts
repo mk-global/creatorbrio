@@ -6,6 +6,7 @@ import { getClaudePath } from "@/lib/claude-path";
 import { designAgentArgs, designAgentSettings } from "@/lib/design-agent";
 import { resolveReferenceImages } from "@/lib/reference-images";
 import { cleanEnv, ROOT } from "./server";
+import { modelsFromResult, usageFromCli, type TokenUsage } from "./usage";
 
 /**
  * The comparison arm: the Design Agent alone, exactly as the product ran it
@@ -20,6 +21,10 @@ export interface BaselineResult {
   ok: boolean;
   durationMs: number;
   costUsd: number | null;
+  /** Model token usage, turns and models from the CLI's result event. */
+  usage: TokenUsage | null;
+  turns: number | null;
+  models: string[];
   subtype: string | null;
   resultText: string | null;
   error: string | null;
@@ -38,11 +43,13 @@ export async function runDesignAgentOnly(options: { origin: string; carouselId: 
   });
   const settings = designAgentSettings();
   if (!settings.ok) throw new Error(`Design Agent setting invalid: ${settings.code}`);
+  // The paid-run preflight requires an explicit cap; never run this arm without one.
+  if (settings.budgetUsd === null) throw new Error("DESIGN_AGENT_MAX_BUDGET_USD must be set for the Design-Agent-only arm");
   const args = designAgentArgs({
     taskMessage: options.message,
     systemPrompt,
     resumeSessionId: null,
-    // The same optional cap the chat route reads; none unless the operator sets one.
+    // The same cap the chat route reads, from the same setting.
     budgetUsd: settings.budgetUsd,
   });
 
@@ -83,6 +90,9 @@ export async function runDesignAgentOnly(options: { origin: string; carouselId: 
         ok: !error && !!f && !f.is_error,
         durationMs: Date.now() - started,
         costUsd: typeof f?.total_cost_usd === "number" ? f.total_cost_usd : null,
+        usage: usageFromCli(f?.usage),
+        turns: typeof f?.num_turns === "number" ? f.num_turns : null,
+        models: modelsFromResult(f),
         subtype: typeof f?.subtype === "string" ? f.subtype : null,
         resultText: typeof f?.result === "string" ? f.result.slice(0, 4000) : null,
         error,

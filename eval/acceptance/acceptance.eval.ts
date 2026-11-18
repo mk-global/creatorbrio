@@ -1,25 +1,32 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveBrandForCarousel } from "@/lib/brand";
+import { findClaudePath } from "@/lib/claude-path";
 import type { Carousel } from "@/types/carousel";
 import { AppClient, logEntries, logOffset, readRunRecord, serverCosts, type ChatOptions, type ChatResult } from "./app";
+import { archiveDir, archiveRun } from "./archive";
 import { runDesignAgentOnly } from "./baseline";
+import { parseCaps, parseRepeat, planRun, preflight, renderPlan, type PlanItem } from "./budget";
+import { cliVersion, configFingerprint, envLocalCliPath, gitState, harnessHashes, redactPath, transcriptModels, type EnvironmentRecord } from "./environment";
 import { health, imageServiceUrl, observeBusy, waitForAdmission, type BusyObservation } from "./image-service";
-import { judgeOutcome, judgePairwise, type JudgeContext } from "./judge";
+import { judgeOutcome, judgePairwise, judgeRevision, type JudgeContext } from "./judge";
+import { appendLedger, DEFAULT_TICKET, ledgerPath, m1CapUsd, readLedger, type LedgerEntry } from "./ledger";
 import {
   renderSummary,
   stageDurations,
+  totals,
   type Check,
   type ComparisonRecord,
   type ImageServiceEvidence,
   type RunResults,
   type ScenarioRecord,
 } from "./report";
-import { founderPhoto, SCENARIOS, type Scenario, type ScenarioId } from "./scenarios";
-import { ROOT, runDir, startServer, type HarnessPort, type RunningServer } from "./server";
+import { founderPhoto, SCENARIOS, SYNTHETIC_BRAND, type Scenario } from "./scenarios";
+import { cleanEnv, ROOT, runDir, runId, startServer, type HarnessPort, type RunningServer } from "./server";
 import {
   checkExportFiles,
   checkFileHashes,
@@ -42,11 +49,27 @@ import {
  * deterministic, so it only runs when invoked explicitly:
  *
  *   npm run build
- *   EVAL_ONLY=S1,S2 npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts
+ *   DIRECTOR_MAX_BUDGET_USD=0.50 DESIGN_AGENT_MAX_BUDGET_USD=3.00 EVAL_ONLY=S1,S10 EVAL_REPEAT=3 \
+ *     npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts
  *
  * EVAL_MODE=dev uses `next dev` instead of a production build; EVAL_COMPARE=0
  * skips the Design-Agent-only comparison. A test fails only on a harness
  * error; quality misses are recorded in results.json and summary.md.
+ *
+ * Spending (#224): both per-call caps are required and are given to every
+ * server and to the Design-Agent-only arm. Before anything starts, the
+ * preflight (budget.ts) computes the plan's worst case from those caps and
+ * the judge's own cap and refuses the run when it exceeds what remains of
+ * EVAL_M1_CAP_USD (50 by default) after the ledger at EVAL_LEDGER
+ * (ledger.ts). The run reserves its worst case in the ledger before it
+ * spends anything and records what it measured when it ends. EVAL_DRY=1
+ * prints the plan, the worst case and the remaining allowance and stops
+ * there, starting no server and no model. EVAL_REPEAT=n runs every selected
+ * scenario n times, repetition by repetition, in the same order. EVAL_TICKET
+ * names the ticket the ledger entries are for (#221 by default). After the
+ * run, results.json, summary.md, the server logs and the exported PNGs are
+ * copied to <EVAL_ARCHIVE_DIR>/<run id> (EVAL_ARCHIVE_DIR is
+ * ~/.local/share/creatorbrio-m1-eval/acceptance by default), owner-only.
  *
  * Scenarios that need generated images first wait, for up to
  * EVAL_ADMISSION_WAIT_MS (10 minutes by default), for the image service's
@@ -81,19 +104,46 @@ const OPTIONAL_UNAVAILABLE = /^An optional image for slide \d+ could not be made
 /** An unused loopback port, so the image client sees "not running". */
 const NO_IMAGE_SERVICE_URL = "http://127.0.0.1:8799";
 
+const DRY = process.env.EVAL_DRY === "1";
+const TICKET = process.env.EVAL_TICKET?.trim() || DEFAULT_TICKET;
 const selected = SCENARIOS.filter((s) => !ONLY || ONLY.has(s.id));
+// The preflight runs before anything else; a missing cap, a bad setting or a
+// worst case over the remaining allowance stops the run here, before any spend.
+const CAPS = parseCaps(process.env);
+const PLAN = planRun({ scenarios: selected, repeat: parseRepeat(process.env.EVAL_REPEAT), compare: COMPARE, caps: CAPS });
+const LEDGER = ledgerPath();
+const LEDGER_LABEL = redactPath(LEDGER, os.homedir());
+const M1_CAP_USD = m1CapUsd();
+const PREFLIGHT = preflight(PLAN, readLedger(LEDGER), M1_CAP_USD);
+if (!DRY && !PREFLIGHT.ok) throw new Error(PREFLIGHT.message);
+/** Where the durable copy goes; resolved now so a bad EVAL_ARCHIVE_DIR stops the run before any spend. */
+const ARCHIVE_DIR = archiveDir(runId());
+/** Given to every server and read by the Design-Agent-only arm, so every paid call is capped. */
+const CAP_ENV = {
+  DIRECTOR_MAX_BUDGET_USD: process.env.DIRECTOR_MAX_BUDGET_USD!.trim(),
+  DESIGN_AGENT_MAX_BUDGET_USD: process.env.DESIGN_AGENT_MAX_BUDGET_USD!.trim(),
+};
+
 const started = Date.now();
 const results: RunResults = {
+  runId: runId(),
   startedAt: new Date(started).toISOString(),
   mode: MODE,
   commit: execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: ROOT }).toString().trim(),
+  plan: PLAN,
+  spend: { ledger: LEDGER_LABEL, preflight: PREFLIGHT, reservation: null, spend: null, error: null },
+  brand: null,
+  environment: null,
+  archive: null,
   scenarios: [],
   comparisons: [],
   wallMs: 0,
 };
-/** Exported PNGs of each scenario's Director arm, for the comparison. */
-const directorPngs = new Map<ScenarioId, string[]>();
-const sessions = new Map<ScenarioId, { carouselId: string; sessionId: string | null }>();
+/** Exported PNGs of each run's Director arm by pairing key, for the comparison and the revision judge. */
+const directorPngs = new Map<string, string[]>();
+const sessions = new Map<string, { carouselId: string; sessionId: string | null }>();
+/** The pairing key of the run a revision resumes: its source in the same repetition. */
+const sourceKey = (scenario: Scenario, record: { repetition: number }) => `${scenario.revisionOf}#${record.repetition}`;
 
 // ---------------------------------------------------------------------------
 // One server at a time: they share this checkout's data files.
@@ -106,11 +156,22 @@ async function serverFor(key: keyof typeof PORTS): Promise<RunningServer> {
   const server = await startServer({
     mode: MODE,
     port: PORTS[key],
-    // The address the harness polls, so the app cannot be pointed elsewhere by `.env.local`.
-    env: { IMAGE_SERVICE_URL: key === "no-images" ? NO_IMAGE_SERVICE_URL : imageServiceUrl() },
+    // The address the harness polls, so the app cannot be pointed elsewhere by
+    // `.env.local`, and the explicit per-call caps, which take precedence over it.
+    env: { IMAGE_SERVICE_URL: key === "no-images" ? NO_IMAGE_SERVICE_URL : imageServiceUrl(), ...CAP_ENV },
   });
   current = { key, server };
+  if (!results.brand) {
+    const brand = await new AppClient(server.origin).ensureBrand(SYNTHETIC_BRAND);
+    results.brand = { id: brand.id, name: brand.name };
+  }
   return server;
+}
+
+/** The synthetic brand's id; every harness carousel is created in it. */
+function brandId(): string {
+  if (!results.brand) throw new Error("The synthetic brand was not created");
+  return results.brand.id;
 }
 
 async function stopServer(signal?: NodeJS.Signals) {
@@ -126,11 +187,120 @@ async function save() {
   await writeFile(path.join(runDir(), "summary.md"), renderSummary(results));
 }
 
-afterAll(async () => {
-  await stopServer();
-  await save();
-  console.info(`[acceptance] results in ${runDir()}`);
-}, 60_000);
+// ---------------------------------------------------------------------------
+// The environment record, the ledger and the durable copy.
+
+/** The CLI the servers spawn: `.env.local`'s CLAUDE_CLI_PATH, which they load, or the app's own discovery without the shell's. */
+function serverCliPath(): string | null {
+  const configured = envLocalCliPath(ROOT);
+  if (configured) return configured;
+  const saved = process.env.CLAUDE_CLI_PATH;
+  delete process.env.CLAUDE_CLI_PATH;
+  try {
+    return findClaudePath();
+  } finally {
+    if (saved !== undefined) process.env.CLAUDE_CLI_PATH = saved;
+  }
+}
+
+const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+
+function environmentRecord(): EnvironmentRecord {
+  const home = os.homedir();
+  const git = gitState(ROOT);
+  const serverCli = serverCliPath();
+  const harnessCli = findClaudePath();
+  return {
+    commit: git.commit,
+    commitDirty: git.dirty,
+    node: process.version,
+    platform: process.platform,
+    cli: {
+      server: { path: serverCli ? redactPath(serverCli, home) : null, version: cliVersion(serverCli, cleanEnv()) },
+      harness: { path: harnessCli ? redactPath(harnessCli, home) : null, version: cliVersion(harnessCli, cleanEnv()) },
+    },
+    models: {
+      designAgent: { models: [], source: "filled in after the run" },
+      director: { models: [], source: "not recorded: the server logs the Director's cost and turns only, and its CLI keeps no session" },
+      designAgentOnly: [],
+      judge: [],
+    },
+    inheritedConfiguration: configFingerprint({ home, project: ROOT, configDir: process.env.CLAUDE_CONFIG_DIR || undefined }),
+    harnessFiles: harnessHashes(path.join(ROOT, "eval", "acceptance")),
+  };
+}
+
+/** The models seen in this run's usage records and session transcripts. */
+function recordModels(env: EnvironmentRecord) {
+  const sessionIds = results.scenarios.flatMap((r) => r.chats.map((c) => c.result.sessionId)).filter((id): id is string => !!id);
+  const design = transcriptModels(sessionIds, CONFIG_DIR);
+  env.models.designAgent = design.length
+    ? { models: design, source: "the CLI's session transcripts; the server log does not record the model" }
+    : { models: [], source: "not found: the server log does not record the model and no session transcript was found" };
+  const union = (lists: (string[] | undefined)[]) => [...new Set(lists.flatMap((l) => l ?? []))].sort();
+  env.models.designAgentOnly = union(results.comparisons.map((c) => c.baseline?.models));
+  env.models.judge = union([
+    ...results.scenarios.flatMap((r) => [r.judge?.models, r.revisionJudge?.models]),
+    ...results.comparisons.flatMap((c) => [c.baselineJudge?.models, c.pairwise?.result.models]),
+  ]);
+}
+
+const ledgerNote = (what: string) => `acceptance ${PLAN.scenarioIds.join(",")} x${PLAN.repeat}, compare ${PLAN.compare ? "on" : "off"}, ${MODE}: ${what}`;
+
+if (!DRY) {
+  beforeAll(() => {
+    // Checked again just before the reservation, in case the ledger changed since the preflight.
+    const check = preflight(PLAN, readLedger(LEDGER), M1_CAP_USD);
+    if (!check.ok) throw new Error(check.message);
+    const reservation: LedgerEntry = {
+      at: new Date().toISOString(),
+      kind: "reservation",
+      ticket: TICKET,
+      runId: results.runId,
+      commit: results.commit,
+      costUsd: PLAN.worstCaseUsd,
+      note: ledgerNote("worst case reserved before the run"),
+    };
+    appendLedger(LEDGER, reservation);
+    results.spend = { ledger: LEDGER_LABEL, preflight: check, reservation, spend: null, error: null };
+    results.environment = environmentRecord();
+  });
+
+  afterAll(async () => {
+    await stopServer();
+    if (results.environment) recordModels(results.environment);
+    await save();
+    // The measured cost settles the reservation, also when the harness failed.
+    const errors = results.scenarios.filter((r) => r.harnessError).length + results.comparisons.filter((c) => c.harnessError).length;
+    const completed = results.scenarios.filter((r) => r.outcome === "completed").length;
+    try {
+      if (results.spend?.reservation) {
+        const spend: LedgerEntry = {
+          at: new Date().toISOString(),
+          kind: "spend",
+          ticket: TICKET,
+          runId: results.runId,
+          commit: results.commit,
+          costUsd: Math.round(totals(results).all * 1e6) / 1e6,
+          note: ledgerNote(`${completed} of ${PLAN.items.length} completed, ${errors ? `${errors} harness failure(s), ` : ""}measured cost`),
+        };
+        appendLedger(LEDGER, spend);
+        results.spend.spend = spend;
+      }
+    } catch (err) {
+      if (results.spend) results.spend.error = (err as Error).message;
+    }
+    await save();
+    try {
+      const files = archiveRun(runDir(), ARCHIVE_DIR);
+      results.archive = { dir: redactPath(ARCHIVE_DIR, os.homedir()), files: files.length, error: null };
+    } catch (err) {
+      results.archive = { dir: redactPath(ARCHIVE_DIR, os.homedir()), files: 0, error: (err as Error).message };
+    }
+    await save();
+    console.info(`[acceptance] results in ${runDir()}; archived to ${ARCHIVE_DIR}`);
+  }, 120_000);
+}
 
 // ---------------------------------------------------------------------------
 // Evidence helpers.
@@ -164,15 +334,19 @@ async function judgeContext(scenario: Scenario, carousel: Carousel): Promise<Jud
     audience: scenario.audience,
     constraints: scenario.constraints,
     brand: brand.name
-      ? `${brand.name}; colours ${Object.values(brand.colors).join(", ")}; fonts ${brand.fonts.heading} and ${brand.fonts.body}`
+      ? `${brand.name}; colours ${Object.entries(brand.colors)
+          .map(([role, hex]) => `${role} ${hex}`)
+          .join(", ")}; heading font ${brand.fonts.heading}, body font ${brand.fonts.body}; style and voice: ${brand.styleKeywords.join(", ") || "none stated"}. Judge brandCoherent against this brand.`
       : "No brand configured; the studio's professional defaults apply, so judge internal consistency.",
     notes: scenario.notes,
   };
 }
 
-function newRecord(scenario: Scenario): ScenarioRecord {
+function newRecord(scenario: Scenario, item: PlanItem): ScenarioRecord {
   return {
     id: scenario.id,
+    repetition: item.repetition,
+    key: item.key,
     title: scenario.title,
     kind: scenario.kind,
     server: { port: 0, mode: MODE, readyMs: 0 },
@@ -188,6 +362,7 @@ function newRecord(scenario: Scenario): ScenarioRecord {
     logEntries: 0,
     export: null,
     judge: null,
+    revisionJudge: null,
     imageService: null,
     review: null,
     reuse: null,
@@ -272,12 +447,12 @@ async function finish(
   }
 
   if (ended === "completed" && carousel.slides.length > 0) {
-    const exported = await app.exportPngs(carouselId, path.join(runDir(), `${scenario.id}-director`));
+    const exported = await app.exportPngs(carouselId, path.join(runDir(), `${scenario.id}-r${record.repetition}-director`));
     record.export = exported.ok
       ? { ok: true, pngs: exported.files.length, files: exported.files, durationMs: exported.durationMs }
       : { ok: false, pngs: 0, error: `${exported.status} ${exported.error}`, durationMs: exported.durationMs };
     if (exported.ok) {
-      directorPngs.set(scenario.id, exported.files);
+      directorPngs.set(record.key, exported.files);
       if (options.judge) record.judge = await judgeOutcome(await judgeContext(scenario, carousel), exported.files);
     }
   }
@@ -419,17 +594,17 @@ async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
   let carouselId: string;
   let sessionId: string | null = null;
   if (scenario.revisionOf) {
-    const prior = sessions.get(scenario.revisionOf);
+    const prior = sessions.get(sourceKey(scenario, record));
     if (!prior) {
       // A revision of a carousel whose first run did not complete tests something else.
       record.outcome = "skipped";
-      record.observations.push(`needs ${scenario.revisionOf} to complete in the same run`);
+      record.observations.push(`needs ${sourceKey(scenario, record)} to complete in the same run`);
       return;
     }
     carouselId = prior.carouselId;
     sessionId = prior.sessionId;
   } else {
-    carouselId = (await app.createCarousel(`Acceptance ${scenario.id}`, scenario.aspectRatio)).id;
+    carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
     if (scenario.reference) await app.addReference(carouselId, await founderPhoto(), "founder-photo.png");
   }
   record.carouselId = carouselId;
@@ -440,7 +615,7 @@ async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
   const retried = await retryPartialRun(record, scenario, server, carouselId, logFrom);
   if (retried) ({ chat: last, carousel } = retried);
   else await designChecks(record, scenario, carousel, last, server);
-  if (record.outcome === "completed") sessions.set(scenario.id, { carouselId, sessionId: last.sessionId });
+  if (record.outcome === "completed") sessions.set(record.key, { carouselId, sessionId: last.sessionId });
 
   if (scenario.kind === "revision") {
     check(record, "session resumed", !!sessionId && !lastOf(last, "error"), `resumed ${sessionId ? "the earlier session" : "nothing"}; error ${lastOf(last, "error")?.code ?? "none"}`);
@@ -450,13 +625,22 @@ async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
     record.observations.push(`central message before "${b?.centralMessage?.value ?? "-"}", after "${a?.centralMessage?.value ?? "-"}"`);
     const plan = record.costs?.directorPlan;
     if (plan) record.observations.push(`revision plan: requestType ${plan.requestType}, generate ${plan.generate}, reuse ${plan.reuse}`);
+    // Whether the revision kept the brief and made the change, judged from the sets before and after.
+    const beforePngs = directorPngs.get(sourceKey(scenario, record));
+    const afterPngs = directorPngs.get(record.key);
+    const source = SCENARIOS.find((s) => s.id === scenario.revisionOf);
+    if (record.outcome === "completed" && beforePngs && afterPngs && source) {
+      record.revisionJudge = await judgeRevision({ ...(await judgeContext(scenario, carousel)), originalMessage: source.message }, { before: beforePngs, after: afterPngs });
+    } else {
+      record.observations.push("revision not judged against the set before it: the revision did not complete with an export");
+    }
   }
 }
 
 async function runImageServiceUnavailable(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("no-images");
   const app = new AppClient(server.origin);
-  const carouselId = (await app.createCarousel(`Acceptance ${scenario.id}`, scenario.aspectRatio)).id;
+  const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
   const last = await chat(record, app, "request", { carouselId, message: scenario.message });
@@ -493,7 +677,7 @@ function busyLine(after: string, busy: BusyObservation): string {
 async function runCancel(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("main");
   const app = new AppClient(server.origin);
-  const carouselId = (await app.createCarousel(`Acceptance ${scenario.id}`, scenario.aspectRatio)).id;
+  const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
   const stop: { logAt: Promise<number> | null } = { logAt: null };
@@ -548,7 +732,7 @@ async function runCancel(scenario: Scenario, record: ScenarioRecord) {
 async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
   let server = await serverFor("own");
   const app = new AppClient(server.origin);
-  const carouselId = (await app.createCarousel(`Acceptance ${scenario.id}`, scenario.aspectRatio)).id;
+  const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
   const stop: { promise: Promise<void> | null } = { promise: null };
@@ -611,9 +795,13 @@ async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
 // ---------------------------------------------------------------------------
 // Comparison: the Design Agent alone on a fresh carousel, then a blind pairwise judgment.
 
-async function runComparison(scenario: Scenario): Promise<ComparisonRecord> {
-  const record: ComparisonRecord = { id: scenario.id, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, skipped: null, harnessError: null };
-  const director = directorPngs.get(scenario.id);
+function newComparison(scenario: Scenario, item: PlanItem): ComparisonRecord {
+  return { id: scenario.id, repetition: item.repetition, key: item.key, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, skipped: null, harnessError: null };
+}
+
+async function runComparison(scenario: Scenario, item: PlanItem): Promise<ComparisonRecord> {
+  const record = newComparison(scenario, item);
+  const director = directorPngs.get(item.key);
   if (!director) {
     // For example, the Director arm was blocked because an image could not be made.
     record.skipped = "the Director arm produced no export to compare";
@@ -621,7 +809,7 @@ async function runComparison(scenario: Scenario): Promise<ComparisonRecord> {
   }
   const server = await serverFor("main");
   const app = new AppClient(server.origin);
-  const carousel = await app.createCarousel(`Acceptance ${scenario.id} baseline`, scenario.aspectRatio);
+  const carousel = await app.createCarousel(`Acceptance ${item.key} baseline`, scenario.aspectRatio, brandId());
   record.baselineCarouselId = carousel.id;
   if (scenario.reference) await app.addReference(carousel.id, await founderPhoto(), "founder-photo.png");
   record.baseline = await runDesignAgentOnly({ origin: server.origin, carouselId: carousel.id, message: scenario.message });
@@ -630,7 +818,7 @@ async function runComparison(scenario: Scenario): Promise<ComparisonRecord> {
     record.baselineExport = { ok: false, pngs: 0, error: "no slides" };
     return record;
   }
-  const exported = await app.exportPngs(carousel.id, path.join(runDir(), `${scenario.id}-baseline`));
+  const exported = await app.exportPngs(carousel.id, path.join(runDir(), `${scenario.id}-r${item.repetition}-baseline`));
   record.baselineExport = exported.ok ? { ok: true, pngs: exported.files.length } : { ok: false, pngs: 0, error: `${exported.status} ${exported.error}` };
   if (!exported.ok) return record;
   const context = await judgeContext(scenario, after);
@@ -641,15 +829,24 @@ async function runComparison(scenario: Scenario): Promise<ComparisonRecord> {
 
 // ---------------------------------------------------------------------------
 
-describe.sequential(`creative run acceptance (${MODE})`, () => {
-  for (const scenario of selected) {
-    it(`${scenario.id}: ${scenario.title}`, async () => {
+if (DRY) {
+  // The plan only: no server, no model, no ledger entry.
+  describe("creative run acceptance (dry run)", () => {
+    it("fits the remaining M1 allowance", () => {
+      console.info(renderPlan(PLAN, PREFLIGHT, LEDGER_LABEL));
+      expect(PREFLIGHT.ok, PREFLIGHT.message).toBe(true);
+    });
+  });
+} else describe.sequential(`creative run acceptance (${MODE})`, () => {
+  for (const item of PLAN.items) {
+    const scenario = selected.find((s) => s.id === item.id)!;
+    it(`${item.key}: ${scenario.title}`, async () => {
       const t0 = Date.now();
-      const record = newRecord(scenario);
+      const record = newRecord(scenario, item);
       results.scenarios.push(record);
       try {
         // A revision whose first run did not complete is skipped by its driver, without waiting.
-        const priorMissing = !!scenario.revisionOf && !sessions.has(scenario.revisionOf);
+        const priorMissing = !!scenario.revisionOf && !sessions.has(sourceKey(scenario, record));
         let admitted = true;
         if (scenario.needsImages && !priorMissing) {
           const admission = await waitForAdmission();
@@ -671,12 +868,12 @@ describe.sequential(`creative run acceptance (${MODE})`, () => {
       }
       expect(record.harnessError).toBeNull();
 
-      if (COMPARE && scenario.compare) {
+      if (item.comparison) {
         let comparison: ComparisonRecord;
         try {
-          comparison = await runComparison(scenario);
+          comparison = await runComparison(scenario, item);
         } catch (err) {
-          comparison = { id: scenario.id, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, skipped: null, harnessError: (err as Error).stack ?? String(err) };
+          comparison = { ...newComparison(scenario, item), harnessError: (err as Error).stack ?? String(err) };
         }
         results.comparisons.push(comparison);
         await save();
