@@ -397,6 +397,9 @@ export interface ServerCosts {
   directorMs: number | null;
   /** The Director's CLI turns; its token counts are not in the server's records. */
   directorTurns: number | null;
+  /** Director calls the log shows (one "planned" line each), and the cost each one carried (a call without one has no entry). */
+  directorRuns: number;
+  directorCallCosts: number[];
   directorPlan: LogEntry["fields"] | null;
   designCostUsd: number | null;
   designMs: number | null;
@@ -405,6 +408,14 @@ export interface ServerCosts {
   designTurns: number | null;
   /** Design runs whose line carried no usage (for example, the CLI never reported a result). */
   designRunsWithoutUsage: number;
+  /**
+   * Design runs the log shows (one "run finished" line each), and the numeric
+   * cost each one carried. The cost and the usage are separate fields of the
+   * line, so settlement counts by cost; the sums above hide a run without one
+   * and a run above its limit.
+   */
+  designRuns: number;
+  designCallCosts: number[];
   imagesStaged: number;
   imageMs: number[];
   imageFailures: LogEntry["fields"][];
@@ -430,12 +441,16 @@ export async function serverCosts(logPath: string, carouselId: string, fromOffse
     directorCostUsd: sum(planned.map((e) => num(e.fields.costUsd))),
     directorMs: sum(planned.map((e) => num(e.fields.durationMs))),
     directorTurns: sum(planned.map((e) => num(e.fields.turns))),
+    directorRuns: planned.length,
+    directorCallCosts: planned.map((e) => num(e.fields.costUsd)).filter((v): v is number => v !== null),
     directorPlan: director.at(-1)?.fields ?? null,
     designCostUsd: sum(finished.map((e) => num(e.fields.designCostUsd))),
     designMs: sum(finished.map((e) => num(e.fields.designDurationMs))),
     designUsage: addUsage(usages),
     designTurns: sum(designed.map((e) => num(e.fields.designTurns))),
     designRunsWithoutUsage: usages.filter((u) => !u).length,
+    designRuns: designed.length,
+    designCallCosts: designed.map((e) => num(e.fields.designCostUsd)).filter((v): v is number => v !== null),
     imagesStaged: staged.length,
     imageMs: staged.map((e) => num(e.fields.durationMs) ?? 0),
     imageFailures: entries.filter((e) => e.tag === "[creative-run] image failed").map((e) => e.fields),

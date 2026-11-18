@@ -31,3 +31,11 @@ export function groupBy<T>(items: T[], key: (item: T) => string): Map<string, T[
   }
   return out;
 }
+
+/**
+ * A run's request latency: the sum of its chat requests' own durations, which
+ * is what a user waits. Unlike the harness's wall time it leaves out judging,
+ * export, waits for the image service and the checks. Null when no chat was sent.
+ */
+export const requestMs = (r: { chats: { result: { durationMs: number } }[] }): number | null =>
+  r.chats.length ? r.chats.reduce((a, c) => a + c.result.durationMs, 0) : null;

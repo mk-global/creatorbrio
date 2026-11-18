@@ -1,12 +1,13 @@
 import type { ChatResult, ServerCosts } from "./app";
 import type { BaselineResult } from "./baseline";
-import type { Preflight, RunPlan } from "./budget";
-import type { EnvironmentRecord } from "./environment";
+import type { Preflight, RunPlan, Settlement } from "./budget";
+import { redactText, type EnvironmentRecord, type Redaction } from "./environment";
 import type { AdmissionResult, BusyObservation, HealthSample } from "./image-service";
 import type { LedgerEntry } from "./ledger";
 import type { PlannedAsset, PlanSummary, StagedSnapshot } from "./verify";
 import { MIN_READ_TURNS, OUTCOME_DIMENSIONS, type Arm, type JudgeCall, type OutcomeVerdict, type PairwiseVerdict, type RevisionVerdict } from "./judge";
 import { renderBaselineSections } from "./report-baseline";
+import { requestMs } from "./stats";
 import type { ScenarioId } from "./scenarios";
 
 /** The recorded evidence of one harness run, and its Markdown summary. */
@@ -88,8 +89,15 @@ export interface ScenarioRecord {
   afterStop: { signal: string; ended: unknown; tasks: { key: string; state: string; sha256: string | null }[]; staging: StagedSnapshot } | null;
   checks: Check[];
   observations: string[];
+  /** Harness wall time for this run: everything the test did, including judging, export, waits and checks. Not request latency. */
   wallMs: number;
   harnessError: string | null;
+  /**
+   * The driver returned or failed. False while it runs and after a test
+   * timeout, when what had started is unknown and settlement charges the
+   * item's full worst case.
+   */
+  finished: boolean;
 }
 
 export interface ComparisonRecord {
@@ -104,6 +112,8 @@ export interface ComparisonRecord {
   /** Why no comparison was made when that is a legitimate outcome, such as a blocked Director arm. */
   skipped: string | null;
   harnessError: string | null;
+  /** The comparison returned or failed; false while it runs and after a test timeout. */
+  finished: boolean;
 }
 
 export interface SpendRecord {
@@ -113,6 +123,8 @@ export interface SpendRecord {
   /** The reservation appended before the run, and the spend entry appended after it. */
   reservation: LedgerEntry | null;
   spend: LedgerEntry | null;
+  /** How the spend entry was worked out, per plan item: measured costs, and calls charged at their bound. */
+  settlement: Settlement | null;
   error: string | null;
 }
 
@@ -132,7 +144,13 @@ export interface RunResults {
   archive: { dir: string; files: number; error: string | null } | null;
   scenarios: ScenarioRecord[];
   comparisons: ComparisonRecord[];
+  /** Harness wall time for the whole run, not request latency. */
   wallMs: number;
+}
+
+/** results.json as written: pretty JSON with the home folder and the checkout replaced, so no path to either is stored. */
+export function serializeResults(results: RunResults, redaction?: Redaction): string {
+  return redactText(JSON.stringify(results, null, 2), redaction);
 }
 
 export function stageDurations(result: ChatResult): StageDurations {
@@ -185,21 +203,24 @@ export function totals(results: RunResults) {
   return { director, design, baseline, judges, all: director + design + baseline + judges };
 }
 
-export function renderSummary(results: RunResults): string {
+export function renderSummary(results: RunResults, redaction?: Redaction): string {
   const lines: string[] = [];
   const t = totals(results);
   lines.push(`# Creative run acceptance results`);
   lines.push("");
   lines.push(`Run started ${results.startedAt} against commit \`${results.commit}\` in ${results.mode} mode.`);
-  lines.push(`Wall time ${s(results.wallMs)} s; model spend ${usd(t.all)} (Director ${usd(t.director)}, design ${usd(t.design)}, Design-Agent-only baseline ${usd(t.baseline)}, judges ${usd(t.judges)}).`);
+  lines.push(`Harness wall time ${s(results.wallMs)} s (everything the harness did, including judging, export and waits; request latency is reported separately).`);
+  lines.push(`Measured model spend ${usd(t.all)} from calls that reported a cost (Director ${usd(t.director)}, design ${usd(t.design)}, Design-Agent-only baseline ${usd(t.baseline)}, judges ${usd(t.judges)}); a call that reported none is counted as 0 here and charged at its per-call limit in the ledger settlement below.`);
   lines.push(`Costs come from the server log and the CLI result events; image generation is local and has no API cost.`);
   lines.push("");
   lines.push(...renderBaselineSections(results));
 
   lines.push(`## Runs, stage timings and costs`);
   lines.push("");
-  lines.push(`| Scenario | Outcome | Slides | Generated | Wall s | Sources s | Planning s | Images s | Design s | Director | Design | Judge |`);
-  lines.push(`|---|---|---|---|---|---|---|---|---|---|---|---|`);
+  lines.push(`Request s is the sum of the chat requests' own durations; Harness wall s also includes judging, export, waits and checks.`);
+  lines.push("");
+  lines.push(`| Scenario | Outcome | Slides | Generated | Request s | Harness wall s | Sources s | Planning s | Images s | Design s | Director | Design | Judge |`);
+  lines.push(`|---|---|---|---|---|---|---|---|---|---|---|---|---|`);
   for (const r of results.scenarios) {
     const label = `${r.key} ${r.title}`;
     const stages = r.chats.reduce<StageDurations>((acc, c) => {
@@ -207,7 +228,7 @@ export function renderSummary(results: RunResults): string {
       return acc;
     }, {});
     lines.push(
-      `| ${cell(label)} | ${cell(r.outcome)} | ${r.slides ?? "-"} | ${r.generatedThisRun ?? "-"} | ${s(r.wallMs)} | ${s(stages["reading-sources"])} | ${s(stages.planning)} | ${s(stages["preparing-images"])} | ${s(stages.designing)} | ${usd(r.costs?.directorCostUsd)} | ${usd(r.costs?.designCostUsd)} | ${usd(r.judge?.costUsd)} |`
+      `| ${cell(label)} | ${cell(r.outcome)} | ${r.slides ?? "-"} | ${r.generatedThisRun ?? "-"} | ${s(requestMs(r))} | ${s(r.wallMs)} | ${s(stages["reading-sources"])} | ${s(stages.planning)} | ${s(stages["preparing-images"])} | ${s(stages.designing)} | ${usd(r.costs?.directorCostUsd)} | ${usd(r.costs?.designCostUsd)} | ${usd(r.judge?.costUsd)} |`
     );
   }
   lines.push("");
@@ -289,5 +310,5 @@ export function renderSummary(results: RunResults): string {
     }
     lines.push("");
   }
-  return lines.join("\n") + "\n";
+  return redactText(lines.join("\n") + "\n", redaction);
 }

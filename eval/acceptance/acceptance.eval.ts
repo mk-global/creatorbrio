@@ -10,15 +10,27 @@ import type { Carousel } from "@/types/carousel";
 import { AppClient, logEntries, logOffset, readRunRecord, serverCosts, type ChatOptions, type ChatResult } from "./app";
 import { archiveDir, archiveRun } from "./archive";
 import { runDesignAgentOnly } from "./baseline";
-import { parseCaps, parseRepeat, planRun, preflight, renderPlan, type PlanItem } from "./budget";
-import { cliVersion, configFingerprint, envLocalCliPath, gitState, harnessHashes, redactPath, transcriptModels, type EnvironmentRecord } from "./environment";
+import { parseCaps, parseHoldBack, parseRepeat, planRun, preflight, renderPlan, reserveRun, settleRun, type PlanItem } from "./budget";
+import {
+  assertLinkedWorktree,
+  cliVersion,
+  envLocalCliPath,
+  gitState,
+  harnessHashes,
+  inheritedConfiguration,
+  memoryRoots,
+  redactPath,
+  redactText,
+  transcriptModels,
+  type EnvironmentRecord,
+} from "./environment";
 import { health, imageServiceUrl, observeBusy, waitForAdmission, type BusyObservation } from "./image-service";
 import { judgeOutcome, judgePairwise, judgeRevision, type JudgeContext } from "./judge";
-import { appendLedger, DEFAULT_TICKET, ledgerPath, m1CapUsd, readLedger, type LedgerEntry } from "./ledger";
+import { DEFAULT_TICKET, ledgerPath, m1CapUsd, readLedger } from "./ledger";
 import {
   renderSummary,
+  serializeResults,
   stageDurations,
-  totals,
   type Check,
   type ComparisonRecord,
   type ImageServiceEvidence,
@@ -71,6 +83,22 @@ import {
  * copied to <EVAL_ARCHIVE_DIR>/<run id> (EVAL_ARCHIVE_DIR is
  * ~/.local/share/creatorbrio-m1-eval/acceptance by default), owner-only.
  *
+ * Every call is bounded by its cap plus an overshoot allowance,
+ * EVAL_OVERSHOOT_FRACTION of the cap (0.25 by default; the CLI checks a cap
+ * between turns), an assumption rather than a guarantee: a call measured above
+ * its limit is charged as measured and flagged. EVAL_HOLD_BACK_USD
+ * (0 by default) keeps part of the remaining allowance out of the run's
+ * reach: #221's post-containment rerun must fit in the same cap. When the run
+ * ends, the ledger is charged what it spent (budget.ts, settleRun): the
+ * measured cost of every call that reported one and the per-call limit of
+ * every call that started without one, so a judge that timed out, a Design
+ * Agent run that logged no cost, a harness failure or a test timeout never
+ * lowers the figure. The ledger is locked while a run reserves and settles.
+ *
+ * A non-dry run refuses to start in the repository's primary worktree, whose
+ * data/ folder holds real carousels, brands and uploads the servers would
+ * read and write; run it from a dedicated linked worktree.
+ *
  * Scenarios that need generated images first wait, for up to
  * EVAL_ADMISSION_WAIT_MS (10 minutes by default), for the image service's
  * read-only health check to say it admits work; one that is not admitted is
@@ -105,7 +133,12 @@ const OPTIONAL_UNAVAILABLE = /^An optional image for slide \d+ could not be made
 const NO_IMAGE_SERVICE_URL = "http://127.0.0.1:8799";
 
 const DRY = process.env.EVAL_DRY === "1";
+// The servers share this checkout's data/ folder: never run against a primary worktree's live data.
+if (!DRY) assertLinkedWorktree(ROOT);
 const TICKET = process.env.EVAL_TICKET?.trim() || DEFAULT_TICKET;
+/** Stored messages and the summary name neither the home folder nor this checkout. */
+const REDACTION = { home: os.homedir(), root: ROOT };
+const scrub = (text: string) => redactText(text, REDACTION);
 const selected = SCENARIOS.filter((s) => !ONLY || ONLY.has(s.id));
 // The preflight runs before anything else; a missing cap, a bad setting or a
 // worst case over the remaining allowance stops the run here, before any spend.
@@ -114,7 +147,8 @@ const PLAN = planRun({ scenarios: selected, repeat: parseRepeat(process.env.EVAL
 const LEDGER = ledgerPath();
 const LEDGER_LABEL = redactPath(LEDGER, os.homedir());
 const M1_CAP_USD = m1CapUsd();
-const PREFLIGHT = preflight(PLAN, readLedger(LEDGER), M1_CAP_USD);
+const HOLD_BACK_USD = parseHoldBack(process.env.EVAL_HOLD_BACK_USD);
+const PREFLIGHT = preflight(PLAN, readLedger(LEDGER), M1_CAP_USD, HOLD_BACK_USD);
 if (!DRY && !PREFLIGHT.ok) throw new Error(PREFLIGHT.message);
 /** Where the durable copy goes; resolved now so a bad EVAL_ARCHIVE_DIR stops the run before any spend. */
 const ARCHIVE_DIR = archiveDir(runId());
@@ -131,7 +165,7 @@ const results: RunResults = {
   mode: MODE,
   commit: execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: ROOT }).toString().trim(),
   plan: PLAN,
-  spend: { ledger: LEDGER_LABEL, preflight: PREFLIGHT, reservation: null, spend: null, error: null },
+  spend: { ledger: LEDGER_LABEL, preflight: PREFLIGHT, reservation: null, spend: null, settlement: null, error: null },
   brand: null,
   environment: null,
   archive: null,
@@ -183,8 +217,8 @@ async function stopServer(signal?: NodeJS.Signals) {
 
 async function save() {
   results.wallMs = Date.now() - started;
-  await writeFile(path.join(runDir(), "results.json"), JSON.stringify(results, null, 2));
-  await writeFile(path.join(runDir(), "summary.md"), renderSummary(results));
+  await writeFile(path.join(runDir(), "results.json"), serializeResults(results, REDACTION));
+  await writeFile(path.join(runDir(), "summary.md"), renderSummary(results, REDACTION));
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +259,16 @@ function environmentRecord(): EnvironmentRecord {
       designAgentOnly: [],
       judge: [],
     },
-    inheritedConfiguration: configFingerprint({ home, project: ROOT, configDir: process.env.CLAUDE_CONFIG_DIR || undefined }),
+    inheritedConfiguration: inheritedConfiguration({
+      home,
+      project: ROOT,
+      configDir: process.env.CLAUDE_CONFIG_DIR || undefined,
+      mode: MODE,
+      memoryRoots: memoryRoots(ROOT),
+      // What the servers receive is the harness's cleaned environment; the shell's own is compared with it.
+      serverEnv: cleanEnv(),
+      harnessEnv: process.env,
+    }),
     harnessFiles: harnessHashes(path.join(ROOT, "eval", "acceptance")),
   };
 }
@@ -245,59 +288,59 @@ function recordModels(env: EnvironmentRecord) {
   ]);
 }
 
-const ledgerNote = (what: string) => `acceptance ${PLAN.scenarioIds.join(",")} x${PLAN.repeat}, compare ${PLAN.compare ? "on" : "off"}, ${MODE}: ${what}`;
+const RUN = { runId: results.runId, commit: results.commit, ticket: TICKET };
+const ledgerLabel = `acceptance ${PLAN.scenarioIds.join(",")} x${PLAN.repeat}, compare ${PLAN.compare ? "on" : "off"}, ${MODE}`;
 
 if (!DRY) {
   beforeAll(() => {
-    // Checked again just before the reservation, in case the ledger changed since the preflight.
-    const check = preflight(PLAN, readLedger(LEDGER), M1_CAP_USD);
-    if (!check.ok) throw new Error(check.message);
-    const reservation: LedgerEntry = {
-      at: new Date().toISOString(),
-      kind: "reservation",
-      ticket: TICKET,
-      runId: results.runId,
-      commit: results.commit,
-      costUsd: PLAN.worstCaseUsd,
-      note: ledgerNote("worst case reserved before the run"),
-    };
-    appendLedger(LEDGER, reservation);
-    results.spend = { ledger: LEDGER_LABEL, preflight: check, reservation, spend: null, error: null };
+    // The preflight is checked again against the ledger as it is now and the
+    // reservation appended, as one step under the ledger lock.
+    const { check, reservation } = reserveRun({
+      ledger: LEDGER,
+      plan: PLAN,
+      capUsd: M1_CAP_USD,
+      holdBackUsd: HOLD_BACK_USD,
+      run: RUN,
+      note: `${ledgerLabel}: worst case reserved before the run`,
+    });
+    results.spend = { ledger: LEDGER_LABEL, preflight: check, reservation, spend: null, settlement: null, error: null };
     results.environment = environmentRecord();
   });
 
   afterAll(async () => {
-    await stopServer();
-    if (results.environment) recordModels(results.environment);
-    await save();
-    // The measured cost settles the reservation, also when the harness failed.
-    const errors = results.scenarios.filter((r) => r.harnessError).length + results.comparisons.filter((c) => c.harnessError).length;
-    const completed = results.scenarios.filter((r) => r.outcome === "completed").length;
-    try {
-      if (results.spend?.reservation) {
-        const spend: LedgerEntry = {
-          at: new Date().toISOString(),
-          kind: "spend",
-          ticket: TICKET,
-          runId: results.runId,
-          commit: results.commit,
-          costUsd: Math.round(totals(results).all * 1e6) / 1e6,
-          note: ledgerNote(`${completed} of ${PLAN.items.length} completed, ${errors ? `${errors} harness failure(s), ` : ""}measured cost`),
-        };
-        appendLedger(LEDGER, spend);
-        results.spend.spend = spend;
+    const problems: string[] = [];
+    // Each step is tried on its own: none may stop the settlement below.
+    const attempt = async (what: string, step: () => unknown) => {
+      try {
+        await step();
+      } catch (err) {
+        problems.push(`${what}: ${scrub((err as Error).message)}`);
       }
-    } catch (err) {
-      if (results.spend) results.spend.error = (err as Error).message;
+    };
+    await attempt("stopping the server", () => stopServer());
+    await attempt("recording models", () => results.environment && recordModels(results.environment));
+    await attempt("saving results", save);
+    // The settlement charges every call that started (budget.ts), also when the
+    // harness failed or a test timed out. If it cannot be recorded the
+    // reservation stands, and counts in full.
+    if (results.spend?.reservation) {
+      try {
+        const { spend, settlement } = settleRun({ ledger: LEDGER, results, plan: PLAN, reservedUsd: results.spend.reservation.costUsd, run: RUN, label: ledgerLabel });
+        results.spend.spend = spend;
+        results.spend.settlement = settlement;
+      } catch (err) {
+        problems.push(`settling the ledger: ${scrub((err as Error).message)}`);
+      }
     }
-    await save();
+    if (results.spend && problems.length) results.spend.error = problems.join("; ");
+    await attempt("saving results", save);
     try {
       const files = archiveRun(runDir(), ARCHIVE_DIR);
       results.archive = { dir: redactPath(ARCHIVE_DIR, os.homedir()), files: files.length, error: null };
     } catch (err) {
-      results.archive = { dir: redactPath(ARCHIVE_DIR, os.homedir()), files: 0, error: (err as Error).message };
+      results.archive = { dir: redactPath(ARCHIVE_DIR, os.homedir()), files: 0, error: scrub((err as Error).message) };
     }
-    await save();
+    await attempt("saving results", save);
     console.info(`[acceptance] results in ${runDir()}; archived to ${ARCHIVE_DIR}`);
   }, 120_000);
 }
@@ -371,6 +414,7 @@ function newRecord(scenario: Scenario, item: PlanItem): ScenarioRecord {
     observations: [],
     wallMs: 0,
     harnessError: null,
+    finished: false,
   };
 }
 
@@ -403,6 +447,18 @@ async function chat(
   return result;
 }
 
+/**
+ * Reads the carousel's costs and timings from the server log since `logFrom`
+ * into the record. A read of the log file, so it also works after the server
+ * has stopped, which the restart scenario's early returns need.
+ */
+async function collectCosts(record: ScenarioRecord, server: RunningServer, carouselId: string, logFrom: number) {
+  const { entries, ...rest } = await serverCosts(server.logPath, carouselId, logFrom);
+  record.costs = rest;
+  record.logEntries = entries.length;
+  return rest;
+}
+
 /** Fills in the outcome, assets, costs and export for a finished scenario; judges it when it completed. */
 async function finish(
   record: ScenarioRecord,
@@ -430,10 +486,7 @@ async function finish(
   const carousel = await app.getCarousel(carouselId);
   record.slides = carousel.slides.length;
   record.generatedThisRun = runAssets(carousel, [String(record.runRecord?.runId ?? "")]).length;
-  const costs = await serverCosts(server.logPath, carouselId, logFrom);
-  const { entries, ...rest } = costs;
-  record.costs = rest;
-  record.logEntries = entries.length;
+  const rest = await collectCosts(record, server, carouselId, logFrom);
   if (rest.imageFailures.length > 0) {
     const evidence = imageEvidence(record);
     // Only a failure in this chat calls for a sample now; an earlier attempt's was sampled when it happened.
@@ -780,6 +833,7 @@ async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
     // The route's cancellation ran before the process exited: staging is gone and the run cannot be retried.
     record.outcome = "not exercised: the graceful stop cancelled the run";
     record.observations.push(`${RESTART_SIGNAL} let the server cancel the run, so this exercised cancellation, not restart recovery; SIGKILL, the default, tests a crash`);
+    await collectCosts(record, server, carouselId, logFrom); // the Director ran; its cost is in the log
     return;
   }
   if (snapshot.items.length === 0) record.observations.push("nothing was staged before the stop, so reuse cannot be shown");
@@ -789,23 +843,38 @@ async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
   const status = await new AppClient(server.origin).generation(carouselId);
   record.observations.push(`after the restart: generating ${status.generating}, interrupted ${status.interrupted}`);
   const retried = await retryAndVerify(record, scenario, server, carouselId, runId, snapshot, logFrom);
-  if (!retried) check(record, "retry after restart", false, "not attempted: the image service was not admitting");
+  if (!retried) {
+    check(record, "retry after restart", false, "not attempted: the image service was not admitting");
+    await collectCosts(record, server, carouselId, logFrom); // the first chat's Director cost is in the log
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Comparison: the Design Agent alone on a fresh carousel, then a blind pairwise judgment.
 
 function newComparison(scenario: Scenario, item: PlanItem): ComparisonRecord {
-  return { id: scenario.id, repetition: item.repetition, key: item.key, baselineCarouselId: null, baseline: null, baselineExport: null, baselineJudge: null, pairwise: null, skipped: null, harnessError: null };
+  return {
+    id: scenario.id,
+    repetition: item.repetition,
+    key: item.key,
+    baselineCarouselId: null,
+    baseline: null,
+    baselineExport: null,
+    baselineJudge: null,
+    pairwise: null,
+    skipped: null,
+    harnessError: null,
+    finished: false,
+  };
 }
 
-async function runComparison(scenario: Scenario, item: PlanItem): Promise<ComparisonRecord> {
-  const record = newComparison(scenario, item);
+/** Fills `record` in place, so what was measured before a throw or a timeout stays in it and is charged. */
+async function runComparison(scenario: Scenario, item: PlanItem, record: ComparisonRecord): Promise<void> {
   const director = directorPngs.get(item.key);
   if (!director) {
     // For example, the Director arm was blocked because an image could not be made.
     record.skipped = "the Director arm produced no export to compare";
-    return record;
+    return;
   }
   const server = await serverFor("main");
   const app = new AppClient(server.origin);
@@ -816,15 +885,14 @@ async function runComparison(scenario: Scenario, item: PlanItem): Promise<Compar
   const after = await app.getCarousel(carousel.id);
   if (after.slides.length === 0) {
     record.baselineExport = { ok: false, pngs: 0, error: "no slides" };
-    return record;
+    return;
   }
   const exported = await app.exportPngs(carousel.id, path.join(runDir(), `${scenario.id}-r${item.repetition}-baseline`));
   record.baselineExport = exported.ok ? { ok: true, pngs: exported.files.length } : { ok: false, pngs: 0, error: `${exported.status} ${exported.error}` };
-  if (!exported.ok) return record;
+  if (!exported.ok) return;
   const context = await judgeContext(scenario, after);
   record.baselineJudge = await judgeOutcome(context, exported.files);
   record.pairwise = await judgePairwise(context, { director, baseline: exported.files });
-  return record;
 }
 
 // ---------------------------------------------------------------------------
@@ -861,21 +929,25 @@ if (DRY) {
         else await runRestartRetry(scenario, record);
         if (current) record.server = { port: current.server.port, mode: current.server.mode, readyMs: record.server.readyMs || current.server.readyMs };
       } catch (err) {
-        record.harnessError = (err as Error).stack ?? String(err);
+        record.harnessError = scrub((err as Error).stack ?? String(err));
       } finally {
         record.wallMs = Date.now() - t0;
+        record.finished = true; // read at settlement: a test that times out never gets here
         await save();
       }
       expect(record.harnessError).toBeNull();
 
       if (item.comparison) {
-        let comparison: ComparisonRecord;
-        try {
-          comparison = await runComparison(scenario, item);
-        } catch (err) {
-          comparison = { ...newComparison(scenario, item), harnessError: (err as Error).stack ?? String(err) };
-        }
+        // Recorded before it runs and filled in place, so a throw or a timeout keeps what the paid arm measured.
+        const comparison = newComparison(scenario, item);
         results.comparisons.push(comparison);
+        try {
+          await runComparison(scenario, item, comparison);
+        } catch (err) {
+          comparison.harnessError = scrub((err as Error).stack ?? String(err));
+        } finally {
+          comparison.finished = true;
+        }
         await save();
         expect(comparison.harnessError).toBeNull();
       }

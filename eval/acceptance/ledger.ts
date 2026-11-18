@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
  * The M1 evaluation spending ledger (#224): one JSON line per paid evaluation
@@ -19,9 +19,16 @@ import { pathToFileURL } from "node:url";
  *   node eval/acceptance/ledger.ts add --usd 3.42 --note "pilot run"
  *   node eval/acceptance/ledger.ts add --usd 4.10 --run <run id> --note "settles a killed run"
  *
+ * Reading, checking and appending is one step under an exclusive lock file
+ * next to the ledger, so two evaluation processes cannot both pass the
+ * preflight against the same remaining allowance.
+ *
  * Node builtins only, so it runs without the app's build tooling (Node 22.18 or
  * later strips the types itself; older versions need --experimental-strip-types).
  */
+
+/** The checkout this harness lives in: `eval/acceptance/` is two folders below it. */
+export const CHECKOUT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 export const DEFAULT_LEDGER_LABEL = "~/.local/share/creatorbrio-m1-eval/ledger.jsonl";
 export const DEFAULT_M1_CAP_USD = 50;
@@ -56,11 +63,44 @@ export function expandHome(p: string, home = os.homedir()): string {
   return p === "~" ? home : p.startsWith("~/") ? path.join(home, p.slice(2)) : p;
 }
 
-/** The ledger file: `EVAL_LEDGER`, or the default under the home folder; always absolute. */
-export function ledgerPath(env: Record<string, string | undefined> = process.env, home = os.homedir()): string {
+/** `p` with symbolic links resolved as far as it exists, so a link cannot hide where a path really is. */
+export function resolveReal(p: string): string {
+  let existing = path.resolve(p);
+  const rest: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    rest.unshift(path.basename(existing));
+    existing = parent;
+  }
+  return path.join(realpathSync(existing), ...rest);
+}
+
+/** Whether `child` is `parent` or lies below it, links resolved. */
+export function isInside(child: string, parent: string): boolean {
+  const rel = path.relative(resolveReal(parent), resolveReal(child));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+/** Spend and evidence must never enter Git, so neither the ledger nor the archive may live in the checkout. */
+export function assertOutsideCheckout(p: string, what: string, root = CHECKOUT_ROOT): void {
+  if (isInside(p, root)) throw new Error(`${what} must be outside the repository checkout, so evaluation spend and evidence never enter Git`);
+}
+
+/** The ledger file: `EVAL_LEDGER`, or the default under the home folder; always absolute and outside the checkout. */
+export function ledgerPath(env: Record<string, string | undefined> = process.env, home = os.homedir(), root = CHECKOUT_ROOT): string {
   const file = expandHome(env.EVAL_LEDGER?.trim() || DEFAULT_LEDGER_LABEL, home);
   if (!path.isAbsolute(file)) throw new Error("EVAL_LEDGER must be an absolute path (or start with ~/)");
+  assertOutsideCheckout(file, "EVAL_LEDGER", root);
   return file;
+}
+
+/** A USD amount of 0 or more, or `fallback` when unset. Throws for anything else. */
+export function parseNonNegativeUsd(raw: string | undefined, name: string, fallback: number): number {
+  const value = raw?.trim() ?? "";
+  if (value === "") return fallback;
+  if (!/^\d+(\.\d+)?$/.test(value) || !Number.isFinite(Number(value))) throw new Error(`${name} must be a USD amount of 0 or more such as 15`);
+  return Number(value);
 }
 
 /** A positive USD amount, or `fallback` when unset. Throws for anything else. */
@@ -129,17 +169,32 @@ export function ledgerTotals(entries: LedgerEntry[]): LedgerTotals {
   return { settledUsd, outstandingUsd, totalUsd: settledUsd + outstandingUsd, unsettled: open.map((e) => e.runId) };
 }
 
-/** Creates `dir` (and missing parents) owner-only, and makes it owner-only if it existed. */
+/**
+ * Makes sure `dir` is a private folder. A folder this call creates (with any
+ * missing parents) is made mode 700. A folder that already exists is never
+ * changed: it is accepted only when it is owned by this user and owner-only,
+ * and refused otherwise, so this code never alters the permissions of a
+ * folder someone else made.
+ */
 export function ensurePrivateDir(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (lstatSync(dir).isSymbolicLink()) throw new Error("Refusing to use a symbolic link as a private evaluation folder");
-  chmodSync(dir, 0o700);
+  const created = mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = lstatSync(dir);
+  if (st.isSymbolicLink()) throw new Error("Refusing to use a symbolic link as a private evaluation folder");
+  if (created !== undefined) return;
+  if (!st.isDirectory()) throw new Error("Refusing to use a file where a private evaluation folder is needed");
+  const foreign = typeof process.getuid === "function" && st.uid !== process.getuid();
+  if (foreign || (st.mode & 0o077) !== 0) {
+    throw new Error(
+      `Refusing to use an existing folder that is not private to this user (mode ${(st.mode & 0o777).toString(8)}${foreign ? ", owned by someone else" : ""}); this code never changes the permissions of a folder it did not create. Make it owner-only (mode 700) or choose another location`
+    );
+  }
 }
 
-/** Appends one entry, creating the ledger mode 600 in a mode-700 folder. */
+/** Appends one entry, creating the ledger mode 600 in a private folder. Callers that read first hold the lock (`withLedgerLock`). */
 export function appendLedger(file: string, entry: LedgerEntry): void {
   if (!validEntry(entry)) throw new Error("Refusing to append an invalid ledger entry");
   ensurePrivateDir(path.dirname(file));
+  if (existsSync(file) && (statSync(file).mode & 0o077) !== 0) throw new Error("Refusing to append to a ledger that is not owner-only; make it mode 600");
   const fd = openSync(file, "a", 0o600);
   try {
     writeSync(fd, JSON.stringify(entry) + "\n");
@@ -147,7 +202,74 @@ export function appendLedger(file: string, entry: LedgerEntry): void {
   } finally {
     closeSync(fd);
   }
-  chmodSync(file, 0o600);
+}
+
+/** A lock older than this was left by a process that died, and is removed. */
+export const LOCK_STALE_MS = 2 * 60_000;
+/** How long to wait for a lock another process holds before refusing. */
+export const LOCK_WAIT_MS = 10_000;
+
+const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Runs `fn` while holding the ledger's exclusive lock, a file created with
+ * O_EXCL next to the ledger (`<ledger>.lock`), so a read-check-append
+ * sequence is one step across processes. A lock older than `staleMs` is taken
+ * to be left by a dead process and is removed; a younger one is waited for up
+ * to `waitMs`, then refused with a clear error. The lock is always released.
+ */
+export function withLedgerLock<T>(file: string, fn: () => T, options: { staleMs?: number; waitMs?: number } = {}): T {
+  const staleMs = options.staleMs ?? LOCK_STALE_MS;
+  const waitMs = options.waitMs ?? LOCK_WAIT_MS;
+  ensurePrivateDir(path.dirname(file));
+  const lock = `${file}.lock`;
+  const deadline = Date.now() + waitMs;
+  let fd: number;
+  for (;;) {
+    try {
+      fd = openSync(lock, "wx", 0o600);
+      writeSync(fd, `${process.pid} ${new Date().toISOString()}\n`);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    let held: { ageMs: number; ino: number };
+    try {
+      const st = statSync(lock);
+      held = { ageMs: Date.now() - st.mtimeMs, ino: st.ino };
+    } catch {
+      continue; // released between the attempt and the look: try again at once
+    }
+    if (held.ageMs > staleMs) {
+      // Moved aside rather than deleted in place, and only if it is still the lock that was seen.
+      try {
+        if (statSync(lock).ino === held.ino) {
+          const aside = `${lock}.stale-${process.pid}-${Date.now()}`;
+          renameSync(lock, aside);
+          unlinkSync(aside);
+        }
+      } catch {
+        // Another process removed it first.
+      }
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `The spending ledger is locked by another evaluation process (lock ${Math.round(held.ageMs / 1000)} s old). Wait for it to finish; if no run is active, delete ${path.basename(lock)} next to the ledger. A lock older than ${Math.round(staleMs / 1000)} s is removed automatically.`
+      );
+    }
+    sleep(100);
+  }
+  try {
+    return fn();
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(lock);
+    } catch {
+      // Already removed.
+    }
+  }
 }
 
 const money = (v: number) => `$${v.toFixed(2)}`;
@@ -198,8 +320,10 @@ export function main(argv: string[], env: Record<string, string | undefined> = p
       costUsd,
       note: f.note.trim(),
     };
-    readLedger(file); // never append to a damaged ledger
-    appendLedger(file, entry);
+    withLedgerLock(file, () => {
+      readLedger(file); // never append to a damaged ledger
+      appendLedger(file, entry);
+    });
     return `Recorded ${money(costUsd)} as ${entry.runId}.\n\n${renderLedger(readLedger(file), m1CapUsd(env))}`;
   }
   throw new Error("Usage: ledger.ts show | add --usd <amount> --note <text> [--ticket <t>] [--run <run id>] [--commit <sha>]");
