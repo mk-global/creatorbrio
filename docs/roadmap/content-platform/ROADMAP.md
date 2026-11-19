@@ -189,6 +189,10 @@ Detailed in [SOCIAL-AUTOMATION-MIGRATION.md](SOCIAL-AUTOMATION-MIGRATION.md).
   A reply posted that nobody wanted; mitigated by the agreed reply policy.
 - **Deferred:** X and Pinterest (low priority in the research), recipe sharing between users.
 
+### Future idea parking lot (not part of Phase 9 acceptance)
+
+The [Research Intelligence Engine concept](future/RESEARCH-INTELLIGENCE.md), tracked by [#230](https://github.com/mk-global/creatorbrio/issues/230), explores upstream, cross-platform topic opportunity discovery and creative experimentation for four distinct brands. It is **FUTURE / PARKED**, has no implementation authority, and is **not** an extra Phase 9 deliverable or a change to the existing dependency graph. Research dossiers (phase 2) and performance readback (phase 5) remain their own existing roadmap outcomes. Revisit the concept only after the document's evidence, access, budget, and founder-approval triggers are met.
+
 ## First milestone (M1): contain the Design Agent
 
 **Goal.** No content a person or a web page shows the Design Agent can make it read a secret, write outside its own carousel folder, reach any host or local port other than its agent-only listener, or change anything outside its own carousel, and its behavior depends only on CreatorBrio's own configuration.
