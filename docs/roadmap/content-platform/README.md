@@ -47,6 +47,10 @@ It stays local-first and open source, and later serves a hosted edition and mobi
 - Agent containment is the first milestone, because a process running as the person's operating-system user, today's Design Agent with its shell included, can read every local secret (see the [Production API documentation](../../architecture/video-production-api.md#what-this-does-and-does-not-protect-against)), and it is a precondition for integrating publishing.
 - Self-hosted publishing is bring-your-own-app by founder decision (FD-D), replacing the review's open question on publishing distribution.
 
+## Parked future concepts
+
+- [Research Intelligence Engine](future/RESEARCH-INTELLIGENCE.md) ([tracking issue #230](https://github.com/mk-global/creatorbrio/issues/230)): multi-source audience signal discovery, brand-specific opportunity scoring and measured creative experiments. **FUTURE / PARKED; no implementation authorized.** This extends the research and insights vision without changing the approved/proposed phase sequence, current architecture or milestone scope.
+
 ## Authority and change control
 
 - Present facts: merged code and the architecture documentation win over these documents.
