@@ -7,7 +7,7 @@
  * plus a hash. Runs as root in the egress container, the only container on
  * both the internal network and an outbound bridge.
  */
-import { lookup } from "node:dns/promises";
+import { lookup, Resolver } from "node:dns/promises";
 import { createConnection, createServer, type Socket } from "node:net";
 import { nameSummary, proxyAddressAllowed, proxyDecision } from "../lib/policy";
 import { boundText, matchCanaries } from "../lib/scrub";
@@ -19,6 +19,24 @@ const log = jsonl("proxy.jsonl");
 const known = [...Object.keys(cfg.harnessNames), ...cfg.modelHosts];
 const MAX_HEAD = 16 * 1024;
 let open = 0;
+
+/**
+ * Where the proxy resolves allowlisted names: the system resolver on Linux;
+ * on macOS, where the system resolver is the harness's logging one, the
+ * upstream resolvers the VM had before the run, asked directly.
+ */
+async function resolveAll(host: string): Promise<{ address: string; family: number }[]> {
+  if (!cfg.upstreamDns?.length) return lookup(host, { all: true });
+  const r = new Resolver({ timeout: 3000, tries: 2 });
+  r.setServers(cfg.upstreamDns);
+  const [v4, v6] = await Promise.allSettled([r.resolve4(host), r.resolve6(host)]);
+  const out = [
+    ...(v4.status === "fulfilled" ? v4.value.map((address) => ({ address, family: 4 })) : []),
+    ...(v6.status === "fulfilled" ? v6.value.map((address) => ({ address, family: 6 })) : []),
+  ];
+  if (out.length === 0) throw new Error("unresolvable");
+  return out;
+}
 
 function summarizeTarget(method: string, target: string): string {
   const m = /^([^:/\s]+|\[[^\]]+\]):(\d+)$/.exec(target);
@@ -79,7 +97,7 @@ const server = createServer((client: Socket) => {
     };
     let addresses: { address: string; family: number }[] = [];
     try {
-      addresses = await lookup(decision.host, { all: true });
+      addresses = await resolveAll(decision.host);
     } catch {
       return fail("unresolvable");
     }

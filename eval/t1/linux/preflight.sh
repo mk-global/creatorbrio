@@ -21,6 +21,23 @@ done
 for a in 1.1.1.1 8.8.8.8; do tcp "$a" 443; emit tcp "$a:443" $? ""; done
 tcp "$API" 443; emit tcp_api_direct "$API:443" $? ""
 
+# IPv6 link-local: fe80::1 and the EUI-64 link-local address of every neighbour the probes above found (the gateway among them).
+# IPv6 is off on eth0, so these leave no packet; the observer counts each in the kernel's IPv6 no-route counter.
+ll_of_mac() {
+  local a b c d e f
+  IFS=: read -r a b c d e f <<<"$1"
+  printf 'fe80::%x:%x:%x:%x\n' $(((0x$a ^ 2) << 8 | 0x$b)) $((0x$c << 8 | 0xff)) $((0xfe << 8 | 0x$d)) $((0x$e << 8 | 0x$f))
+}
+lls="fe80::1"
+while read -r _ _ flags mac _ dev; do
+  [ "$flags" = 0x2 ] && [ "$dev" = eth0 ] && lls="$lls $(ll_of_mac "$mac")"
+done < <(tail -n +2 /proc/net/arp)
+for t in $(printf '%s\n' $lls | sort -u); do
+  for port in "$HP" 22 53 80 443; do
+    tcp "$t%eth0" "$port"; emit tcp_ll "$t%eth0:$port" $? ""
+  done
+done
+
 for n in example.com api.anthropic.com host.docker.internal gateway.docker.internal; do
   r=$(getent hosts "$n" | head -1 | cut -d' ' -f1); rc=$?
   [ -n "$r" ] && rc=0 || rc=2

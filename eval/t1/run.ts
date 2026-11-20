@@ -37,8 +37,10 @@ import {
 } from "./lib/evidence";
 import { FOLLOWUP_MESSAGE, hostileMessage, hostilePage, type HostileContext } from "./lib/hostile";
 import { controlCoverage, heartbeatGaps, judge, MODEL_PHASES, windowsFromMarks, type Judgement, type Mark, type Window } from "./lib/judge";
-import { appendLedger, checkSpend, parseCap, readLedger, worstCaseUsd } from "./lib/ledger";
-import type { DnsLine, FsEvent, ProxyLine, SocketLine, WebLine } from "./lib/observations";
+import { DEFAULT_TICKET } from "../acceptance/ledger";
+import { checkT1, reserveT1, settleT1, t1Budget, type T1Budget } from "./lib/ledger";
+import type { DnsLine, FsEvent, Ip6NoRoute, ProxyLine, SocketLine, WebLine } from "./lib/observations";
+import { attributeDns, type MdnsRecord } from "./lib/macos";
 import type { PacketSummary } from "./lib/pcap";
 import { DEFAULT_ALLOWLIST } from "./lib/policy";
 import { redact, safeReadFile, sha256, type RedactionContext } from "./lib/scrub";
@@ -56,6 +58,8 @@ export interface Options {
   deadlineSeconds: number;
   allowLoopbackPorts: number[];
   subnet: string;
+  /** macOS: provision the base VM and make the golden image instead of running. */
+  provision: boolean;
 }
 
 export function parseArgs(argv: string[]): Options {
@@ -81,6 +85,7 @@ export function parseArgs(argv: string[]): Options {
     deadlineSeconds: Number(get("deadline") ?? "2400"),
     allowLoopbackPorts: (get("allow-loopback-port") ?? "").split(",").filter(Boolean).map(Number),
     subnet,
+    provision: argv.includes("--provision"),
   };
 }
 
@@ -90,9 +95,9 @@ export function addressPlan(subnet: string) {
   return { gateway: `${base}.1`, egress: `${base}.10`, subject: `${base}.20`, dns: `${base}.53`, web: `${base}.80` };
 }
 
-const APP_PORT = 3000;
-const DECOY_PORT = 4100;
-const PROXY_PORT = 3128;
+export const APP_PORT = 3000;
+export const DECOY_PORT = 4100;
+export const PROXY_PORT = 3128;
 const SUBJECT_HOME = "/home/designer";
 /** What the control's cleanup may touch; anything else changing in that window is stray. */
 export const CLEANUP_PATHS = [
@@ -101,6 +106,22 @@ export const CLEANUP_PATHS = [
   "home:.claude/settings.json",
   "home:.config/autostart",
   "home:.config/autostart/**",
+  "checkout:.claude",
+  "checkout:.claude/**",
+  "checkout:t1-control-write.txt",
+  "tmp:t1-control-write.txt",
+  "tmp:t1-control",
+  "tmp:t1-control/**",
+  "checkout:data/video-auth/**",
+];
+
+/** The macOS control's cleanup paths: zsh is the login shell, and launchd agents replace autostart entries. */
+export const MACOS_CLEANUP_PATHS = [
+  "home:.zshrc",
+  "home:.claude",
+  "home:.claude/settings.json",
+  "home:Library/LaunchAgents",
+  "home:Library/LaunchAgents/**",
   "checkout:.claude",
   "checkout:.claude/**",
   "checkout:t1-control-write.txt",
@@ -150,9 +171,13 @@ export function harnessHashes(): Record<string, string> {
   return Object.fromEntries(filesUnder(HERE).sort().map((f) => [path.relative(ROOT, f), sha256(readFileSync(f))]));
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** The shared #224 spend modules this runner loads from outside eval/t1, hashed into each record too. */
+const SHARED = ["eval/acceptance/ledger.ts", "eval/acceptance/budget.ts", "src/lib/spending-cap.ts"];
+export const sharedHashes = () => Object.fromEntries(SHARED.map((f) => [f, sha256(readFileSync(path.join(ROOT, f)))]));
 
-function hostAddresses(): string[] {
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export function hostAddresses(): string[] {
   return Object.values(networkInterfaces())
     .flat()
     .filter((a): a is NonNullable<typeof a> => Boolean(a && !a.internal))
@@ -186,7 +211,7 @@ interface HostAccept {
   remote: string;
 }
 
-async function hostListener(addresses: string[], logFile: string): Promise<{ port: number; accepts: (from: number, to: number) => HostAccept[]; close: () => void }> {
+export async function hostListener(addresses: string[], logFile: string): Promise<{ port: number; accepts: (from: number, to: number) => HostAccept[]; close: () => void }> {
   writeFileSync(logFile, "");
   const child = spawn(process.execPath, ["-e", LISTENER, logFile, ...addresses.filter((a) => !a.includes(":"))], { stdio: ["ignore", "pipe", "inherit"] });
   const port = await new Promise<number>((resolve, reject) => {
@@ -197,7 +222,7 @@ async function hostListener(addresses: string[], logFile: string): Promise<{ por
   return { port, accepts, close: () => child.kill() };
 }
 
-function readJsonl(file: string): Record<string, unknown>[] {
+export function readJsonl(file: string): Record<string, unknown>[] {
   const r = safeReadFile(file, 512 * 1024 * 1024);
   return r.ok ? parseJsonl(r.data.toString("utf8")) : [];
 }
@@ -211,7 +236,7 @@ function readSnapshots(raw: string): SnapshotRecord[] {
     .map((f) => JSON.parse(gunzipSync(readFileSync(path.join(dir, f))).toString("utf8")) as SnapshotRecord);
 }
 
-export function loadEvidence(raw: string): RawEvidence {
+export function loadEvidence(raw: string, platform: Platform = "linux"): RawEvidence {
   const marks = readJsonl(path.join(raw, "marks.jsonl")).filter((l) => l.type === "mark") as unknown as Mark[];
   const heartbeats = ["observer", "proxy", "dns", "web", "sockets"].flatMap((n) => heartbeatsOf(readJsonl(path.join(raw, `${n}.jsonl`))));
   const typed = <T>(name: string, type: string) => readJsonl(path.join(raw, name)).filter((l) => l.type === type) as unknown as T[];
@@ -222,17 +247,26 @@ export function loadEvidence(raw: string): RawEvidence {
     const r = safeReadFile(path.join(raw, `driver-${phase}.json`), 1024 * 1024);
     if (r.ok) driver[phase] = JSON.parse(r.data.toString("utf8")) as DriverRecord;
   }
+  const packets = packetsFile.ok ? (JSON.parse(packetsFile.data.toString("utf8")) as PacketSummary & { directDns?: { at: number; sport: number }[] }) : null;
+  let dns = typed<DnsLine & { id?: number; srcPort?: number }>("dns.jsonl", "dns");
+  if (platform === "macos") {
+    // Every query on macOS reaches the logging resolver; only the subject's count.
+    const subjectPids = new Set(readJsonl(path.join(raw, "processes.jsonl")).map((l) => Number(l.pid)));
+    const mdns = readJsonl(path.join(raw, "mdns.jsonl")).filter((l) => l.type === "mdns") as unknown as MdnsRecord[];
+    dns = attributeDns({ dns, mdns, subjectPids, direct: packets?.directDns ?? [] });
+  }
   return {
     marks,
     heartbeats,
     fs: typed<FsEvent>("files.jsonl", "fs"),
-    packets: packetsFile.ok ? (JSON.parse(packetsFile.data.toString("utf8")) as PacketSummary) : null,
+    packets,
     proxy: typed<ProxyLine>("proxy.jsonl", "proxy"),
-    dns: typed<DnsLine>("dns.jsonl", "dns"),
+    dns,
     web,
     sockets: typed<SocketLine>("sockets.jsonl", "socket"),
     snapshots: readSnapshots(raw),
     driver,
+    ip6NoRoute: typed<Ip6NoRoute>("ip6.jsonl", "ip6noroute"),
   };
 }
 
@@ -273,24 +307,94 @@ export function controlReport(control: Judgement["control"]): string[] {
   });
 }
 
+/** The app's own cost log lines: recorded beside a settlement, never charged (the subject's user can write them). */
+export function reportedCost(text: string) {
+  const design = [...text.matchAll(/designCostUsd: ([\d.]+)/g)].map((m) => Number(m[1]));
+  const director = [...text.matchAll(/\[director\] plan finished[^\n]*?costUsd: ([\d.]+)/g)].map((m) => Number(m[1]));
+  const total = design.length + director.length > 0 ? Math.round([...design, ...director].reduce((a, b) => a + b, 0) * 1e6) / 1e6 : null;
+  return { design, director, total, trusted: false, why: "the app's own log lines, writable by the subject's user" };
+}
+
+export interface FinishInput {
+  opts: Options;
+  runId: string;
+  records: string;
+  raw: string;
+  stopReason: string | null;
+  facts: Record<string, unknown>;
+  config: Record<string, unknown>;
+  canaries: Record<string, string>;
+  spend: Record<string, unknown>;
+  preflight: PreflightResult | null;
+  otherCarouselId: string;
+  cpaths: Record<string, string>;
+  redaction: RedactionContext;
+}
+
+/** Judges the collected evidence, writes the redacted records and prints the summary; the same on both runners. */
+export function finishRun(i: FinishInput): Judgement {
+  const { opts, runId, records, raw, stopReason, facts, config, canaries, spend, preflight, otherCarouselId, cpaths, redaction } = i;
+  const platform = opts.platform;
+  const say = (s: string) => process.stdout.write(redact(s, redaction));
+  const evidence = loadEvidence(raw, platform);
+  const result = assess(evidence, { opts, otherCarouselId, canaryPaths: cpaths, preflight, dryRun: opts.dryRun });
+  const record = {
+    runId,
+    mode: opts.mode,
+    dryRun: opts.dryRun,
+    platform,
+    stopReason,
+    environment: facts,
+    harness: { ...harnessHashes(), ...sharedHashes() },
+    config: { ...config, canaries: canariesFor(platform).map((c) => ({ id: c.id, channel: c.channel, sha256: sha256(canaries[c.id]) })) },
+    spend,
+    preflight,
+    windows: result.windows.map((w: Window) => ({ ...w, start: new Date(w.start).toISOString(), end: new Date(w.end).toISOString() })),
+    gaps: result.gaps,
+    judgement: result.judgement,
+    changes: result.changes,
+    counts: Object.fromEntries(HEARTBEAT_OBSERVERS.map((o) => [o, result.observations.filter((x) => x.observer === o).length])),
+  };
+  writeFileSync(path.join(records, "results.json"), redact(JSON.stringify(record, null, 2), redaction));
+  writeFileSync(path.join(records, "observations.jsonl"), redact(result.observations.map((o) => JSON.stringify(o)).join("\n") + "\n", redaction));
+  // The raw evidence is redacted in place too: a subject could have sent a credential anywhere.
+  for (const f of readdirSync(raw)) {
+    const p = path.join(raw, f);
+    if (statSync(p).isFile() && /\.(jsonl|json)$/.test(f)) writeFileSync(p, redact(readFileSync(p, "utf8"), redaction));
+  }
+
+  const j = result.judgement;
+  say(`\nvalidity: ${j.validity}${j.reasons.length ? `\n${j.reasons.map((r) => `  - ${r}`).join("\n")}` : ""}\n`);
+  say(`positive control:\n${controlReport(j.control).join("\n")}\n`);
+  if (!result.judgement.verdict.startsWith("dry")) {
+    say(`outcomes:\n${j.overall.map((o) => `  ${o.channel.padEnd(18)} ${o.outcome}`).join("\n")}\n  session resume     ${j.sessionResume}\n`);
+  }
+  if (j.stray.length) say(`unexplained:\n${j.stray.slice(0, 20).map((s) => `  ${s.observer}/${s.channel}: ${s.detail} (${s.why})`).join("\n")}\n`);
+  say(`verdict: ${j.verdict}\nresults: ${path.join("<out>", runId, "results.json")}\n`);
+  return j;
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  if (opts.platform === "macos") throw new Error("The macOS virtual machine runner is not built yet; lib/ is shared and ready for it (see README).");
+  if (opts.platform === "macos") {
+    const { runMacos } = await import("./macos-runner");
+    return runMacos(opts);
+  }
+  if (opts.provision) throw new Error("--provision is for --platform macos");
   const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  const designCap = parseCap(process.env.DESIGN_AGENT_MAX_BUDGET_USD);
-  const directorCap = parseCap(process.env.DIRECTOR_MAX_BUDGET_USD);
-  const spendPlan = { designCapUsd: designCap, directorCapUsd: directorCap, messages: 2, overrunFactor: 1.1 };
+  // The shared M1 ledger (#224): checked read-only now, before anything is built; reserved under its lock before the first model message.
+  let budget: T1Budget | null = null;
   if (!opts.dryRun) {
     if (!token) throw new Error("A real run needs CLAUDE_CODE_OAUTH_TOKEN (a short-lived token, revoked afterwards).");
-    const ledger = readLedger();
-    if (ledger.invalidLines.length > 0) throw new Error(`The M1 ledger has unreadable lines (${ledger.invalidLines.join(", ")}); fix it before spending.`);
-    const check = checkSpend(spendPlan, ledger.entries);
-    if (!check.ok) throw new Error(`Spend preflight refused: ${check.problem}`);
-    process.stdout.write(`spend preflight: worst case USD ${check.worstCaseUsd}, spent USD ${check.spentUsd}, remaining USD ${check.remainingUsd}\n`);
+    budget = t1Budget(process.env);
+    const check = checkT1(budget);
+    if (!check.ok) throw new Error(check.message);
+    process.stdout.write(`spend preflight: ${check.message}\n`);
   }
 
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const short = runId.slice(-6);
+  const ledgerRun = () => ({ runId: `t1-${runId}`, commit: commit || "unknown", ticket: process.env.EVAL_TICKET?.trim() || DEFAULT_TICKET });
   const records = path.join(opts.out, runId);
   const raw = path.join(records, "raw");
   const configDir = path.join(records, "config");
@@ -334,6 +438,8 @@ async function main() {
   let stopReason: string | null = null;
   const facts: Record<string, unknown> = {};
   let reserved = false;
+  let startedMessages = 0;
+  let commit = "";
 
   const observerExec = (args: string[], o: { allowFail?: boolean; timeoutMs?: number } = {}) =>
     docker(["exec", name("observer"), "node", "--no-warnings", "--import", "/t1/register.mjs", "/t1/services/observer.ts", ...args], o);
@@ -357,7 +463,7 @@ async function main() {
       say(`building ${harnessTag}\n`);
       docker(["build", "-q", "-f", path.join(HERE, "linux", "harness.Dockerfile"), "-t", harnessTag, HERE], { inherit: true });
     }
-    const commit = execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    commit = execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const subjectFiles = ["subject.Dockerfile", "subject-entry.sh", "plant.sh"];
     const subjectTag = `${opts.prefix}-subject:${commit.slice(0, 12)}-${sha256(subjectFiles.map((f) => readFileSync(path.join(HERE, "linux", f), "utf8")).join("\0")).slice(0, 8)}`;
     if (docker(["image", "inspect", subjectTag], { allowFail: true }).code !== 0) {
@@ -426,7 +532,7 @@ async function main() {
       T1_CANARY_ENV: canaries.env_var,
       CREATORBRIO_T1_MESSAGING_SOCKET: "/run/t1/messaging.sock",
       CREATORBRIO_T1_MESSAGING_TOKEN: canaries.messaging_token,
-      ...(opts.dryRun ? {} : { DESIGN_AGENT_MAX_BUDGET_USD: String(designCap), DIRECTOR_MAX_BUDGET_USD: String(directorCap), CLAUDE_CODE_OAUTH_TOKEN: token as string }),
+      ...(budget ? { DESIGN_AGENT_MAX_BUDGET_USD: String(budget.caps.designUsd), DIRECTOR_MAX_BUDGET_USD: String(budget.caps.directorUsd), CLAUDE_CODE_OAUTH_TOKEN: token as string } : {}),
     };
     facts.subjectEnvironmentNames = Object.keys(subjectEnv).sort();
     docker(
@@ -515,6 +621,8 @@ async function main() {
       dns: evidence.dns,
       proxy: evidence.proxy,
       addresses: targets,
+      ip6NoRoute: evidence.ip6NoRoute,
+      linkLocalTargets: ["fe80::1%eth0"],
     });
     say(`preflight: ${preflight.passed ? "passed" : "FAILED"}\n${preflight.checks.map((c) => `  [${c.ok ? "ok" : "!!"}] ${c.check}: ${c.detail}`).join("\n")}\n`);
     if (preflight.isolationFailure) {
@@ -549,17 +657,18 @@ async function main() {
       if (stopReason) say(`not starting the model phases: ${stopReason}\n`);
     }
 
-    if (!opts.dryRun && !stopReason) {
-      const recheck = checkSpend(spendPlan, readLedger().entries);
-      if (!recheck.ok) throw new Error(`Spend preflight refused: ${recheck.problem}`);
-      appendLedger({ harness: "t1", runId, kind: "reserve", usd: recheck.worstCaseUsd, note: `${opts.mode} ${platform}` });
+    if (budget && !stopReason) {
+      const { check } = reserveT1(budget, ledgerRun(), `T1 ${opts.mode} ${platform}: reserved ${budget.plan.calls.design} Design Agent and ${budget.plan.calls.director} Director call(s) at cap x (1 + overshoot)`);
       reserved = true;
+      say(`spend reserved: ${check.message}\n`);
       mark("hostile", "model");
+      startedMessages++;
       say(`hostile: ${observerExec(["drive", "chat", "hostile", "hostile.txt"], { timeoutMs: (opts.deadlineSeconds + 120) * 1000, allowFail: true }).stdout}`);
       await sleep(3000);
       mark("snapshot-post-hostile", "harness");
       snapshot("post-hostile");
       mark("followup", "model");
+      startedMessages++;
       say(`followup: ${observerExec(["drive", "chat", "followup", "followup.txt", "hostile"], { timeoutMs: (opts.deadlineSeconds + 120) * 1000, allowFail: true }).stdout}`);
       await sleep(3000);
       mark("snapshot-post-followup", "harness");
@@ -577,21 +686,33 @@ async function main() {
   }
 
   // Evidence, judgement and records; then the environment goes away.
-  let spend: Record<string, unknown> = { capsUsd: { design: designCap, director: directorCap }, reportedUsd: null };
+  let spend: Record<string, unknown> = { caps: budget?.caps ?? null, reportedUsd: null };
   try {
     if (docker(["inspect", name("observer")], { allowFail: true }).code === 0) observerExec(["finalize"], { allowFail: true });
-    if (!opts.dryRun) {
-      const logs = docker(["logs", name("subject")], { allowFail: true });
-      const text = `${logs.stdout}\n${logs.stderr}`;
-      const design = [...text.matchAll(/designCostUsd: ([\d.]+)/g)].map((m) => Number(m[1]));
-      const director = [...text.matchAll(/\[director\] plan finished[^\n]*?costUsd: ([\d.]+)/g)].map((m) => Number(m[1]));
-      const total = [...design, ...director].reduce((a, b) => a + b, 0);
-      spend = { ...spend, reportedUsd: { design, director, total: Math.round(total * 1e6) / 1e6 }, source: "the app's own log lines (subject-writable; an estimate)" };
-      const reportedAny = design.length + director.length > 0;
-      if (reserved) appendLedger({ harness: "t1", runId, kind: "settle", usd: reportedAny ? total : (worstCaseUsd(spendPlan) as number), note: reportedAny ? "reported by the app" : "no cost reported; settled at the reservation" });
-    }
   } catch (err) {
-    say(`collecting spend failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    say(`finalizing the capture failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+  if (budget) {
+    // The app's log lines are written by the subject's own user: recorded, never charged.
+    let reportedUsd: number | null = null;
+    try {
+      const logs = docker(["logs", name("subject")], { allowFail: true });
+      const reported = reportedCost(`${logs.stdout}\n${logs.stderr}`);
+      reportedUsd = reported.total;
+      spend = { ...spend, reportedUsd: reported };
+    } catch (err) {
+      say(`reading the app's reported cost failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    if (reserved) {
+      try {
+        const entry = settleT1({ ledger: budget.ledger, caps: budget.caps, run: ledgerRun(), startedMessages, reportedUsd, label: `T1 ${opts.mode} ${platform}` });
+        spend = { ...spend, startedMessages, settledUsd: entry.costUsd };
+        say(`spend settled: USD ${entry.costUsd.toFixed(2)} for ${startedMessages} started message(s), each at its full limit\n`);
+      } catch (err) {
+        spend = { ...spend, startedMessages, settledUsd: null };
+        say(`settling the reservation failed (it still counts in full): ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
   }
   if (!opts.keep) {
     for (const c of containers) docker(["rm", "-f", "-v", c], { allowFail: true });
@@ -599,41 +720,7 @@ async function main() {
     for (const v of volumes) docker(["volume", "rm", "-f", v], { allowFail: true });
   }
 
-  const evidence = loadEvidence(raw);
-  const result = assess(evidence, { opts, otherCarouselId, canaryPaths: cpaths, preflight, dryRun: opts.dryRun });
-  const record = {
-    runId,
-    mode: opts.mode,
-    dryRun: opts.dryRun,
-    platform,
-    stopReason,
-    environment: facts,
-    harness: harnessHashes(),
-    config: { ...config, canaries: canariesFor(platform).map((c) => ({ id: c.id, channel: c.channel, sha256: sha256(canaries[c.id]) })) },
-    spend,
-    preflight,
-    windows: result.windows.map((w: Window) => ({ ...w, start: new Date(w.start).toISOString(), end: new Date(w.end).toISOString() })),
-    gaps: result.gaps,
-    judgement: result.judgement,
-    changes: result.changes,
-    counts: Object.fromEntries(HEARTBEAT_OBSERVERS.map((o) => [o, result.observations.filter((x) => x.observer === o).length])),
-  };
-  writeFileSync(path.join(records, "results.json"), redact(JSON.stringify(record, null, 2), redaction));
-  writeFileSync(path.join(records, "observations.jsonl"), redact(result.observations.map((o) => JSON.stringify(o)).join("\n") + "\n", redaction));
-  // The raw evidence is redacted in place too: a subject could have sent a credential anywhere.
-  for (const f of readdirSync(raw)) {
-    const p = path.join(raw, f);
-    if (statSync(p).isFile() && /\.(jsonl|json)$/.test(f)) writeFileSync(p, redact(readFileSync(p, "utf8"), redaction));
-  }
-
-  const j = result.judgement;
-  say(`\nvalidity: ${j.validity}${j.reasons.length ? `\n${j.reasons.map((r) => `  - ${r}`).join("\n")}` : ""}\n`);
-  say(`positive control:\n${controlReport(j.control).join("\n")}\n`);
-  if (!result.judgement.verdict.startsWith("dry")) {
-    say(`outcomes:\n${j.overall.map((o) => `  ${o.channel.padEnd(18)} ${o.outcome}`).join("\n")}\n  session resume     ${j.sessionResume}\n`);
-  }
-  if (j.stray.length) say(`unexplained:\n${j.stray.slice(0, 20).map((s) => `  ${s.observer}/${s.channel}: ${s.detail} (${s.why})`).join("\n")}\n`);
-  say(`verdict: ${j.verdict}\nresults: ${path.join("<out>", runId, "results.json")}\n`);
+  finishRun({ opts, runId, records, raw, stopReason, facts, config, canaries, spend, preflight, otherCarouselId, cpaths, redaction });
   if (stopReason?.startsWith("ISOLATION FAILURE")) process.exit(2);
 }
 

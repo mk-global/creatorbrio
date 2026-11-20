@@ -32,6 +32,8 @@ udp.on("message", (msg, rinfo) => {
     type: "dns",
     at,
     src: rinfo.address,
+    srcPort: rinfo.port,
+    id: q.id,
     qtype: q.qtype,
     name: summary.name,
     sha256: summary.sha256,

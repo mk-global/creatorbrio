@@ -21,6 +21,45 @@ export interface Packet {
   flags: number;
   seq: number;
   payload: Buffer;
+  /** The pf log header, for packets captured on macOS `pflog0`. */
+  pflog?: PflogHeader;
+}
+
+/** What pf records with each logged packet (macOS `struct pfloghdr`); uid is the sending socket's owner when pf looked it up. */
+export interface PflogHeader {
+  action: "pass" | "block" | "other";
+  dir: "in" | "out" | "other";
+  ifname: string;
+  ruleset: string;
+  rulenr: number;
+  /** The socket owner's uid, or null when pf did not look one up (UID_MAX). */
+  uid: number | null;
+}
+
+/** pf's own constants: PF_PASS 0, PF_DROP 1; PF_IN 1, PF_OUT 2; UID_MAX means no socket was looked up. */
+function pflogHeader(b: Buffer, o: number, end: number): { header: PflogHeader; payload: number; af: number } | null {
+  const length = b[o];
+  if (length < 61 || o + 64 > end) return null;
+  const cstr = (from: number, n: number) => {
+    const raw = b.subarray(from, from + n);
+    const z = raw.indexOf(0);
+    return raw.subarray(0, z < 0 ? n : z).toString("latin1");
+  };
+  const action = b[o + 2];
+  const dir = b[o + 60];
+  const uid = b.readUInt32LE(o + 44);
+  return {
+    af: b[o + 1],
+    payload: o + Math.ceil(length / 4) * 4,
+    header: {
+      action: action === 0 ? "pass" : action === 1 ? "block" : "other",
+      dir: dir === 1 ? "in" : dir === 2 ? "out" : "other",
+      ifname: cstr(o + 4, 16),
+      ruleset: cstr(o + 20, 16),
+      rulenr: b.readUInt32BE(o + 36),
+      uid: uid === 0xffffffff || uid === 0x7fffffff ? null : uid,
+    },
+  };
 }
 
 const TCP_SYN = 0x02;
@@ -33,6 +72,8 @@ function ipv4(b: Buffer, o: number): string {
 function ipv6(b: Buffer, o: number): string {
   const parts: string[] = [];
   for (let i = 0; i < 16; i += 2) parts.push(b.readUInt16BE(o + i).toString(16));
+  // BSD kernels embed a link-local address's scope in its second group; pf's log shows it, the wire never does.
+  if (parts[0] === "fe80") parts[1] = "0";
   // Compress the longest run of zero groups.
   let best = -1;
   let bestLen = 0;
@@ -85,7 +126,7 @@ function network(b: Buffer, o: number, end: number, ethertype: number, at: numbe
 /**
  * Parses a classic pcap file (either byte order, micro- or nanosecond
  * timestamps) captured on Linux `any` (SLL or SLL2), Ethernet, BSD loopback
- * (macOS `lo0`) or raw IP. Packets of other types are skipped.
+ * (macOS `lo0`), pf's log (macOS `pflog0`, with the sending socket's uid) or raw IP. Packets of other types are skipped.
  */
 export function parsePcap(buf: Buffer): Packet[] {
   if (buf.length < 24) return [];
@@ -128,6 +169,12 @@ export function parsePcap(buf: Buffer): Packet[] {
     } else if (linktype === 0 && caplen >= 4) {
       const family = le ? buf.readUInt32LE(start) : buf.readUInt32BE(start);
       p = network(buf, start + 4, end, family === 2 ? 0x0800 : 0x86dd, at);
+    } else if (linktype === 117) {
+      const h = pflogHeader(buf, start, end);
+      if (h) {
+        p = network(buf, h.payload, end, h.af === 2 ? 0x0800 : 0x86dd, at);
+        if (p) p.pflog = h.header;
+      }
     } else if (linktype === 101 || linktype === 12 || linktype === 228 || linktype === 229) {
       const v = buf[start] >> 4;
       p = network(buf, start, end, v === 6 ? 0x86dd : 0x0800, at);
@@ -254,4 +301,32 @@ export function summarizePackets(packets: Packet[], ctx: PacketContext): PacketS
     }
   }
   return { attempts, appRequests, appFlows: [...flows.values()] };
+}
+
+/**
+ * The subject's connection attempts on macOS, from pf's log: every packet a
+ * logging rule matched for the subject's uid (pf logs only the packet that
+ * creates state, or each blocked packet), deduplicated by flow, and outbound
+ * ICMP echo, which pf cannot attribute to a user and the harness blocks for
+ * everyone, counted against the subject conservatively, as are IPv6
+ * link-local packets the all-users rule blocked (pf finds no uid for them).
+ */
+export function pflogAttempts(packets: Packet[], ctx: { uid: number; harnessEndpoints: PacketContext["harnessEndpoints"] }): FlowAttempt[] {
+  const seen = new Set<string>();
+  const out: FlowAttempt[] = [];
+  for (const p of packets) {
+    const h = p.pflog;
+    if (!h || h.dir !== "out") continue;
+    const echo = p.proto === "icmp" && h.uid === null && (p.flags === 8 || p.flags === 128);
+    // pf's user match does not apply to IPv6 link-local, so the all-users rule blocks those without a uid: counted against the subject.
+    const linkLocal = h.uid === null && h.action === "block" && p.family === 6 && /^fe[89ab][0-9a-f]:/i.test(p.dst) && (p.proto === "tcp" || p.proto === "udp");
+    if (h.uid !== ctx.uid && !echo && !linkLocal) continue;
+    if (p.proto !== "tcp" && p.proto !== "udp" && !echo) continue;
+    const key = `${p.proto}|${p.src}|${p.sport}|${p.dst}|${p.dport}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const harness = ctx.harnessEndpoints.some((e) => e.address === p.dst && e.port === p.dport && e.proto === p.proto);
+    out.push({ at: p.at, proto: p.proto, family: p.family, src: p.src, dst: p.dst, sport: p.sport, dport: p.dport, kind: harness ? "harness" : isLoopback(p.dst) ? "loopback" : "external" });
+  }
+  return out;
 }

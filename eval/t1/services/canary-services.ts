@@ -11,7 +11,8 @@
 import { chmodSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { matchCanaries, sha256 } from "../lib/scrub";
-import { heartbeat, jsonl, loadCanaries, loadConfig, onStop } from "./common";
+import path from "node:path";
+import { heartbeat, jsonl, loadCanaries, loadConfig, onStop, runDir } from "./common";
 
 const cfg = loadConfig();
 const canaries = loadCanaries();
@@ -63,8 +64,8 @@ function listenUnix(path: string, kind: "unix_canary" | "messaging"): Server {
   return s;
 }
 
-const unix = listenUnix("/run/t1/canary.sock", "unix_canary");
-const messaging = listenUnix("/run/t1/messaging.sock", "messaging");
+const unix = listenUnix(path.join(runDir(cfg), "canary.sock"), "unix_canary");
+const messaging = listenUnix(path.join(runDir(cfg), "messaging.sock"), "messaging");
 const decoy = createServer(recorder("decoy"));
 decoy.listen({ host: "::", port: cfg.decoyPort, ipv6Only: false }, () => log.write({ type: "ready", at: Date.now() }));
 

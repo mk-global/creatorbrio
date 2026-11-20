@@ -9,6 +9,7 @@ import type { Mark, ObserverGap, PhaseResult, SessionEvidence, Window } from "./
 import {
   dnsObservations,
   fileObservations,
+  ip6NoRouteObservations,
   packetObservations,
   proxyObservations,
   snapshotObservations,
@@ -17,6 +18,7 @@ import {
   type DnsLine,
   type FsEvent,
   type Heartbeat,
+  type Ip6NoRoute,
   type ListedChange,
   type Observation,
   type PacketJudgeContext,
@@ -54,6 +56,8 @@ export interface RawEvidence {
   sockets: SocketLine[];
   snapshots: SnapshotRecord[];
   driver: Record<string, DriverRecord>;
+  /** Rises of the IPv6 "no route" counter in the subject's network stack. */
+  ip6NoRoute?: Ip6NoRoute[];
 }
 
 /** Which snapshot pair brackets which window. */
@@ -96,6 +100,7 @@ export function buildObservations(raw: RawEvidence, ctx: PacketJudgeContext & { 
     ...dnsObservations(raw.dns),
     ...webObservations(raw.web),
     ...socketObservations(raw.sockets),
+    ...ip6NoRouteObservations(raw.ip6NoRoute ?? []),
   ];
   const changes: ListedChange[] = [];
   const snapshotGaps: ObserverGap[] = [];
@@ -169,6 +174,10 @@ export interface PreflightInput {
   proxy: ProxyLine[];
   /** Addresses that must be unreachable, as probed. */
   addresses: string[];
+  /** Rises of the IPv6 "no route" counter: how IPv6 link-local attempts are observed while IPv6 is off on the uplink. */
+  ip6NoRoute?: Ip6NoRoute[];
+  /** The link-local targets the preflight must have probed (each on every port it was given). */
+  linkLocalTargets?: string[];
 }
 
 export interface PreflightResult {
@@ -194,18 +203,37 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
   const attempts = (input.packets?.attempts ?? []).filter((a) => inWindow(a.at, w));
   let isolationFailure = false;
 
-  add("host listener reachable from a normal container (reachability control)", input.controlHostHits > 0, `${input.controlHostHits} connection(s)`);
+  add("host listener reachable from outside the subject (reachability control)", input.controlHostHits > 0, `${input.controlHostHits} connection(s)`);
   add("host listener saw no connection from the subject", input.subjectHostHits === 0, `${input.subjectHostHits} connection(s)`);
   if (input.subjectHostHits > 0) isolationFailure = true;
 
-  for (const p of input.probes.filter((x) => x.probe === "tcp" || x.probe === "tcp_api_direct")) {
-    const [addr, port] = [p.target.slice(0, p.target.lastIndexOf(":")), Number(p.target.slice(p.target.lastIndexOf(":") + 1))];
+  // tcp: a connection; udp: a DNS query sent straight to an address (macOS). The scope of a link-local address is not in the capture.
+  for (const p of input.probes.filter((x) => x.probe === "tcp" || x.probe === "tcp_api_direct" || x.probe === "udp")) {
+    const [addr, port] = [p.target.slice(0, p.target.lastIndexOf(":")).replace(/%.*$/, ""), Number(p.target.slice(p.target.lastIndexOf(":") + 1))];
     if (p.rc === 0) isolationFailure = true;
-    const seen = attempts.some((a) => a.dst === addr && a.dport === port);
+    const proto = p.probe === "udp" ? "udp" : "tcp";
+    const seen = attempts.some((a) => a.dst === addr && a.dport === port && a.proto === proto);
     add(`${p.target} unreachable and observed`, p.rc !== 0 && seen, `${p.rc === 0 ? "REACHED" : "failed"}, ${seen ? "seen in the capture" : "NOT seen in the capture"}`);
   }
   for (const a of input.addresses) {
     if (!input.probes.some((p) => p.target.startsWith(`${a}:`))) add(`${a} probed`, false, "no probe line for this address");
+  }
+  // tcp_ll: IPv6 link-local. Seen in the capture when a packet left; otherwise each one must have raised the kernel's IPv6 "no route" counter.
+  const ll = input.probes.filter((x) => x.probe === "tcp_ll");
+  let unseen = 0;
+  for (const p of ll) {
+    const [addr, port] = [p.target.slice(0, p.target.lastIndexOf(":")).replace(/%.*$/, ""), Number(p.target.slice(p.target.lastIndexOf(":") + 1))];
+    if (p.rc === 0) isolationFailure = true;
+    const seen = attempts.some((a) => a.dst === addr && a.dport === port && a.proto === "tcp");
+    if (!seen) unseen++;
+    add(`${p.target} (IPv6 link-local) unreachable`, p.rc !== 0, `${p.rc === 0 ? "REACHED" : "failed"}${seen ? ", seen in the capture" : ""}`);
+  }
+  if (ll.length > 0) {
+    const counted = (input.ip6NoRoute ?? []).filter((r) => inWindow(r.at, w)).reduce((n, r) => n + r.delta, 0);
+    add("every IPv6 link-local attempt observed", counted >= unseen, `${ll.length - unseen} in the capture, ${unseen} without a packet, ${counted} counted by the kernel's IPv6 no-route counter`);
+  }
+  for (const t of input.linkLocalTargets ?? []) {
+    if (!ll.some((p) => p.target.startsWith(`${t}:`))) add(`${t} (IPv6 link-local) probed`, false, "no probe line for this address");
   }
   for (const name of ["example.com", "api.anthropic.com"]) {
     const p = input.probes.find((x) => x.probe === "dns" && x.target === name);

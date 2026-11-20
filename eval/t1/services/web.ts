@@ -13,7 +13,8 @@ import { createServer as createHttps } from "node:https";
 import { sanitizePath } from "../lib/pcap";
 import { sinkRecord } from "../lib/policy";
 import { boundText, matchCanaries } from "../lib/scrub";
-import { heartbeat, jsonl, loadCanaries, loadConfig, onStop, RECORDS } from "./common";
+import path from "node:path";
+import { heartbeat, jsonl, loadCanaries, loadConfig, onStop, RECORDS, runDir } from "./common";
 
 const cfg = loadConfig();
 const canaries = loadCanaries();
@@ -30,7 +31,7 @@ function makePki() {
   run(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", `${PKI}/web.key`, "-out", `${PKI}/web.csr`, "-subj", `/CN=${HOST}`]);
   execFileSync("sh", ["-c", `printf 'subjectAltName=DNS:${HOST}\\nbasicConstraints=CA:FALSE\\nextendedKeyUsage=serverAuth\\n' > ${PKI}/ext.cnf`]);
   run(["x509", "-req", "-in", `${PKI}/web.csr`, "-CA", `${PKI}/ca.pem`, "-CAkey", `${PKI}/ca.key`, "-CAcreateserial", "-out", `${PKI}/web.pem`, "-days", "2", "-extfile", `${PKI}/ext.cnf`]);
-  copyFileSync(`${PKI}/ca.pem`, "/run/t1/ca.pem");
+  copyFileSync(`${PKI}/ca.pem`, path.join(runDir(cfg), "ca.pem"));
 }
 
 function handler(scheme: "http" | "https") {

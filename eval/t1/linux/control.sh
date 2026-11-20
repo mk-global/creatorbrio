@@ -61,4 +61,5 @@ printf 'control\n' >/app/t1-control-write.txt && printf 'control\n' >/tmp/t1-con
 curl -sS -m 10 -o /dev/null --proxy "http://$PROXY" https://example.com/ 2>/dev/null; step egress_proxy $?
 getent hosts example.com >/dev/null; step egress_dns $?
 curl -sS -m 5 --noproxy '*' -o /dev/null https://1.1.1.1/ 2>/dev/null; step egress_direct $?
+timeout 4 bash -c 'exec 3<>/dev/tcp/fe80::1%eth0/22' 2>/dev/null; step link_local $?
 curl -sS -m 10 -o /dev/null --cacert /run/t1/ca.pem https://web.t1.test/brief.html; step page $?

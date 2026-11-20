@@ -1,118 +1,106 @@
 /**
- * The M1 evaluation spend ledger (#221: USD 50 for M1's baseline and quality
- * evaluation), shared by every paid M1 run. One JSON object per line in
- * `~/.local/share/creatorbrio-m1-eval/ledger.jsonl`, outside the repository.
+ * T1's spend accounting on the cumulative M1 ledger that #224 owns
+ * (`eval/acceptance/ledger.ts` and `eval/acceptance/budget.ts`): the same file,
+ * format and lock, and the same variables (`EVAL_LEDGER`, `EVAL_M1_CAP_USD`,
+ * `EVAL_HOLD_BACK_USD`, `EVAL_OVERSHOOT_FRACTION`, both per-call caps). Only
+ * the plan and the settlement are T1's own.
  *
- * A run appends a `reserve` entry with its worst case before it spends
- * anything and a `settle` entry with its actual cost afterwards. A run that
- * never settled (it crashed) counts at its reservation, so an interrupted run
- * can never make the remaining allowance look larger than it is.
+ * Plan: each model message is one `/api/chat` call on a carousel, which runs
+ * the Visual Director once and then the Design Agent once
+ * (`prepareCreativeRun` in src/lib/creative-run.ts; the harness never asks for
+ * a retry or a continuation, the only paths without a Director call). Each
+ * call is bounded at its cap times (1 + overshoot).
  *
- * #224 plans the acceptance harness's ledger (`eval/acceptance/ledger.ts`),
- * not merged when this was written; this reader and writer use the same file
- * and should be consolidated into one module once it lands.
+ * Settlement is conservative by design: the subject runs as the same user as
+ * the app, so the app's cost log lines are subject-writable and never set the
+ * spend. Every started message is charged at its full bound; the app-reported
+ * cost goes into the note only, marked untrusted.
  */
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import path from "node:path";
+import { callBoundUsd, parseCaps, parseHoldBack, preflight, reserveRun, type Caps, type Preflight, type RunIdentity, type RunPlan } from "../../acceptance/budget";
+import { appendLedger, ledgerPath, m1CapUsd, readLedger, withLedgerLock, type LedgerEntry } from "../../acceptance/ledger";
 
-export const M1_CAP_USD = 50;
+/** The model messages a T1 run sends: the hostile message and the follow-up. */
+export const T1_MESSAGES = 2;
+/** Visual Director calls per message (one plan per `/api/chat` call on a carousel). */
+export const DIRECTOR_CALLS_PER_MESSAGE = 1;
 
-export const defaultLedgerPath = () => process.env.CREATORBRIO_M1_LEDGER ?? path.join(homedir(), ".local", "share", "creatorbrio-m1-eval", "ledger.jsonl");
+const round = (v: number) => Math.round(v * 1e6) / 1e6;
+const money = (v: number) => `$${v.toFixed(2)}`;
 
-export interface LedgerEntry {
-  version: 1;
-  at: string;
-  harness: string;
-  runId: string;
-  kind: "reserve" | "settle";
-  usd: number;
-  note?: string;
+/** The most one started message can cost: its Design Agent call and its Director call(s), each at its cap plus the overshoot allowance. */
+export const messageBoundUsd = (caps: Caps) => round(callBoundUsd(caps.designUsd, caps) + DIRECTOR_CALLS_PER_MESSAGE * callBoundUsd(caps.directorUsd, caps));
+
+/** A T1 run as the shared preflight and reservation see it: no scenarios, only calls and a worst case. */
+export function t1Plan(caps: Caps, messages = T1_MESSAGES): RunPlan {
+  return {
+    scenarioIds: [],
+    repeat: 1,
+    compare: false,
+    caps,
+    items: [],
+    calls: { director: messages * DIRECTOR_CALLS_PER_MESSAGE, design: messages, judge: 0 },
+    worstCaseUsd: round(messages * messageBoundUsd(caps)),
+  };
 }
 
-/** Parses the ledger; a line that is not a valid entry is reported, never skipped silently. */
-export function parseLedger(text: string): { entries: LedgerEntry[]; invalidLines: number[] } {
-  const entries: LedgerEntry[] = [];
-  const invalidLines: number[] = [];
-  text.split("\n").forEach((line, i) => {
-    if (!line.trim()) return;
-    try {
-      const v = JSON.parse(line) as Partial<LedgerEntry>;
-      if (v.version === 1 && (v.kind === "reserve" || v.kind === "settle") && typeof v.runId === "string" && typeof v.usd === "number" && Number.isFinite(v.usd) && v.usd >= 0) {
-        entries.push(v as LedgerEntry);
-      } else invalidLines.push(i + 1);
-    } catch {
-      invalidLines.push(i + 1);
-    }
-  });
-  return { entries, invalidLines };
+export interface T1Budget {
+  ledger: string;
+  caps: Caps;
+  capUsd: number;
+  holdBackUsd: number;
+  plan: RunPlan;
 }
 
-/** Spent so far: each run's settled cost, or its reservation while unsettled. */
-export function spentUsd(entries: LedgerEntry[]): number {
-  const runs = new Map<string, { reserved: number; settled: number | null }>();
-  for (const e of entries) {
-    const key = `${e.harness}/${e.runId}`;
-    const r = runs.get(key) ?? { reserved: 0, settled: null };
-    if (e.kind === "reserve") r.reserved += e.usd;
-    else r.settled = (r.settled ?? 0) + e.usd;
-    runs.set(key, r);
-  }
-  let total = 0;
-  for (const r of runs.values()) total += r.settled ?? r.reserved;
-  return Math.round(total * 1e6) / 1e6;
+/** Reads every setting a paid T1 run needs; throws naming what is missing or invalid. */
+export function t1Budget(env: Record<string, string | undefined> = process.env): T1Budget {
+  const caps = parseCaps(env);
+  return { ledger: ledgerPath(env), caps, capUsd: m1CapUsd(env), holdBackUsd: parseHoldBack(env.EVAL_HOLD_BACK_USD), plan: t1Plan(caps) };
 }
 
-export interface SpendPlan {
-  /** Per message: the Design Agent's cap and the Visual Director's cap, in USD. */
-  designCapUsd: number | null;
-  directorCapUsd: number | null;
-  messages: number;
-  /** Extra allowance for the CLI finishing the turn in which it crossed its cap. */
-  overrunFactor: number;
+/** The read-only check made before anything is built; the binding check is the reservation's, under the lock. */
+export const checkT1 = (b: T1Budget): Preflight => preflight(b.plan, readLedger(b.ledger), b.capUsd, b.holdBackUsd);
+
+/** Checks and appends the reservation as one step under the ledger lock, before the first model message. Throws the refusal. */
+export function reserveT1(b: T1Budget, run: RunIdentity, note: string, options: { now?: Date; lock?: { staleMs?: number; waitMs?: number } } = {}) {
+  return reserveRun({ ledger: b.ledger, plan: b.plan, capUsd: b.capUsd, holdBackUsd: b.holdBackUsd, run, note, ...options });
 }
 
-/** Parses an operator cap the way the app does: a positive amount in US dollars, or nothing. */
-export function parseCap(raw: string | undefined): number | null {
-  const v = raw?.trim() ?? "";
-  if (!/^\d+(\.\d+)?$/.test(v)) return null;
-  const n = Number(v);
-  return n > 0 ? n : null;
+/** What a run is charged: every started message at its full bound, whatever anything inside the subject reported. */
+export function t1SettlementUsd(caps: Caps, startedMessages: number): number {
+  if (!Number.isInteger(startedMessages) || startedMessages < 0 || startedMessages > T1_MESSAGES) throw new Error(`started messages must be 0 to ${T1_MESSAGES}`);
+  return round(startedMessages * messageBoundUsd(caps));
 }
 
-export function worstCaseUsd(plan: SpendPlan): number | null {
-  if (plan.designCapUsd === null || plan.directorCapUsd === null) return null;
-  return Math.round(plan.messages * (plan.designCapUsd + plan.directorCapUsd) * plan.overrunFactor * 1e6) / 1e6;
+export function t1SettlementNote(label: string, startedMessages: number, reportedUsd: number | null): string {
+  const reported = reportedUsd === null ? "the app reported no cost" : `the app reported ${money(reportedUsd)}, untrusted (subject-writable) and not used`;
+  return `${label}: ${startedMessages} of ${T1_MESSAGES} model message(s) started, each charged at its full limit (Design Agent and Director cap x (1 + overshoot)); ${reported}`.replace(/[\n\r]+/g, " ").slice(0, 500);
 }
 
-export type SpendCheck = { ok: true; worstCaseUsd: number; spentUsd: number; remainingUsd: number } | { ok: false; problem: string };
-
-/**
- * A paid run may start only when both caps are set (each message runs the
- * Visual Director and then the Design Agent) and its worst case fits what is
- * left of the M1 allowance.
- */
-export function checkSpend(plan: SpendPlan, entries: LedgerEntry[], capUsd = M1_CAP_USD): SpendCheck {
-  if (plan.designCapUsd === null) return { ok: false, problem: "DESIGN_AGENT_MAX_BUDGET_USD must be set to a positive amount" };
-  if (plan.directorCapUsd === null) return { ok: false, problem: "DIRECTOR_MAX_BUDGET_USD must be set to a positive amount" };
-  const worst = worstCaseUsd(plan) as number;
-  const spent = spentUsd(entries);
-  const remaining = Math.round((capUsd - spent) * 1e6) / 1e6;
-  if (worst > remaining) return { ok: false, problem: `the run's worst case, USD ${worst}, exceeds the remaining M1 allowance, USD ${remaining}` };
-  return { ok: true, worstCaseUsd: worst, spentUsd: spent, remainingUsd: remaining };
-}
-
-export function readLedger(file = defaultLedgerPath()): { entries: LedgerEntry[]; invalidLines: number[] } {
-  let text = "";
-  try {
-    text = readFileSync(file, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  return parseLedger(text);
-}
-
-export function appendLedger(entry: Omit<LedgerEntry, "version" | "at">, file = defaultLedgerPath(), now = new Date()) {
-  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  appendFileSync(file, `${JSON.stringify({ version: 1, at: now.toISOString(), ...entry })}\n`, { mode: 0o600 });
+/** Appends the spend entry that settles this run's reservation, under the lock; refuses to settle a run twice. */
+export function settleT1(options: {
+  ledger: string;
+  caps: Caps;
+  run: RunIdentity;
+  startedMessages: number;
+  reportedUsd: number | null;
+  label: string;
+  now?: Date;
+  lock?: { staleMs?: number; waitMs?: number };
+}): LedgerEntry {
+  const costUsd = t1SettlementUsd(options.caps, options.startedMessages);
+  const note = t1SettlementNote(options.label, options.startedMessages, options.reportedUsd);
+  return withLedgerLock(options.ledger, () => {
+    if (readLedger(options.ledger).some((e) => e.kind === "spend" && e.runId === options.run.runId)) throw new Error(`Run ${options.run.runId} is already settled in the ledger`);
+    const spend: LedgerEntry = {
+      at: (options.now ?? new Date()).toISOString(),
+      kind: "spend",
+      ticket: options.run.ticket,
+      runId: options.run.runId,
+      commit: options.run.commit,
+      costUsd,
+      note,
+    };
+    appendLedger(options.ledger, spend);
+    return spend;
+  }, options.lock);
 }
