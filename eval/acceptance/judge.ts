@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { copyFile, mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { getClaudePath } from "@/lib/claude-path";
+import { findClaudePath, getClaudePath } from "@/lib/claude-path";
 import { cleanEnv } from "./server";
 import { modelsFromResult, usageFromCli, type TokenUsage } from "./usage";
 
@@ -243,6 +243,15 @@ function args(system: string, schema: object, dir: string): string[] {
     "--settings",
     JSON.stringify({ autoMemoryEnabled: false }),
   ];
+}
+
+/**
+ * The CLI the judge spawns, as `getClaudePath()` finds it in the harness's
+ * own process: its `CLAUDE_CLI_PATH`, else the app's discovery. The pin check
+ * compares it with the servers' before any spend (#232).
+ */
+export function judgeCliPath(): string | null {
+  return findClaudePath();
 }
 
 function runCli(argv: string[], cwd: string, input: string): Promise<{ stdout: string; code: number | null; timedOut: boolean }> {

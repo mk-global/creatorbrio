@@ -28,8 +28,9 @@ import {
 } from "../eval/acceptance/budget";
 import {
   assertLinkedWorktree,
+  checkCliPin,
+  cliVersion,
   configFingerprint,
-  envLocalCliPath,
   harnessHashes,
   inheritedConfiguration,
   mcpServerNames,
@@ -38,8 +39,13 @@ import {
   modelEnvironment,
   redactPath,
   redactText,
+  resolveServerCli,
+  serverSetting,
+  sessionVersions,
   transcriptModels,
+  transcriptVersions,
   treeFingerprint,
+  versionNumber,
   type InheritedConfiguration,
 } from "../eval/acceptance/environment";
 import { JUDGE_BUDGET_USD, MIN_READ_TURNS, OUTCOME_DIMENSIONS, type JudgeCall, type OutcomeScores, type OutcomeVerdict } from "../eval/acceptance/judge";
@@ -58,7 +64,8 @@ import {
 import { completeness, excludedVerdicts, scenarioStatistics } from "../eval/acceptance/report-baseline";
 import { renderSummary, serializeResults, type ChatRecord, type ComparisonRecord, type RunResults, type ScenarioRecord } from "../eval/acceptance/report";
 import { SCENARIOS, SYNTHETIC_BRAND, type ScenarioId } from "../eval/acceptance/scenarios";
-import { cleanEnv } from "../eval/acceptance/server";
+import { getClaudePath } from "@/lib/claude-path";
+import { cleanEnv, ROOT, serverEnvironment } from "../eval/acceptance/server";
 import { requestMs, spread } from "../eval/acceptance/stats";
 import { addUsage, modelsFromResult, usageFromCli } from "../eval/acceptance/usage";
 
@@ -374,12 +381,30 @@ describe("acceptance baseline: environment record", () => {
     expect(redactPath("/opt/tools/claude", "/home/synthetic")).toBe("/opt/tools/claude");
   });
 
-  it("hashes every harness file and reads the servers' CLI path from .env.local", async () => {
+  it("hashes every harness file and reads a server setting from the environment, then the .env files in Next.js's order", async () => {
     await writeFile(path.join(workdir, "a.ts"), "a");
-    await writeFile(path.join(workdir, ".env.local"), `OTHER=1\nCLAUDE_CLI_PATH="/opt/tools/claude"\n`);
     expect(harnessHashes(workdir).find((h) => h.file === "a.ts")?.sha256).toBe(createHash("sha256").update("a").digest("hex"));
-    expect(envLocalCliPath(workdir)).toBe("/opt/tools/claude");
-    expect(envLocalCliPath(path.join(workdir, "none"))).toBeNull();
+    const read = (mode: "prod" | "dev", env: Record<string, string> = {}) => serverSetting("CLAUDE_CLI_PATH", { root: workdir, mode, env });
+    expect(read("prod")).toBeNull();
+    await writeFile(path.join(workdir, ".env"), "CLAUDE_CLI_PATH=/opt/base/claude\n");
+    expect(read("prod")).toEqual({ value: "/opt/base/claude", source: "<project>/.env" });
+    await writeFile(path.join(workdir, ".env.local"), `OTHER=1\nCLAUDE_CLI_PATH="/opt/tools/claude"\n`);
+    expect(read("prod")).toEqual({ value: "/opt/tools/claude", source: "<project>/.env.local" });
+    await writeFile(path.join(workdir, ".env.development.local"), "CLAUDE_CLI_PATH=/opt/dev/claude\n");
+    expect(read("prod")?.value).toBe("/opt/tools/claude");
+    expect(read("dev")).toEqual({ value: "/opt/dev/claude", source: "<project>/.env.development.local" });
+    expect(read("prod", { CLAUDE_CLI_PATH: "/opt/shell/claude" })).toEqual({ value: "/opt/shell/claude", source: "the harness's environment" });
+    expect(read("prod", { CLAUDE_CLI_PATH: " " })?.value).toBe("/opt/tools/claude");
+  });
+
+  it("gives the servers the harness's CLI, else the .env files', else the app's discovery", async () => {
+    const discover = () => "/opt/discovered/claude";
+    const resolve = (env: Record<string, string>) => resolveServerCli({ root: workdir, mode: "prod", env, discover });
+    expect(resolve({})).toEqual({ path: "/opt/discovered/claude", source: "the app's discovery (no CLAUDE_CLI_PATH is set)" });
+    await writeFile(path.join(workdir, ".env.local"), "CLAUDE_CLI_PATH=/opt/pinned/claude\n");
+    expect(resolve({})).toEqual({ path: "/opt/pinned/claude", source: "CLAUDE_CLI_PATH from <project>/.env.local" });
+    // The harness's own setting, which the judge and the Design-Agent-only arm follow, comes first, as in the app's launch.
+    expect(resolve({ CLAUDE_CLI_PATH: "/opt/shell/claude" })).toEqual({ path: "/opt/shell/claude", source: "CLAUDE_CLI_PATH from the harness's environment" });
   });
 
   it("reads only model names from a session transcript", async () => {
@@ -396,6 +421,144 @@ describe("acceptance baseline: environment record", () => {
     );
     expect(transcriptModels([id, "not-a-session"], workdir)).toEqual(["model-x"]);
     expect(transcriptModels([id], path.join(workdir, "missing"))).toEqual([]);
+  });
+});
+
+describe("acceptance baseline: the servers' environment (#232)", () => {
+  /** What Next.js's own loader leaves in a server's environment, in a child process so this one is untouched. */
+  const loaded = (env: NodeJS.ProcessEnv, mode: "prod" | "dev") =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "-e",
+          `const { loadEnvConfig } = require("@next/env");
+           loadEnvConfig(process.argv[1], process.argv[2] === "dev", { info() {}, error() {} });
+           console.log(JSON.stringify({ nodeEnv: process.env.NODE_ENV ?? null, setting: process.env.SYNTHETIC_SETTING ?? null, cli: process.env.CLAUDE_CLI_PATH ?? null }));`,
+          workdir,
+          mode,
+        ],
+        { cwd: ROOT, env }
+      ).toString()
+    ) as { nodeEnv: string | null; setting: string | null; cli: string | null };
+
+  /** The test runner's environment, as the harness inherits it: NODE_ENV test and a shell CLI path. */
+  const runner = (): NodeJS.ProcessEnv => ({ PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "test", CLAUDE_CLI_PATH: "/opt/shell/claude", CLAUDE_CODE_SYNTHETIC: "1" });
+
+  beforeEach(async () => {
+    await writeFile(path.join(workdir, ".env.local"), "SYNTHETIC_SETTING=from-env-local\nCLAUDE_CLI_PATH=/opt/env-local/claude\n");
+  });
+
+  it("starts each mode with its own NODE_ENV, so Next.js loads .env.local, and with the pinned CLI over any .env file", () => {
+    for (const [mode, nodeEnv] of [["prod", "production"], ["dev", "development"]] as const) {
+      const env = serverEnvironment({ mode, cliPath: "/opt/pinned/claude", extra: { IMAGE_SERVICE_URL: "http://127.0.0.1:8791", NODE_ENV: "test" }, base: runner() });
+      expect(env).toMatchObject({ NODE_ENV: nodeEnv, CLAUDE_CLI_PATH: "/opt/pinned/claude", IMAGE_SERVICE_URL: "http://127.0.0.1:8791" });
+      expect(env.CLAUDE_CODE_SYNTHETIC).toBeUndefined();
+      expect(loaded(env, mode)).toEqual({ nodeEnv, setting: "from-env-local", cli: "/opt/pinned/claude" });
+    }
+  });
+
+  it("was what skipped .env.local: the runner's NODE_ENV test without an explicit CLI path loads neither", () => {
+    const before = runner();
+    delete before.CLAUDE_CLI_PATH; // what cleanEnv removed
+    expect(loaded(before, "prod")).toEqual({ nodeEnv: "test", setting: null, cli: null });
+  });
+
+  it("makes the server's Director and Design Agent spawn that CLI", async () => {
+    const cli = path.join(workdir, "claude");
+    await writeFile(cli, "#!/bin/sh\n");
+    const saved = process.env.CLAUDE_CLI_PATH;
+    process.env.CLAUDE_CLI_PATH = serverEnvironment({ mode: "prod", cliPath: cli, base: runner() }).CLAUDE_CLI_PATH;
+    try {
+      // Both spawn getClaudePath() (src/lib/visual-director.ts, src/app/api/chat), which follows CLAUDE_CLI_PATH.
+      expect(getClaudePath()).toBe(cli);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CLI_PATH;
+      else process.env.CLAUDE_CLI_PATH = saved;
+    }
+  });
+});
+
+describe("acceptance baseline: CLI pin (#232)", () => {
+  async function fakeCli(name: string, version: string | null) {
+    const file = path.join(workdir, name);
+    await writeFile(file, version ? `#!/bin/sh\necho "${version} (Claude Code)"\n` : "#!/bin/sh\nexit 1\n");
+    chmodSync(file, 0o755);
+    return file;
+  }
+  const use = (role: string, cli: string | null) => ({ role, path: cli, version: cliVersion(cli, process.env) });
+
+  it("passes only when the servers, the Design-Agent-only arm and the judge run one CLI at one version", async () => {
+    const pinned = await fakeCli("claude-pinned", "2.0.1");
+    const link = path.join(workdir, "claude-link");
+    symlinkSync(pinned, link);
+    const pin = checkCliPin([use("servers", pinned), use("Design-Agent-only arm", link), use("judge", pinned)], workdir);
+    expect(pin.ok).toBe(true);
+    expect(pin.message).toBe("CLI pinned: every model call uses ~/claude-pinned (2.0.1 (Claude Code)).");
+    expect(JSON.stringify(pin)).not.toContain(workdir);
+  });
+
+  it("refuses different versions, different installs of one version, a missing CLI and one whose version is unknown", async () => {
+    const pinned = await fakeCli("claude-pinned", "2.0.1");
+    const newer = await fakeCli("claude-newer", "2.0.9");
+    const copy = await fakeCli("claude-copy", "2.0.1");
+    const broken = await fakeCli("claude-broken", null);
+    for (const servers of [newer, copy, null, broken, path.join(workdir, "absent")]) {
+      const pin = checkCliPin([use("servers (Director and Design Agent)", servers), use("Design-Agent-only arm", pinned), use("judge", pinned)], workdir);
+      expect(pin.ok, String(servers)).toBe(false);
+      expect(pin.message).toMatch(/^Refusing a paid run before any spend: the CLI is not pinned/);
+      expect(pin.message).toContain("Design-Agent-only arm ~/claude-pinned (2.0.1 (Claude Code)); judge ~/claude-pinned (2.0.1 (Claude Code))");
+      expect(pin.message).not.toContain(workdir);
+    }
+    const judgeDiffers = checkCliPin([use("servers", pinned), use("Design-Agent-only arm", pinned), use("judge", newer)], workdir);
+    expect(judgeDiffers.ok).toBe(false);
+    expect(judgeDiffers.message).toContain("judge ~/claude-newer (2.0.9 (Claude Code))");
+  });
+});
+
+describe("acceptance baseline: CLI version per session (#232)", () => {
+  const ids = ["123e4567-e89b-42d3-a456-426614174001", "123e4567-e89b-42d3-a456-426614174002", "123e4567-e89b-42d3-a456-426614174003", "123e4567-e89b-42d3-a456-426614174004"];
+  const SECRET = "synthetic-transcript-content";
+
+  async function transcript(id: string, versions: string[]) {
+    await mkdir(path.join(workdir, "projects", "-synthetic-project"), { recursive: true });
+    const lines = versions.flatMap((version) => [
+      JSON.stringify({ type: "user", version, message: { content: SECRET } }),
+      JSON.stringify({ type: "assistant", version, message: { model: "model-x", content: [{ type: "text", text: SECRET }] } }),
+    ]);
+    lines.push(JSON.stringify({ type: "summary", version: `not a version ${SECRET}` }), '{"version":"2.0.1', "");
+    await writeFile(path.join(workdir, "projects", "-synthetic-project", `${id}.jsonl`), lines.join("\n"));
+  }
+
+  it("reads only the version field from each session's transcript", async () => {
+    await transcript(ids[0], ["2.0.1"]);
+    await transcript(ids[1], ["2.0.1", "2.0.9"]); // a resumed session
+    expect(transcriptVersions([ids[0], ids[1], ids[2], "not-a-session", ids[0]], workdir)).toEqual([
+      { sessionId: ids[0], found: true, versions: ["2.0.1"] },
+      { sessionId: ids[1], found: true, versions: ["2.0.1", "2.0.9"] },
+      { sessionId: ids[2], found: false, versions: [] },
+    ]);
+    expect(versionNumber("2.0.1 (Claude Code)")).toBe("2.0.1");
+    expect(versionNumber(null)).toBeNull();
+  });
+
+  it("records each Design Agent session's version and flags a run when one differs from the configured CLI", async () => {
+    await transcript(ids[0], ["2.0.1"]);
+    await transcript(ids[1], ["2.0.9"]);
+    await transcript(ids[3], ["2.0.1", "2.0.9"]);
+    const record = sessionVersions({ sessionIds: [ids[0], ids[1], ids[2], ids[3]], withoutSession: 1, configDir: workdir, configuredLine: "2.0.1 (Claude Code)" });
+    expect(record).toMatchObject({ configured: "2.0.1", withoutSession: 1, mismatch: true });
+    expect(record.sessions).toEqual([
+      { sessionId: ids[0], versions: ["2.0.1"], status: "matches" },
+      { sessionId: ids[1], versions: ["2.0.9"], status: "differs" },
+      { sessionId: ids[2], versions: [], status: "unknown" },
+      { sessionId: ids[3], versions: ["2.0.1", "2.0.9"], status: "differs" },
+    ]);
+    expect(record.director).toMatch(/^not recordable: the Director runs with --no-session-persistence/);
+    expect(JSON.stringify(record)).not.toContain(SECRET);
+
+    const pinned = sessionVersions({ sessionIds: [ids[0], ids[2]], withoutSession: 0, configDir: workdir, configuredLine: "2.0.1 (Claude Code)" });
+    expect(pinned.mismatch).toBe(false);
   });
 });
 
@@ -433,7 +596,21 @@ describe("acceptance baseline: summary", () => {
         commitDirty: false,
         node: "v0",
         platform: "test",
-        cli: { server: { path: "~/bin/claude", version: "1.0.0 (Claude Code)" }, harness: { path: null, version: null } },
+        cli: {
+          server: { path: "~/bin/claude", version: "1.0.0 (Claude Code)", source: "CLAUDE_CLI_PATH from <project>/.env.local" },
+          harness: { path: "~/bin/claude", version: "1.0.0 (Claude Code)" },
+          pin: { ok: true, uses: [], message: "CLI pinned: every model call uses ~/bin/claude (1.0.0 (Claude Code))." },
+          sessions: {
+            configured: "1.0.0",
+            sessions: [
+              { sessionId: "s-1", versions: ["1.0.0"], status: "matches" },
+              { sessionId: "s-2", versions: ["1.0.9"], status: "differs" },
+            ],
+            withoutSession: 0,
+            mismatch: true,
+            director: "not recordable",
+          },
+        },
         models: { designAgent: { models: ["model-x"], source: "transcripts" }, director: { models: [], source: "not recorded" }, designAgentOnly: [], judge: [] },
         inheritedConfiguration: syntheticConfiguration(),
         harnessFiles: [{ file: "budget.ts", sha256: "e".repeat(64) }],
@@ -453,6 +630,8 @@ describe("acceptance baseline: summary", () => {
     expect(md).not.toContain("| File | Exists |");
     expect(md).toContain("Limitation: The harness strips CLAUDE_CODE_*");
     expect(md).toContain("model-x");
+    expect(md).toContain("CLI pin: CLI pinned: every model call uses ~/bin/claude (1.0.0 (Claude Code)).");
+    expect(md).toContain("**CLI version mismatch:** Design Agent sessions on the configured version 1.0.0, from their transcripts: 1 match, 1 differ, 0 unknown, 0 without a session id.");
     expect(md).not.toMatch(/[\u2013\u2014]/);
   });
 });

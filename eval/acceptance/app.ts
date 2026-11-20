@@ -1,11 +1,14 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { request, type IncomingMessage } from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
+import { DESIGN_AGENT_TIMEOUT_ENV, designAgentTimeout, MAX_DESIGN_AGENT_TIMEOUT_SECONDS } from "@/lib/design-agent";
 import type { Brand } from "@/types/brand";
 import type { AspectRatio, Carousel } from "@/types/carousel";
-import { ROOT } from "./server";
+import { serverSetting } from "./environment";
+import { ROOT, type ServerMode } from "./server";
 import { addUsage, usageFromCli, type TokenUsage } from "./usage";
 
 /**
@@ -50,8 +53,47 @@ export interface ChatOptions {
   onAbort?: () => void;
 }
 
+/** How much longer than the Design Agent's absolute deadline the chat stream may stay quiet: time for the server to stop the agent and finish the stream. */
+export const CHAT_TIMEOUT_MARGIN_MS = 5 * 60 * 1000;
+
+/**
+ * The Design Agent's absolute deadline as a server the harness starts sees it
+ * (#232): `DESIGN_AGENT_TIMEOUT_SECONDS` from the environment the harness
+ * gives it, else from the checkout's `.env` files, else the product's
+ * default, read with the product's own parser. A value the product refuses
+ * stops no design early, so the product's maximum is used for it.
+ */
+export function designAgentDeadline(options: { root: string; mode: ServerMode; env: Record<string, string | undefined> }): { ms: number; source: string } {
+  const setting = serverSetting(DESIGN_AGENT_TIMEOUT_ENV, options);
+  const parsed = designAgentTimeout(setting?.value);
+  if (!parsed.ok) return { ms: MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000, source: `${DESIGN_AGENT_TIMEOUT_ENV} from ${setting?.source} is invalid; the product's maximum` };
+  return { ms: parsed.ms, source: setting ? `${DESIGN_AGENT_TIMEOUT_ENV} from ${setting.source}` : "the product's default" };
+}
+
+/** How long the chat request may wait for its headers or between two chunks of the stream: the Design Agent's deadline plus the margin. */
+export function chatTimeoutMs(designDeadlineMs: number): number {
+  return designDeadlineMs + CHAT_TIMEOUT_MARGIN_MS;
+}
+
+export interface AppClientOptions {
+  /**
+   * How long the chat request waits for its headers, and then between chunks,
+   * before it gives up. Set it from `chatTimeoutMs`, so only the product's own
+   * limits stop a design; the default is the product's longest allowed
+   * deadline plus the margin.
+   */
+  chatTimeoutMs?: number;
+}
+
 export class AppClient {
-  constructor(readonly origin: string) {}
+  readonly chatTimeoutMs: number;
+
+  constructor(
+    readonly origin: string,
+    options: AppClientOptions = {}
+  ) {
+    this.chatTimeoutMs = options.chatTimeoutMs ?? chatTimeoutMs(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000);
+  }
 
   private headers(json = true): Record<string, string> {
     // Same-origin, like the app's own pages.
@@ -132,7 +174,13 @@ export class AppClient {
     return false;
   }
 
-  /** Sends one chat message and reads the whole event stream. Never throws for stream problems. */
+  /**
+   * Sends one chat message and reads the whole event stream. Never throws for
+   * stream problems. It uses `node:http` rather than `fetch`, whose default
+   * body timeout of 300 s between chunks cut off designs whose stream was
+   * quiet for longer (#232); this request gives up only after
+   * `chatTimeoutMs` without its headers or without a chunk.
+   */
   async chat(
     body: { carouselId: string; message: string; sessionId?: string | null; retryRunId?: string },
     options: ChatOptions = {}
@@ -175,37 +223,66 @@ export class AppClient {
       }
     };
 
+    const payload = JSON.stringify({
+      message: body.message,
+      carouselId: body.carouselId,
+      ...(body.sessionId ? { sessionId: body.sessionId } : {}),
+      ...(body.retryRunId ? { retryRunId: body.retryRunId } : {}),
+    });
+    // The idle limit, restarted by every chunk: the headers, then each part of the stream.
+    let idleTimer: NodeJS.Timeout | null = null;
+    let timedOut: string | null = null;
+    let destroy: ((err: Error) => void) | null = null;
+    const restartIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = `the chat stream sent nothing for ${Math.round(this.chatTimeoutMs / 1000)} s`;
+        destroy?.(new Error(timedOut));
+      }, this.chatTimeoutMs);
+    };
+
     try {
-      const res = await fetch(`${this.origin}/api/chat`, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          message: body.message,
-          carouselId: body.carouselId,
-          ...(body.sessionId ? { sessionId: body.sessionId } : {}),
-          ...(body.retryRunId ? { retryRunId: body.retryRunId } : {}),
-        }),
-        signal: controller.signal,
+      restartIdle();
+      const res = await new Promise<IncomingMessage>((resolve, reject) => {
+        const req = request(
+          new URL("/api/chat", this.origin),
+          {
+            method: "POST",
+            headers: { ...this.headers(), "Content-Length": String(Buffer.byteLength(payload)) },
+            // A socket of its own, so no agent's keep-alive or socket timeout applies.
+            agent: false,
+            signal: controller.signal,
+          },
+          resolve
+        );
+        destroy = (err) => req.destroy(err);
+        req.on("error", reject);
+        req.end(payload);
       });
-      result.httpStatus = res.status;
-      if (!res.ok || !res.body) {
-        result.httpError = (await res.text()).slice(0, 500);
-        return result;
-      }
-      const parser = createChatStreamParser();
+      result.httpStatus = res.statusCode ?? 0;
+      const ok = result.httpStatus >= 200 && result.httpStatus < 300;
       const decoder = new TextDecoder();
-      const reader = res.body.getReader();
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        for (const event of parser.push(decoder.decode(value, { stream: true }))) handle(event);
+      const parser = createChatStreamParser();
+      let errorText = "";
+      for await (const chunk of res as AsyncIterable<Buffer>) {
+        restartIdle();
+        if (!ok) {
+          errorText += decoder.decode(chunk, { stream: true });
+          continue;
+        }
+        for (const event of parser.push(decoder.decode(chunk, { stream: true }))) handle(event);
+      }
+      if (!ok) {
+        result.httpError = (errorText + decoder.decode()).slice(0, 500);
+        return result;
       }
       for (const event of parser.end()) handle(event);
       if (!sawDone) result.streamError = "stream ended without a done event";
     } catch (err) {
-      if (!result.aborted) result.streamError = (err as Error).message;
+      if (!result.aborted) result.streamError = timedOut ?? (err as Error).message;
     } finally {
       if (abortTimer) clearTimeout(abortTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       result.durationMs = Date.now() - started;
     }
     return result;

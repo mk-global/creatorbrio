@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { resolveBrandForCarousel } from "@/lib/brand";
 import { getCarousel } from "@/lib/carousels";
 import { buildSystemPrompt } from "@/lib/chat-system-prompt";
-import { getClaudePath } from "@/lib/claude-path";
+import { findClaudePath, getClaudePath } from "@/lib/claude-path";
 import { designAgentArgs, designAgentSettings } from "@/lib/design-agent";
 import { resolveReferenceImages } from "@/lib/reference-images";
 import { cleanEnv, ROOT } from "./server";
@@ -28,6 +28,15 @@ export interface BaselineResult {
   subtype: string | null;
   resultText: string | null;
   error: string | null;
+}
+
+/**
+ * The CLI the Design-Agent-only arm spawns, as `getClaudePath()` finds it in the harness's
+ * own process: its `CLAUDE_CLI_PATH`, else the app's discovery. The pin check
+ * compares it with the servers' before any spend (#232).
+ */
+export function designAgentOnlyCliPath(): string | null {
+  return findClaudePath();
 }
 
 export async function runDesignAgentOnly(options: { origin: string; carouselId: string; message: string }): Promise<BaselineResult> {

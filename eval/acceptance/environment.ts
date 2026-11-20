@@ -37,10 +37,14 @@ export interface EnvironmentRecord {
   node: string;
   platform: string;
   cli: {
-    /** The CLI the servers spawn (the Design Agent and the Director). */
-    server: { path: string | null; version: string | null };
+    /** The CLI the servers spawn (the Design Agent and the Director), given to them explicitly as CLAUDE_CLI_PATH, and where the path came from. */
+    server: { path: string | null; version: string | null; source: string };
     /** The CLI the harness spawns (the judges and the Design-Agent-only arm). */
     harness: { path: string | null; version: string | null };
+    /** The pre-spend check that the servers, the Design-Agent-only arm and the judge use one CLI (#232). */
+    pin: CliPin;
+    /** The version each Design Agent session ran, from the CLI's own transcripts; filled in after the run. */
+    sessions: SessionVersions | null;
   };
   models: {
     designAgent: { models: string[]; source: string };
@@ -309,29 +313,61 @@ export function modelEnvironment(env: Record<string, string | undefined>): EnvVa
     .sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
+/**
+ * The `.env` files a server in `mode` loads, highest precedence first, as
+ * Next.js orders them when `NODE_ENV` is `production` or `development`
+ * (which the harness now sets, #232). A variable already in the server's
+ * environment takes precedence over all of them.
+ */
+export function envFiles(mode: "prod" | "dev"): string[] {
+  const suffix = mode === "prod" ? "production" : "development";
+  return [`.env.${suffix}.local`, ".env.local", `.env.${suffix}`, ".env"];
+}
+
+/** A `.env` file's assignments, or null when it cannot be read. */
+function readEnvFile(file: string): Record<string, string> | null {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  const values: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (m) values[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
+  }
+  return values;
+}
+
 /** The model-related variables a checkout's `.env` files set, which the servers load: names and value hashes only. */
 export function envFileVariables(root: string, mode: "prod" | "dev"): (EnvVariable & { file: string })[] {
-  const suffix = mode === "prod" ? "production" : "development";
   const out: (EnvVariable & { file: string })[] = [];
-  for (const file of [".env", `.env.${suffix}`, ".env.local", `.env.${suffix}.local`]) {
-    let text: string;
-    try {
-      text = readFileSync(path.join(root, file), "utf8");
-    } catch {
-      continue;
-    }
-    const values: Record<string, string> = {};
-    for (const line of text.split(/\r?\n/)) {
-      const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-      if (m) values[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-    }
-    for (const v of modelEnvironment(values)) out.push({ ...v, file: `<project>/${file}` });
+  for (const file of [...envFiles(mode)].reverse()) {
+    const values = readEnvFile(path.join(root, file));
+    if (values) for (const v of modelEnvironment(values)) out.push({ ...v, file: `<project>/${file}` });
   }
   return out;
 }
 
+/**
+ * The value a server started by the harness sees for `name`: its own
+ * environment's (`env`) when set and not blank, else the first `.env` file
+ * that sets it, in Next.js's precedence; with where it came from, as a
+ * redacted label. Null when nothing sets it.
+ */
+export function serverSetting(name: string, options: { root: string; mode: "prod" | "dev"; env: Record<string, string | undefined> }): { value: string; source: string } | null {
+  const own = options.env[name]?.trim();
+  if (own) return { value: own, source: "the harness's environment" };
+  for (const file of envFiles(options.mode)) {
+    const value = readEnvFile(path.join(options.root, file))?.[name]?.trim();
+    if (value) return { value, source: `<project>/${file}` };
+  }
+  return null;
+}
+
 const CLEAN_ENV_LIMITATION =
-  "The harness strips CLAUDE_CODE_*, CLAUDE_EFFORT, CLAUDECODE, CLAUDE_PID, CLAUDE_CLI_PATH and IMAGE_SERVICE_URL from the environment it gives the servers, the judges and the Design-Agent-only arm, while the app's normal launch through /start passes them through, so a baseline launched by the harness can differ from the app's normal launch. strippedByHarness names the model, effort and thinking variables it removed from the invoking shell.";
+  "The harness strips CLAUDE_CODE_*, CLAUDE_EFFORT, CLAUDECODE, CLAUDE_PID, CLAUDE_CLI_PATH and IMAGE_SERVICE_URL from the environment it gives the servers, the judges and the Design-Agent-only arm, while the app's normal launch through /start passes them through, so a baseline launched by the harness can differ from the app's normal launch. strippedByHarness names the model, effort and thinking variables it removed from the invoking shell. The servers then get NODE_ENV for their mode, so they load the checkout's .env files as the app does, and CLAUDE_CLI_PATH set to the pinned CLI, the image service address and the per-call caps explicitly.";
 const MEMORY_LIMITATION =
   "The Design Agent does not disable auto-memory (the Director does, with autoMemoryEnabled false), so it can read the project's auto-memory folder and write to it: a run can change what a later run reads. The memory tree is fingerprinted once, before the run, by file name, size and hash.";
 const MEMORY_LOCATION_LIMITATION =
@@ -450,19 +486,73 @@ export function harnessHashes(dir: string): { file: string; sha256: string }[] {
     .map((file) => ({ file, sha256: sha256(readFileSync(path.join(dir, file))) }));
 }
 
-/** `CLAUDE_CLI_PATH` from the checkout's `.env.local`, which the servers load; null when absent. */
-export function envLocalCliPath(root: string): string | null {
-  let text: string;
+/**
+ * The CLI the harness gives its servers as `CLAUDE_CLI_PATH` (#232): the
+ * harness's own `CLAUDE_CLI_PATH`, which the judges and the
+ * Design-Agent-only arm also follow, else the one the checkout's `.env`
+ * files set, else what the app's own discovery finds. A configured path is
+ * used as given, even when it does not exist, so the pin check refuses it
+ * rather than letting the app fall back to discovery.
+ */
+export function resolveServerCli(options: {
+  root: string;
+  mode: "prod" | "dev";
+  env: Record<string, string | undefined>;
+  discover: () => string | null;
+}): { path: string | null; source: string } {
+  const configured = serverSetting("CLAUDE_CLI_PATH", options);
+  if (configured) return { path: configured.value, source: `CLAUDE_CLI_PATH from ${configured.source}` };
+  return { path: options.discover(), source: "the app's discovery (no CLAUDE_CLI_PATH is set)" };
+}
+
+/** One part of the run that spawns the CLI, and the CLI it spawns. */
+export interface CliUse {
+  role: string;
+  path: string | null;
+  version: string | null;
+}
+
+export interface CliPin {
+  /** Every use names an existing CLI, one real path and one version. */
+  ok: boolean;
+  /** Paths redacted. */
+  uses: CliUse[];
+  message: string;
+}
+
+const realOrSelf = (p: string) => {
   try {
-    text = readFileSync(path.join(root, ".env.local"), "utf8");
+    return realpathSync(p);
   } catch {
-    return null;
+    return p;
   }
-  for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?CLAUDE_CLI_PATH\s*=\s*(.*?)\s*$/);
-    if (m) return m[1].replace(/^(['"])(.*)\1$/, "$2") || null;
-  }
-  return null;
+};
+
+/**
+ * Whether the servers (Director and Design Agent), the Design-Agent-only arm
+ * and the judge use one CLI: the same real path and the same `--version`
+ * line. A missing path or an unknown version cannot be shown to match, so it
+ * refuses too. A paid run is refused before any spend when this is not ok.
+ */
+export function checkCliPin(uses: CliUse[], home: string = os.homedir()): CliPin {
+  const shown = uses.map((u) => ({ ...u, path: u.path ? redactPath(u.path, home) : null }));
+  const describe = shown.map((u) => `${u.role} ${u.path ?? "no CLI found"} (${u.version ?? "version unknown"})`).join("; ");
+  const missing = uses.filter((u) => !u.path || !u.version);
+  const paths = new Set(uses.map((u) => (u.path ? realOrSelf(u.path) : null)));
+  const versions = new Set(uses.map((u) => u.version));
+  const ok = uses.length > 0 && missing.length === 0 && paths.size === 1 && versions.size === 1;
+  return {
+    ok,
+    uses: shown,
+    message: ok
+      ? `CLI pinned: every model call uses ${shown[0].path} (${shown[0].version}).`
+      : `Refusing a paid run before any spend: the CLI is not pinned, so the servers, the Design-Agent-only arm and the judge would not all run one CLI: ${describe}. Set CLAUDE_CLI_PATH for the harness (or in .env.local, with the same CLI for the harness) to one installed CLI.`,
+  };
+}
+
+/** The version number in a `--version` line such as `2.1.3 (Claude Code)`, or null. */
+export function versionNumber(line: string | null): string | null {
+  return line?.match(/\d+\.\d+\.\d+(?:[-+][\w.]+)?/)?.[0] ?? null;
 }
 
 /** The CLI's own `--version` line (no model is involved), or null. */
@@ -478,6 +568,21 @@ export function cliVersion(cliPath: string | null, env: NodeJS.ProcessEnv): stri
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Each valid session id once, with its transcript under `<config dir>/projects/<project folder>/`, or null when there is none. */
+function transcripts(sessionIds: string[], configDir: string): { id: string; file: string | null }[] {
+  const projects = path.join(configDir, "projects");
+  let folders: string[];
+  try {
+    folders = readdirSync(projects);
+  } catch {
+    folders = [];
+  }
+  return [...new Set(sessionIds.filter((s) => SESSION_ID.test(s)))].map((id) => {
+    const folder = folders.find((f) => existsSync(path.join(projects, f, `${id}.jsonl`)));
+    return { id, file: folder ? path.join(projects, folder, `${id}.jsonl`) : null };
+  });
+}
+
 /**
  * The models named on assistant messages in the CLI's own transcripts of
  * these sessions, under `<config dir>/projects/`. Only the model names are
@@ -485,18 +590,10 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  * only record of it; an absent transcript yields nothing.
  */
 export function transcriptModels(sessionIds: string[], configDir: string): string[] {
-  const projects = path.join(configDir, "projects");
-  let folders: string[];
-  try {
-    folders = readdirSync(projects);
-  } catch {
-    return [];
-  }
   const models = new Set<string>();
-  for (const id of new Set(sessionIds.filter((s) => SESSION_ID.test(s)))) {
-    const folder = folders.find((f) => existsSync(path.join(projects, f, `${id}.jsonl`)));
-    if (!folder) continue;
-    for (const line of readFileSync(path.join(projects, folder, `${id}.jsonl`), "utf8").split("\n")) {
+  for (const { file } of transcripts(sessionIds, configDir)) {
+    if (!file) continue;
+    for (const line of readFileSync(file, "utf8").split("\n")) {
       if (!line.includes('"model"')) continue;
       try {
         const e = JSON.parse(line) as { type?: unknown; message?: { model?: unknown } };
@@ -508,6 +605,75 @@ export function transcriptModels(sessionIds: string[], configDir: string): strin
     }
   }
   return [...models].sort();
+}
+
+const VERSION = /^\d+\.\d+\.\d+(?:[-+][\w.]+)?$/;
+
+/**
+ * The CLI versions a session's transcript records, from the `version` field
+ * the CLI writes on its lines; nothing else is read. Sorted; empty when the
+ * transcript is absent or names none. A resumed session can hold several.
+ */
+export function transcriptVersions(sessionIds: string[], configDir: string): { sessionId: string; found: boolean; versions: string[] }[] {
+  return transcripts(sessionIds, configDir).map(({ id, file }) => {
+    const versions = new Set<string>();
+    if (file) {
+      for (const line of readFileSync(file, "utf8").split("\n")) {
+        if (!line.includes('"version"')) continue;
+        try {
+          const version = (JSON.parse(line) as { version?: unknown }).version;
+          if (typeof version === "string" && version.length <= 64 && VERSION.test(version)) versions.add(version);
+        } catch {
+          // A partial line is skipped.
+        }
+      }
+    }
+    return { sessionId: id, found: !!file, versions: [...versions].sort() };
+  });
+}
+
+export interface SessionVersion {
+  sessionId: string;
+  /** The versions its transcript records. */
+  versions: string[];
+  /** `differs` when any recorded version is not the configured one; `unknown` when no transcript or no version was found. */
+  status: "matches" | "differs" | "unknown";
+}
+
+export interface SessionVersions {
+  /** The configured CLI's version number, from its `--version` line. */
+  configured: string | null;
+  sessions: SessionVersion[];
+  /** Design Agent chats that ended without a session id, so their version cannot be read. */
+  withoutSession: number;
+  /** Any session recorded a version other than the configured one. */
+  mismatch: boolean;
+  /** Why the Director's version is not here. */
+  director: string;
+}
+
+export const DIRECTOR_VERSION_NOTE =
+  "not recordable: the Director runs with --no-session-persistence, so its CLI writes no transcript; it is spawned by the same server, from the same CLAUDE_CLI_PATH, as the Design Agent";
+
+/**
+ * The version each Design Agent session ran, read from its transcript, against
+ * the configured CLI's `--version` line (#232). The run is flagged when any
+ * session ran another version.
+ */
+export function sessionVersions(options: { sessionIds: string[]; withoutSession: number; configDir: string; configuredLine: string | null }): SessionVersions {
+  const configured = versionNumber(options.configuredLine);
+  const sessions = transcriptVersions(options.sessionIds, options.configDir).map(({ sessionId, versions }): SessionVersion => ({
+    sessionId,
+    versions,
+    status: versions.length === 0 ? "unknown" : configured && versions.every((v) => v === configured) ? "matches" : "differs",
+  }));
+  return {
+    configured,
+    sessions,
+    withoutSession: options.withoutSession,
+    mismatch: sessions.some((s) => s.status === "differs"),
+    director: DIRECTOR_VERSION_NOTE,
+  };
 }
 
 /** The current commit and whether tracked files differ from it. */

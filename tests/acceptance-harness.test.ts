@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -8,15 +8,18 @@ import path from "node:path";
 import { format } from "node:util";
 import sharp from "sharp";
 
+import { encodeChatEvent, type ChatStreamEvent } from "@/lib/chat-stream";
+import { DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS, MAX_DESIGN_AGENT_TIMEOUT_SECONDS } from "@/lib/design-agent";
 import type { CarouselAsset, Slide } from "@/types/carousel";
 import { admissionWaitMs, health, imageServiceUrl, observeBusy, waitForAdmission } from "../eval/acceptance/image-service";
-import { logEntries } from "../eval/acceptance/app";
+import { AppClient, CHAT_TIMEOUT_MARGIN_MS, chatTimeoutMs, designAgentDeadline, logEntries } from "../eval/acceptance/app";
 import {
   checkExportFiles,
   checkFileHashes,
   checkPlacement,
   checkPreview,
   checkTasks,
+  checkUnavailableServiceStop,
   plannedAssets,
   planSummary,
   sha256,
@@ -355,5 +358,178 @@ describe("acceptance harness: reuse after a retry", () => {
     expect(remake["retry reused every staged image"].pass).toBe(false);
     expect(remake["no staged image made again"]).toMatchObject({ pass: false, evidence: "made again: a1" });
     expect(remake["staged images attached unchanged"].pass).toBe(false);
+  });
+});
+
+// The chat request (#232): it used the global fetch, whose default body
+// timeout of 300 s between chunks cut off designs whose stream was quiet for
+// longer. It now waits for its headers and between chunks for the Design
+// Agent's deadline plus a margin.
+
+describe("acceptance harness: chat stream timeouts", () => {
+  /** Lets real socket I/O run while timers are fake, for up to 5 s of wall-clock time; setImmediate and Date are not faked. */
+  async function until(condition: () => boolean) {
+    const deadline = Date.now() + 5_000;
+    while (!condition() && Date.now() < deadline) await new Promise((r) => setImmediate(r));
+    expect(condition()).toBe(true);
+  }
+
+  /** A fake chat route that sends `first` and then stays quiet until the test writes to `stream`. */
+  async function quietRoute(first: ChatStreamEvent[]) {
+    const state: { stream: ServerResponse | null; body: string; origin: string | undefined } = { stream: null, body: "", origin: undefined };
+    const origin = await fake((req, res) => {
+      state.origin = req.headers.origin;
+      req.on("data", (c: Buffer) => (state.body += c.toString("utf8")));
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        for (const event of first) res.write(encodeChatEvent(event));
+        state.stream = res;
+      });
+    });
+    return { origin, state };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("waits through a stream quiet for 20 minutes of simulated time, four times fetch's 300 s, and reads it to the end", async () => {
+    const { origin, state } = await quietRoute([{ type: "stage", stage: "designing" }]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = new AppClient(origin, { chatTimeoutMs: chatTimeoutMs(DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000) });
+    const seen: string[] = [];
+    const pending = app.chat({ carouselId: "c-1", message: "Make a carousel" }, { onEvent: (e) => seen.push(e.event.type) });
+    await until(() => seen.length === 1);
+    vi.advanceTimersByTime(20 * 60 * 1000);
+    state.stream!.write(encodeChatEvent({ type: "done", sessionId: "123e4567-e89b-42d3-a456-426614174000" }));
+    state.stream!.end();
+    const result = await pending;
+    expect(result.streamError).toBeNull();
+    expect(result.httpStatus).toBe(200);
+    expect(result.sessionId).toBe("123e4567-e89b-42d3-a456-426614174000");
+    expect(seen).toEqual(["stage", "done"]);
+    // The request is the one the browser sends: same-origin, with the message and carousel.
+    expect(state.origin).toBe(origin);
+    expect(JSON.parse(state.body)).toEqual({ message: "Make a carousel", carouselId: "c-1" });
+  });
+
+  it("gives up only once the stream has sent nothing for the configured time", async () => {
+    const { origin, state } = await quietRoute([{ type: "stage", stage: "designing" }]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = new AppClient(origin, { chatTimeoutMs: 30 * 60 * 1000 });
+    const seen: string[] = [];
+    const pending = app.chat({ carouselId: "c-1", message: "m" }, { onEvent: (e) => seen.push(e.event.type) });
+    await until(() => seen.length === 1);
+    vi.advanceTimersByTime(29 * 60 * 1000);
+    // A chunk restarts the limit.
+    state.stream!.write(encodeChatEvent({ type: "stage", stage: "designing", detail: "still going" }));
+    await until(() => seen.length === 2);
+    vi.advanceTimersByTime(29 * 60 * 1000);
+    expect(seen).toHaveLength(2);
+    vi.advanceTimersByTime(60 * 1000 + 1);
+    const result = await pending;
+    expect(result.streamError).toBe("the chat stream sent nothing for 1800 s");
+    expect(result.aborted).toBe(false);
+  });
+
+  it("applies the same limit while waiting for the response headers", async () => {
+    await fake(() => {
+      // Never answers.
+    });
+    const origin = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = new AppClient(origin, { chatTimeoutMs: 10 * 60 * 1000 });
+    const pending = app.chat({ carouselId: "c-1", message: "m" });
+    await until(() => requests.length === 1);
+    vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+    expect((await pending).streamError).toBe("the chat stream sent nothing for 600 s");
+  });
+
+  it("reports a stream the server broke off, and none for a stream the harness closed on purpose", async () => {
+    const broken = await quietRoute([{ type: "stage", stage: "preparing-images", detail: "1 of 3" }]);
+    const app = new AppClient(broken.origin);
+    const seen: string[] = [];
+    const pending = app.chat({ carouselId: "c-1", message: "m" }, { onEvent: (e) => seen.push(e.event.type) });
+    await until(() => seen.length === 1);
+    broken.state.stream!.socket!.destroy(); // the server was killed
+    const result = await pending;
+    expect(result.streamError).toBeTruthy();
+    expect(result.aborted).toBe(false);
+    await closeServer();
+
+    const stopped = await quietRoute([{ type: "stage", stage: "preparing-images", detail: "1 of 3" }]);
+    const onAbort = vi.fn();
+    const cancelled = await new AppClient(stopped.origin).chat(
+      { carouselId: "c-1", message: "m" },
+      { abortWhen: ({ event }) => event.type === "stage", onAbort }
+    );
+    expect(cancelled.aborted).toBe(true);
+    expect(cancelled.streamError).toBeNull();
+    expect(onAbort).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a refusal's status and text, and a stream that ended without done", async () => {
+    let origin = await fake((req, res) => {
+      req.resume();
+      json(res, 409, { error: "This carousel already has an active run" });
+    });
+    const refused = await new AppClient(origin).chat({ carouselId: "c-1", message: "m" });
+    expect(refused.httpStatus).toBe(409);
+    expect(refused.httpError).toContain("already has an active run");
+    expect(refused.streamError).toBeNull();
+    await closeServer();
+
+    origin = await fake((req, res) => {
+      req.resume();
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(encodeChatEvent({ type: "stage", stage: "planning" }));
+    });
+    const cut = await new AppClient(origin).chat({ carouselId: "c-1", message: "m" });
+    expect(cut.streamError).toBe("stream ended without a done event");
+    expect(cut.events.map((e) => e.event.type)).toEqual(["stage"]);
+  });
+
+  it("sets the limit from the Design Agent's deadline the servers see, plus the margin", async () => {
+    // The default: the product's 30-minute deadline plus five minutes, far beyond fetch's 300 s.
+    const none = designAgentDeadline({ root: workdir, mode: "prod", env: {} });
+    expect(none).toEqual({ ms: DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000, source: "the product's default" });
+    expect(CHAT_TIMEOUT_MARGIN_MS).toBe(5 * 60 * 1000);
+    expect(chatTimeoutMs(none.ms)).toBe(35 * 60 * 1000);
+    expect(new AppClient("http://127.0.0.1:1").chatTimeoutMs).toBe(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000 + CHAT_TIMEOUT_MARGIN_MS);
+
+    // The servers now load the checkout's .env files, so those count, in Next.js's order, below the environment.
+    await writeFile(path.join(workdir, ".env"), "DESIGN_AGENT_TIMEOUT_SECONDS=600\n");
+    expect(designAgentDeadline({ root: workdir, mode: "prod", env: {} })).toEqual({ ms: 600_000, source: "DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env" });
+    await writeFile(path.join(workdir, ".env.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=2400\n");
+    expect(designAgentDeadline({ root: workdir, mode: "prod", env: {} }).ms).toBe(2_400_000);
+    await writeFile(path.join(workdir, ".env.production.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=2700\n");
+    expect(designAgentDeadline({ root: workdir, mode: "prod", env: {} }).ms).toBe(2_700_000);
+    expect(designAgentDeadline({ root: workdir, mode: "dev", env: {} }).ms).toBe(2_400_000);
+    expect(designAgentDeadline({ root: workdir, mode: "prod", env: { DESIGN_AGENT_TIMEOUT_SECONDS: "3000" } })).toEqual({
+      ms: 3_000_000,
+      source: "DESIGN_AGENT_TIMEOUT_SECONDS from the harness's environment",
+    });
+    // A value the product refuses stops no design early: the limit covers the product's maximum.
+    expect(designAgentDeadline({ root: workdir, mode: "prod", env: { DESIGN_AGENT_TIMEOUT_SECONDS: "soon" } }).ms).toBe(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000);
+  });
+});
+
+describe("acceptance harness: S7, the image service unavailable", () => {
+  const verdicts = (code: string, carousel: { slides: Slide[]; assets?: CarouselAsset[] }) =>
+    Object.fromEntries(checkUnavailableServiceStop({ code, message: "The image service is not available" }, carousel).map((c) => [c.name, c.verdict]));
+  const slide = { id: "s1", html: "<div></div>" } as Slide;
+
+  it("passes a stop with capability_unavailable or image_failed when nothing changed", () => {
+    for (const code of ["capability_unavailable", "image_failed"]) {
+      const v = verdicts(code, { slides: [], assets: [] });
+      expect(v["stopped with a reason"]).toEqual({ pass: true, evidence: `${code}: The image service is not available` });
+      expect(v["nothing changed"]).toEqual({ pass: true, evidence: "0 slides, 0 assets" });
+    }
+  });
+
+  it("fails any other stop, and a stop that changed the carousel", () => {
+    expect(verdicts("plan_failed", { slides: [] })["stopped with a reason"].pass).toBe(false);
+    expect(verdicts("capability_unavailable", { slides: [slide] })["nothing changed"]).toEqual({ pass: false, evidence: "1 slides, 0 assets" });
+    expect(verdicts("image_failed", { slides: [], assets: [{ id: "a1" } as CarouselAsset] })["nothing changed"].pass).toBe(false);
   });
 });

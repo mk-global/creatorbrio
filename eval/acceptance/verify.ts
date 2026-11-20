@@ -219,6 +219,29 @@ export async function checkExportFiles(files: string[], aspectRatio: AspectRatio
 // ---------------------------------------------------------------------------
 // Reuse of staged images by a retry.
 
+/**
+ * The codes with which a run may stop, with a reason, when the image service
+ * is unavailable (S7): `image_failed` when the image stage cannot reach it,
+ * and `capability_unavailable` when the Director already finds it
+ * unreachable while planning (#232).
+ */
+export const UNAVAILABLE_SERVICE_STOPS: readonly string[] = ["image_failed", "capability_unavailable"];
+
+/**
+ * S7's checks for a run that stopped: it stopped with one of those reasons,
+ * and nothing changed on the carousel.
+ */
+export function checkUnavailableServiceStop(
+  blocked: { code: string; message: string },
+  carousel: Pick<Carousel, "slides" | "assets">
+): { name: string; verdict: Verdict }[] {
+  const assets = (carousel.assets ?? []).length;
+  return [
+    { name: "stopped with a reason", verdict: { pass: UNAVAILABLE_SERVICE_STOPS.includes(blocked.code), evidence: `${blocked.code}: ${blocked.message}` } },
+    { name: "nothing changed", verdict: { pass: carousel.slides.length === 0 && assets === 0, evidence: `${carousel.slides.length} slides, ${assets} assets` } },
+  ];
+}
+
 export interface StagedItem {
   key: string;
   /** The hash the run record holds for the task. */

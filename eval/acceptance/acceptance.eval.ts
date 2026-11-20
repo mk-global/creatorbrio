@@ -7,25 +7,27 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveBrandForCarousel } from "@/lib/brand";
 import { findClaudePath } from "@/lib/claude-path";
 import type { Carousel } from "@/types/carousel";
-import { AppClient, logEntries, logOffset, readRunRecord, serverCosts, type ChatOptions, type ChatResult } from "./app";
+import { AppClient, chatTimeoutMs, designAgentDeadline, logEntries, logOffset, readRunRecord, serverCosts, type ChatOptions, type ChatResult } from "./app";
 import { archiveDir, archiveRun } from "./archive";
-import { runDesignAgentOnly } from "./baseline";
+import { designAgentOnlyCliPath, runDesignAgentOnly } from "./baseline";
 import { parseCaps, parseHoldBack, parseRepeat, planRun, preflight, renderPlan, reserveRun, settleRun, type PlanItem } from "./budget";
 import {
   assertLinkedWorktree,
+  checkCliPin,
   cliVersion,
-  envLocalCliPath,
   gitState,
   harnessHashes,
   inheritedConfiguration,
   memoryRoots,
   redactPath,
   redactText,
+  resolveServerCli,
+  sessionVersions,
   transcriptModels,
   type EnvironmentRecord,
 } from "./environment";
 import { health, imageServiceUrl, observeBusy, waitForAdmission, type BusyObservation } from "./image-service";
-import { judgeOutcome, judgePairwise, judgeRevision, type JudgeContext } from "./judge";
+import { judgeCliPath, judgeOutcome, judgePairwise, judgeRevision, type JudgeContext } from "./judge";
 import { DEFAULT_TICKET, ledgerPath, m1CapUsd, readLedger } from "./ledger";
 import {
   renderSummary,
@@ -45,6 +47,7 @@ import {
   checkPlacement,
   checkPreview,
   checkTasks,
+  checkUnavailableServiceStop,
   plannedAssets,
   planSummary,
   runTasks,
@@ -98,6 +101,11 @@ import {
  * A non-dry run refuses to start in the repository's primary worktree, whose
  * data/ folder holds real carousels, brands and uploads the servers would
  * read and write; run it from a dedicated linked worktree.
+ *
+ * The CLI is pinned (#232): every server gets NODE_ENV for its mode, so it
+ * loads .env.local, and CLAUDE_CLI_PATH explicitly; a paid run is refused
+ * before any spend when the servers', the Design-Agent-only arm's and the
+ * judge's CLI paths or versions differ, and a dry run prints that check.
  *
  * Scenarios that need generated images first wait, for up to
  * EVAL_ADMISSION_WAIT_MS (10 minutes by default), for the image service's
@@ -157,6 +165,29 @@ const CAP_ENV = {
   DIRECTOR_MAX_BUDGET_USD: process.env.DIRECTOR_MAX_BUDGET_USD!.trim(),
   DESIGN_AGENT_MAX_BUDGET_USD: process.env.DESIGN_AGENT_MAX_BUDGET_USD!.trim(),
 };
+/**
+ * The CLI every server gets as CLAUDE_CLI_PATH (#232): the harness's own
+ * CLAUDE_CLI_PATH, else the checkout's .env files', else the app's discovery.
+ * The record and the servers use this one resolution.
+ */
+const SERVER_CLI = resolveServerCli({ root: ROOT, mode: MODE, env: process.env, discover: findClaudePath });
+const versions = new Map<string | null, string | null>();
+const versionOf = (cli: string | null) => {
+  if (!versions.has(cli)) versions.set(cli, cliVersion(cli, cleanEnv()));
+  return versions.get(cli)!;
+};
+// Refused before any spend unless the servers, the Design-Agent-only arm and
+// the judge all run one CLI; a dry run prints the result instead.
+const CLI_PIN = checkCliPin([
+  { role: "servers (Director and Design Agent)", path: SERVER_CLI.path, version: versionOf(SERVER_CLI.path) },
+  { role: "Design-Agent-only arm", path: designAgentOnlyCliPath(), version: versionOf(designAgentOnlyCliPath()) },
+  { role: "judge", path: judgeCliPath(), version: versionOf(judgeCliPath()) },
+]);
+if (!DRY && !CLI_PIN.ok) throw new Error(CLI_PIN.message);
+/** The Design Agent's deadline as the servers see it, and how long the chat stream may then stay quiet: only the product's limits stop a design. */
+const DESIGN_DEADLINE = designAgentDeadline({ root: ROOT, mode: MODE, env: cleanEnv(CAP_ENV) });
+const CHAT_TIMEOUT_MS = chatTimeoutMs(DESIGN_DEADLINE.ms);
+const appClient = (server: RunningServer) => new AppClient(server.origin, { chatTimeoutMs: CHAT_TIMEOUT_MS });
 
 const started = Date.now();
 const results: RunResults = {
@@ -187,16 +218,18 @@ let current: { key: keyof typeof PORTS; server: RunningServer } | null = null;
 async function serverFor(key: keyof typeof PORTS): Promise<RunningServer> {
   if (current?.key === key) return current.server;
   await stopServer();
+  if (!SERVER_CLI.path) throw new Error("No Claude CLI found for the servers");
   const server = await startServer({
     mode: MODE,
     port: PORTS[key],
+    cliPath: SERVER_CLI.path,
     // The address the harness polls, so the app cannot be pointed elsewhere by
     // `.env.local`, and the explicit per-call caps, which take precedence over it.
     env: { IMAGE_SERVICE_URL: key === "no-images" ? NO_IMAGE_SERVICE_URL : imageServiceUrl(), ...CAP_ENV },
   });
   current = { key, server };
   if (!results.brand) {
-    const brand = await new AppClient(server.origin).ensureBrand(SYNTHETIC_BRAND);
+    const brand = await appClient(server).ensureBrand(SYNTHETIC_BRAND);
     results.brand = { id: brand.id, name: brand.name };
   }
   return server;
@@ -224,25 +257,12 @@ async function save() {
 // ---------------------------------------------------------------------------
 // The environment record, the ledger and the durable copy.
 
-/** The CLI the servers spawn: `.env.local`'s CLAUDE_CLI_PATH, which they load, or the app's own discovery without the shell's. */
-function serverCliPath(): string | null {
-  const configured = envLocalCliPath(ROOT);
-  if (configured) return configured;
-  const saved = process.env.CLAUDE_CLI_PATH;
-  delete process.env.CLAUDE_CLI_PATH;
-  try {
-    return findClaudePath();
-  } finally {
-    if (saved !== undefined) process.env.CLAUDE_CLI_PATH = saved;
-  }
-}
-
 const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 
 function environmentRecord(): EnvironmentRecord {
   const home = os.homedir();
   const git = gitState(ROOT);
-  const serverCli = serverCliPath();
+  const serverCli = SERVER_CLI.path;
   const harnessCli = findClaudePath();
   return {
     commit: git.commit,
@@ -250,8 +270,10 @@ function environmentRecord(): EnvironmentRecord {
     node: process.version,
     platform: process.platform,
     cli: {
-      server: { path: serverCli ? redactPath(serverCli, home) : null, version: cliVersion(serverCli, cleanEnv()) },
+      server: { path: serverCli ? redactPath(serverCli, home) : null, version: cliVersion(serverCli, cleanEnv()), source: SERVER_CLI.source },
       harness: { path: harnessCli ? redactPath(harnessCli, home) : null, version: cliVersion(harnessCli, cleanEnv()) },
+      pin: CLI_PIN,
+      sessions: null,
     },
     models: {
       designAgent: { models: [], source: "filled in after the run" },
@@ -273,9 +295,16 @@ function environmentRecord(): EnvironmentRecord {
   };
 }
 
-/** The models seen in this run's usage records and session transcripts. */
+/** The models and CLI versions seen in this run's usage records and session transcripts. */
 function recordModels(env: EnvironmentRecord) {
-  const sessionIds = results.scenarios.flatMap((r) => r.chats.map((c) => c.result.sessionId)).filter((id): id is string => !!id);
+  const chats = results.scenarios.flatMap((r) => r.chats);
+  const sessionIds = chats.map((c) => c.result.sessionId).filter((id): id is string => !!id);
+  env.cli.sessions = sessionVersions({
+    sessionIds,
+    withoutSession: chats.filter((c) => !c.result.sessionId && sawStage(c.result, "designing")).length,
+    configDir: CONFIG_DIR,
+    configuredLine: env.cli.server.version,
+  });
   const design = transcriptModels(sessionIds, CONFIG_DIR);
   env.models.designAgent = design.length
     ? { models: design, source: "the CLI's session transcripts; the server log does not record the model" }
@@ -608,7 +637,7 @@ async function retryAndVerify(
     record.observations.push("retry not attempted: the image service was not admitting");
     return null;
   }
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const retryFrom = await logOffset(server.logPath);
   const retry = await chat(record, app, "explicit retry", { carouselId, message: "Retry", retryRunId: runId });
   record.reuse.attempted = true;
@@ -643,7 +672,7 @@ async function retryPartialRun(record: ScenarioRecord, scenario: Scenario, serve
 
 async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("main");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   let carouselId: string;
   let sessionId: string | null = null;
   if (scenario.revisionOf) {
@@ -692,7 +721,7 @@ async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
 
 async function runImageServiceUnavailable(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("no-images");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
@@ -703,8 +732,7 @@ async function runImageServiceUnavailable(scenario: Scenario, record: ScenarioRe
   const required = typeof plan?.required === "number" ? plan.required : null;
   const generate = typeof plan?.generate === "number" ? plan.generate : null;
   if (record.blocked) {
-    check(record, "stopped with a reason", record.blocked.code === "image_failed", `${record.blocked.code}: ${record.blocked.message}`);
-    check(record, "nothing changed", carousel.slides.length === 0 && (carousel.assets ?? []).length === 0, `${carousel.slides.length} slides, ${(carousel.assets ?? []).length} assets`);
+    for (const { name, verdict } of checkUnavailableServiceStop(record.blocked, carousel)) check(record, name, verdict.pass, verdict.evidence);
     record.observations.push(`behaviour: blocked before design (plan asked for ${generate ?? "?"} image(s), ${required ?? "?"} required)`);
   } else {
     // Designing without the requested photo is only acceptable if no required image was planned.
@@ -729,7 +757,7 @@ function busyLine(after: string, busy: BusyObservation): string {
 
 async function runCancel(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("main");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
@@ -784,7 +812,7 @@ async function runCancel(scenario: Scenario, record: ScenarioRecord) {
 
 async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
   let server = await serverFor("own");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
@@ -840,7 +868,7 @@ async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
 
   server = await serverFor("own");
   record.server.readyMs = server.readyMs;
-  const status = await new AppClient(server.origin).generation(carouselId);
+  const status = await appClient(server).generation(carouselId);
   record.observations.push(`after the restart: generating ${status.generating}, interrupted ${status.interrupted}`);
   const retried = await retryAndVerify(record, scenario, server, carouselId, runId, snapshot, logFrom);
   if (!retried) {
@@ -877,7 +905,7 @@ async function runComparison(scenario: Scenario, item: PlanItem, record: Compari
     return;
   }
   const server = await serverFor("main");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carousel = await app.createCarousel(`Acceptance ${item.key} baseline`, scenario.aspectRatio, brandId());
   record.baselineCarouselId = carousel.id;
   if (scenario.reference) await app.addReference(carousel.id, await founderPhoto(), "founder-photo.png");
@@ -902,6 +930,11 @@ if (DRY) {
   describe("creative run acceptance (dry run)", () => {
     it("fits the remaining M1 allowance", () => {
       console.info(renderPlan(PLAN, PREFLIGHT, LEDGER_LABEL));
+      // A mismatch would refuse a paid run; the dry run prints it instead.
+      console.info(CLI_PIN.message);
+      console.info(
+        `Chat stream timeout ${Math.round(CHAT_TIMEOUT_MS / 1000)} s without data: the Design Agent's deadline of ${Math.round(DESIGN_DEADLINE.ms / 1000)} s (${DESIGN_DEADLINE.source}) plus a margin.`
+      );
       expect(PREFLIGHT.ok, PREFLIGHT.message).toBe(true);
     });
   });

@@ -287,6 +287,14 @@ export function renderBaselineSections(results: RunResults): string[] {
     lines.push("");
     lines.push(`Commit \`${env.commit}\`${env.commitDirty ? " with uncommitted tracked changes" : ""}; Node ${env.node} on ${env.platform}.`);
     lines.push(`CLI used by the servers: ${env.cli.server.version ?? "unknown"}; by the harness (judges, Design Agent only): ${env.cli.harness.version ?? "unknown"}.`);
+    lines.push(`CLI pin: ${cell(env.cli.pin.message)}`);
+    const sv = env.cli.sessions;
+    if (sv) {
+      const count = (status: string) => sv.sessions.filter((x) => x.status === status).length;
+      lines.push(
+        `${sv.mismatch ? "**CLI version mismatch:** " : ""}Design Agent sessions on the configured version ${sv.configured ?? "unknown"}, from their transcripts: ${count("matches")} match, ${count("differs")} differ, ${count("unknown")} unknown, ${sv.withoutSession} without a session id. Director: ${cell(sv.director)}.`
+      );
+    }
     lines.push(`Models: Design Agent ${env.models.designAgent.models.join(", ") || "none seen"} (${cell(env.models.designAgent.source)}); Director ${env.models.director.models.join(", ") || "none seen"} (${cell(env.models.director.source)}); Design Agent only ${env.models.designAgentOnly.join(", ") || "none seen"}; judge ${env.models.judge.join(", ") || "none seen"}.`);
     lines.push("");
     const cfg = env.inheritedConfiguration;

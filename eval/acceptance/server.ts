@@ -43,12 +43,16 @@ export function runDir(): string {
  * CLI path left over from a test can never be picked up.
  */
 export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return { ...cleanEnvFrom(process.env), ...extra } as NodeJS.ProcessEnv;
+}
+
+function cleanEnvFrom(source: NodeJS.ProcessEnv): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(source)) {
     if (/^(CLAUDECODE|CLAUDE_CODE_.*|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CLI_PATH|IMAGE_SERVICE_URL)$/.test(key)) continue;
     env[key] = value;
   }
-  return { ...env, ...extra } as NodeJS.ProcessEnv;
+  return env;
 }
 
 function portInUse(port: number): Promise<boolean> {
@@ -76,10 +80,31 @@ export interface RunningServer {
 export interface StartOptions {
   mode: ServerMode;
   port: HarnessPort;
+  /** The CLI the server's Director and Design Agent spawn, given explicitly (#232). */
+  cliPath: string;
   env?: Record<string, string>;
 }
 
-export async function startServer({ mode, port, env = {} }: StartOptions): Promise<RunningServer> {
+/** The `NODE_ENV` Next.js expects for each mode; `test`, which the test runner sets, makes it skip `.env.local`. */
+export const SERVER_NODE_ENV: Record<ServerMode, "production" | "development"> = { prod: "production", dev: "development" };
+
+/**
+ * The environment a harness server starts with (#232): the clean environment,
+ * `NODE_ENV` matching its mode, so Next.js loads `.env.local` as the app does
+ * in normal use, and `CLAUDE_CLI_PATH` set to the CLI the harness pinned,
+ * which takes precedence over any `.env` file. `extra` (the image service
+ * address and the per-call caps) is applied last but cannot change either.
+ */
+export function serverEnvironment(options: { mode: ServerMode; cliPath: string; extra?: Record<string, string>; base?: NodeJS.ProcessEnv }): NodeJS.ProcessEnv {
+  return {
+    ...cleanEnvFrom(options.base ?? process.env),
+    ...options.extra,
+    NODE_ENV: SERVER_NODE_ENV[options.mode],
+    CLAUDE_CLI_PATH: options.cliPath,
+  } as NodeJS.ProcessEnv;
+}
+
+export async function startServer({ mode, port, cliPath, env = {} }: StartOptions): Promise<RunningServer> {
   if (!HARNESS_PORTS.includes(port)) throw new Error(`Port ${port} is not a harness port`);
   if (await portInUse(port)) throw new Error(`Port ${port} is already in use; the harness never stops a process it did not start`);
   if (mode === "prod" && !existsSync(path.join(ROOT, ".next", "BUILD_ID"))) {
@@ -94,7 +119,7 @@ export async function startServer({ mode, port, env = {} }: StartOptions): Promi
   const args = mode === "prod" ? ["next", "start", "-H", "127.0.0.1", "-p", String(port)] : ["next", "dev", "-H", "127.0.0.1", "-p", String(port)];
   const child: ChildProcess = spawn("npx", args, {
     cwd: ROOT,
-    env: cleanEnv(env),
+    env: serverEnvironment({ mode, cliPath, extra: env }),
     // Its own process group, so stop() also ends the Next worker and any agent it spawned.
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],

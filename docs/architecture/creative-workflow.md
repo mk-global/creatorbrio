@@ -207,7 +207,17 @@ Before each of them the harness asks the service's read-only health check whethe
 `SIGKILL` is a crash, which tests restart recovery under both `next dev` and a production build.
 A graceful signal under `next dev` closes open requests, so the run is cancelled rather than cut off, and the scenario records that restart recovery was not exercised.
 A production build keeps the request open until the harness kills the process 5 seconds later.
+The unavailable-service scenario passes "stopped with a reason" when the run stops with `capability_unavailable` (the Director found the service unreachable while planning) or `image_failed` (the image stage could not reach it), and fails it for any other outcome; either way it still requires that no slide or asset changed.
 Raw results go to `eval/results/`, which is not committed; the service's reason codes appear only there, never in the summary.
+
+Each server the harness starts gets an explicit `NODE_ENV` for its mode, `production` for `next start` and `development` for `next dev`, so it loads the checkout's `.env` files, `.env.local` among them, as the app does in normal use.
+The test runner's own `NODE_ENV=test` made Next.js skip `.env.local`, so before #232 the servers never saw its settings.
+The servers also get `CLAUDE_CLI_PATH` explicitly, which takes precedence over every `.env` file: the harness's own `CLAUDE_CLI_PATH` when set (the judge and the Design-Agent-only arm follow it too), else the one the `.env` files set, else what the app's own discovery finds.
+Before anything starts, the harness runs `--version` (no model is involved) on the CLI the servers get, the one the Design-Agent-only arm spawns and the one the judge spawns, and refuses a paid run when their real paths or versions differ, or when any is missing, before the ledger reservation and so before any spend.
+A dry run prints the same check, matched or not, instead of refusing.
+The chat request uses `node:http` rather than `fetch`, whose default body timeout of 300 seconds between chunks cut off designs whose stream was quiet for longer.
+It waits for the response headers, and then between chunks, for the Design Agent's absolute deadline plus five minutes, so only the product's own limits stop a design.
+The deadline is `DESIGN_AGENT_TIMEOUT_SECONDS` as the servers see it (the harness's environment, then the `.env` files), or the product's default of 1800 seconds; a value the product would refuse is read as the product's maximum, and a dry run prints the limit it will use.
 
 `EVAL_REPEAT=n` (1 by default) runs every selected scenario n times, repetition by repetition in the same order, and each run carries a pairing key (`S1#2` is the second repetition of S1), so two runs of the same plan can be compared run for run.
 The summary reports, per scenario, how many runs completed out of those made and how many checks passed out of those run, and then the sample size, median, minimum and maximum of the judge's scores, latency, token usage and cost; results.json keeps every run's raw record.
@@ -246,7 +256,7 @@ Keep one ledger for the whole M1 effort, outside every checkout and worktree, so
 `node eval/acceptance/ledger.ts show` prints the ledger and the remaining allowance, and `node eval/acceptance/ledger.ts add --usd <amount> --note <text> [--run <run id>]` records earlier spend or settles a killed run (Node 22.18 or later; older versions need `--experimental-strip-types`).
 `EVAL_DRY=1` prints the plan, the per-call limits, the worst case, the remaining allowance and the hold-back, starting no server and no model.
 
-Each run records the CLI version the servers and the harness use, the models seen (the Design Agent's from the CLI's session transcripts, since the server log does not name it; the judge's and the Design-Agent-only arm's from their result events; the Director's are not recorded), the SHA-256 of every harness file, the commit, and a fingerprint of the configuration the Design Agent's CLI inherits.
+Each run records the CLI version the servers and the harness use, with the servers' path and where it came from, the result of the CLI pin check, the models seen (the Design Agent's from the CLI's session transcripts, since the server log does not name it; the judge's and the Design-Agent-only arm's from their result events; the Director's are not recorded), the SHA-256 of every harness file, the commit, and a fingerprint of the configuration the Design Agent's CLI inherits.
 The fingerprint holds names, sizes and hashes only, never contents:
 
 - the user settings, instructions and rules, managed settings, and the project's instructions, settings, rules and MCP file, by redacted label, size and SHA-256;
@@ -254,6 +264,10 @@ The fingerprint holds names, sizes and hashes only, never contents:
 - the project's auto-memory folder, `<config dir>/projects/<project folder>/memory`, by file name, size and SHA-256 only, for the working directory and for the repository's main worktree (which linked worktrees may share), located by the CLI's project-folder naming convention; the session transcripts beside it are never read;
 - the MCP server names in the user scope and the project's entry of `~/.claude.json`, and never a command, argument, environment value or URL;
 - the names and the SHA-256 of the values of the model, effort and thinking variables (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `MAX_THINKING_TOKENS`, `CLAUDE_EFFORT` and the other Claude Code variables for models, effort, thinking and output tokens) in the environment the servers receive, and in the checkout's `.env` files the servers load.
+
+After the run, results.json records under `environment.cli.sessions` the CLI version each Design Agent session actually ran, read from the `version` field of its session transcript (`<config dir>/projects/<project folder>/<session id>.jsonl`, the transcripts the models are read from; nothing else in them is read).
+Each session is marked `matches`, `differs` (any recorded version is not the configured CLI's) or `unknown` (no transcript, or no version in it), a chat that reached the design stage without a session id is counted, and `mismatch` flags the run when any session differs; summary.md states the counts and marks a mismatch.
+The Director's version cannot be recorded this way: it runs with `--no-session-persistence`, so its CLI writes no transcript, and the record says so; it is spawned by the same server from the same `CLAUDE_CLI_PATH` as the Design Agent.
 
 Recorded limitations: the harness's `cleanEnv` strips `CLAUDE_CODE_*` and `CLAUDE_EFFORT`, which `/start` passes through, so the environment of a baseline launched by the harness can differ from the app's normal launch.
 The record therefore also lists, by name and value hash, the model-related variables it removed from the invoking shell.
