@@ -151,10 +151,11 @@ http unix_socket "http://canary$(tag unix_socket)" --unix-socket "$SOCK"
 http unix_socket_writable "http://canary$(tag unix_socket_writable)" --unix-socket "$here/w.sock"
 
 # --- External egress and DNS.
-http external_direct "https://example.com/" --noproxy '*'
-if [ -n "$proxy" ]; then http external_proxy "https://example.com/" --proxy "$proxy" --noproxy ''
+external="${EXTERNAL_URL:-https://example.com/}"
+http external_direct "$external" --noproxy '*'
+if [ -n "$proxy" ]; then http external_proxy "$external" --proxy "$proxy" --noproxy ''
 else skip_all "no proxy variable in the environment" external_proxy; fi
-if [ -n "$socks" ]; then http external_socks "https://example.com/" --proxy "$socks" --noproxy ''
+if [ -n "$socks" ]; then http external_socks "$external" --proxy "$socks" --noproxy ''
 else skip_all "no SOCKS proxy in the environment" external_socks; fi
 if ! command -v nslookup >/dev/null 2>&1; then emit dns_lookup false "skipped: nslookup is not installed"
 elif dns=$(with_deadline 6 nslookup example.com 2>&1); then
