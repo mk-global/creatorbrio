@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { copyFile, mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { getClaudePath } from "@/lib/claude-path";
+import { pinnedCli, pinnedCliOrNull } from "./cli";
 import { cleanEnv } from "./server";
 import { modelsFromResult, usageFromCli, type TokenUsage } from "./usage";
 
@@ -14,7 +14,8 @@ import { modelsFromResult, usageFromCli, type TokenUsage } from "./usage";
  */
 
 export const JUDGE_BUDGET_USD = 0.6;
-const JUDGE_TIMEOUT_MS = 6 * 60 * 1000;
+/** How long one judge call may run before it is killed. */
+export const JUDGE_TIMEOUT_MS = 6 * 60 * 1000;
 
 export const OUTCOME_DIMENSIONS = [
   "centralMessageRecognizable",
@@ -245,9 +246,18 @@ function args(system: string, schema: object, dir: string): string[] {
   ];
 }
 
+/**
+ * The CLI the judge spawns: the harness's checked, pinned one (cli.ts), the
+ * same real path the servers and the Design-Agent-only arm get (#232). Null
+ * when none is pinned, which the pin check refuses.
+ */
+export function judgeCliPath(): string | null {
+  return pinnedCliOrNull();
+}
+
 function runCli(argv: string[], cwd: string, input: string): Promise<{ stdout: string; code: number | null; timedOut: boolean }> {
   return new Promise((resolve) => {
-    const child = spawn(getClaudePath(), argv, { cwd, stdio: ["pipe", "pipe", "ignore"], env: cleanEnv() });
+    const child = spawn(pinnedCli(), argv, { cwd, stdio: ["pipe", "pipe", "ignore"], env: cleanEnv() });
     let stdout = "";
     let timedOut = false;
     const timer = setTimeout(() => {

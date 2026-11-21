@@ -1,5 +1,8 @@
+import { countNamesByClass, describeNameClasses } from "./harness-env";
 import { MIN_READ_TURNS, OUTCOME_DIMENSIONS, OUTCOME_LABELS, type JudgeCall, type OutcomeScores } from "./judge";
 import type { ComparisonRecord, RunResults, ScenarioRecord } from "./report";
+import { splitAddedNames } from "./server-env";
+import { presentSources, SETTINGS_KEYS_OF_NOTE } from "./settings-keys";
 import { groupBy, requestMs, spread, type Spread } from "./stats";
 import { totalTokens, USAGE_KEYS, type TokenUsage } from "./usage";
 
@@ -287,6 +290,71 @@ export function renderBaselineSections(results: RunResults): string[] {
     lines.push("");
     lines.push(`Commit \`${env.commit}\`${env.commitDirty ? " with uncommitted tracked changes" : ""}; Node ${env.node} on ${env.platform}.`);
     lines.push(`CLI used by the servers: ${env.cli.server.version ?? "unknown"}; by the harness (judges, Design Agent only): ${env.cli.harness.version ?? "unknown"}.`);
+    const pin = env.cli.pin;
+    lines.push(`CLI pin: ${cell(pin.message)}`);
+    lines.push(
+      `Pinned file: ${pin.file ? `${pin.file.size} bytes, SHA-256 \`${pin.file.sha256}\`` : "not read"}; checked again ${pin.rechecks.length} time(s), at each server start and at the end of the run${pin.changed ? "" : ", unchanged"}.`
+    );
+    if (pin.changed) {
+      const differences = pin.rechecks.filter((r) => !r.ok).map((r) => `${r.at}: ${r.changes.join(", ")}`);
+      lines.push(`**Not comparable: the pinned CLI changed during the run** (${cell(differences.join("; "))}).`);
+    }
+    const sv = env.cli.sessions;
+    if (sv) {
+      const count = (status: string) => sv.sessions.filter((x) => x.status === status).length;
+      const flags = [sv.mismatch ? "**CLI version mismatch:**" : "", sv.unverified ? "**CLI version unverified:**" : ""].filter(Boolean).join(" ");
+      lines.push(
+        `${flags ? `${flags} ` : ""}Design Agent sessions (the Director arm's and the Design-Agent-only arm's) on the configured version ${sv.configured ?? "unknown"}, from their transcripts: ${count("matches")} match, ${count("differs")} differ, ${count("unknown")} unknown, ${sv.withoutSession} without a session id.`
+      );
+      for (const [who, proof] of [["Director", sv.director], ["Judge", sv.judge]] as const) {
+        lines.push(
+          proof.proven
+            ? `${who}: version ${proof.version ?? "unknown"}, shown by the resolved pin and the file re-checks, the last at the end of the run (${cell(proof.method)}).`
+            : `**${who} version not shown:** the pin did not hold or no re-check was made at the end of the run (${cell(proof.method)}).`
+        );
+      }
+    }
+    const files = env.serverEnvFiles;
+    const present = files.files.filter((f) => f.state === "file").length;
+    // The allowlist's names are fixed strings of the harness's source and are named; any other name came from the operator's machine and is only counted (results.json keeps it).
+    const addedNames = splitAddedNames(files);
+    lines.push(
+      `Variables the servers' .env files add beyond the harness's environment, as Next.js's loader leaves them (the allowlist's names are named, any other is counted): ${addedNames.named.map((v) => `\`${cell(v.name)}\``).join(", ") || "none"}${addedNames.notAllowed ? `; **not allowed: ${addedNames.notAllowed} variable(s), named in results.json only**` : ""}.`
+    );
+    if (files.loaderError) lines.push(`**The .env files could not be loaded as Next.js loads them:** ${cell(files.loaderError)}.`);
+    if (files.unaccounted.length) lines.push(`**Lines the loader's result does not account for:** ${files.unaccounted.map((u) => `${cell(u.file)} line ${u.line}`).join(", ")}.`);
+    lines.push(
+      `Those ${present} file(s) were hashed when checked and ${files.rechecks.length} time(s) again, at each server start and at the end of the run${files.changed ? "" : ", unchanged"}.`
+    );
+    if (files.changed) {
+      const differences = files.rechecks.filter((r) => !r.ok).map((r) => `${r.at}: ${r.changes.join(", ")}`);
+      lines.push(`**Not comparable: the servers' .env files changed during the run** (${cell(differences.join("; "))}).`);
+    }
+    // Counts by class only: a name can carry an organization, project or machine detail, so the names stay in results.json, which is never committed.
+    const classes = countNamesByClass(env.harnessEnvironment.unreviewedNames);
+    lines.push(
+      `${classes.total} variable(s) of the harness's own environment that reach every server, judge and arm are not reviewed as harmless (${describeNameClasses(classes)}); their names, never values, are in results.json under harnessEnvironment, which is never committed (the model, effort and thinking variables are fingerprinted by name and value hash instead).`
+    );
+    const pricing = env.modelPricing;
+    lines.push(
+      pricing.unverified
+        ? `**Model price not shown:** ${pricing.selectionVariables.length} variable(s) whose name contains MODEL reached the run (their names are in results.json under modelPricing, never committed). ${cell(pricing.note)}`
+        : `Variables whose name contains MODEL: none among those the servers, the arm and the judges receive. A model chosen in a settings file is not seen as a model: a \`model\` key is flagged in the banner when one is present, and a managed \`modelPricing\` key too.`
+    );
+    const settings = env.settingsKeys;
+    const presentSettings = presentSources(settings);
+    lines.push(
+      `Settings files the pinned CLI reads (the Design Agent and the Design-Agent-only arm load user, project and project-local; managed settings apply to every role): ${settings.files.filter((f) => f.exists).length} present of ${settings.files.length} looked for${presentSettings.length ? ` (${presentSettings.map((x) => (x.counted ? x.text : `\`${cell(x.text)}\``)).join(", ")})` : ""}; their key names, the names under env and the drop-in files' names are in results.json under settingsKeys, which is never committed, and no value is read into any record.`
+    );
+    lines.push(`This summary names only the CLI's own settings key names from a fixed list (${SETTINGS_KEYS_OF_NOTE.join(", ")}) and counts every other name.`);
+    lines.push(
+      `HOME ${env.homeDiffersFromAccount === null ? "could not be compared with" : env.homeDiffersFromAccount ? "differs from" : "is"} the account's home folder; both are redacted as \`~\` in every stored path, and neither is recorded.`
+    );
+    const lim = env.limits;
+    const sec = (ms: number | null) => (ms === null ? "none" : `${Math.round(ms / 1000)} s`);
+    lines.push(
+      `Design Agent limits, the same for the servers and the Design-Agent-only arm: deadline ${sec(lim.designAgent.timeoutMs)} (${cell(lim.designAgent.timeoutSource)}), inactivity ${sec(lim.designAgent.inactivityMs)} (${cell(lim.designAgent.inactivitySource)}); the arm ran under deadline ${sec(lim.designAgentOnly.timeoutMs)}, inactivity ${sec(lim.designAgentOnly.inactivityMs)}. The chat stream may stay quiet for ${sec(lim.chatIdleMs)}.`
+    );
     lines.push(`Models: Design Agent ${env.models.designAgent.models.join(", ") || "none seen"} (${cell(env.models.designAgent.source)}); Director ${env.models.director.models.join(", ") || "none seen"} (${cell(env.models.director.source)}); Design Agent only ${env.models.designAgentOnly.join(", ") || "none seen"}; judge ${env.models.judge.join(", ") || "none seen"}.`);
     lines.push("");
     const cfg = env.inheritedConfiguration;

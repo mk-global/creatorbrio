@@ -116,13 +116,16 @@ export interface BusyObservation {
   samples: HealthSample[];
 }
 
+/** How long `observeBusy` watches by default. */
+export const OBSERVE_BUSY_MS = 60_000;
+
 /**
  * Samples health every `intervalMs` for up to `durationMs`, stopping early
  * once the service was busy and is no longer: evidence of whether it finishes
  * a job a cancelled request had already started.
  */
 export async function observeBusy(options: { durationMs?: number; intervalMs?: number; baseUrl?: string; healthTimeoutMs?: number } = {}): Promise<BusyObservation> {
-  const durationMs = options.durationMs ?? 60_000;
+  const durationMs = options.durationMs ?? OBSERVE_BUSY_MS;
   const intervalMs = options.intervalMs ?? 2_000;
   const baseUrl = options.baseUrl ?? imageServiceUrl();
   const started = Date.now();

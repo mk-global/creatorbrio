@@ -3,7 +3,14 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { CliPin, PinProof } from "./cli";
 import { CHECKOUT_ROOT, isInside } from "./ledger";
+import type { HarnessEnvironment, ModelPricing } from "./harness-env";
+import { accountHome } from "./redact";
+import { NEXT_ADDED_TO_SERVER, type ServerEnvFiles } from "./server-env";
+import type { SettingsKeysRecord } from "./settings-keys";
+
+export { redactPath } from "./redact";
 
 /**
  * What a later run must match to be comparable with this one (#224): the CLI
@@ -37,11 +44,39 @@ export interface EnvironmentRecord {
   node: string;
   platform: string;
   cli: {
-    /** The CLI the servers spawn (the Design Agent and the Director). */
-    server: { path: string | null; version: string | null };
-    /** The CLI the harness spawns (the judges and the Design-Agent-only arm). */
+    /** The CLI the servers spawn (the Design Agent and the Director), given to them explicitly as CLAUDE_CLI_PATH, and where the path came from. */
+    server: { path: string | null; version: string | null; source: string };
+    /** The CLI the harness spawns (the judges and the Design-Agent-only arm): the same checked real path. */
     harness: { path: string | null; version: string | null };
+    /** The pre-spend check that the servers, the Design-Agent-only arm and the judge use one CLI, and the re-checks of its file during the run (#232). */
+    pin: CliPin;
+    /** The version each Design Agent session ran, from the CLI's own transcripts; filled in after the run. */
+    sessions: SessionVersions | null;
   };
+  /**
+   * What Next.js loads from the servers' `.env` files, taken from its own loader: the variables the files add beyond the harness's
+   * environment (names only), whether each is allowed, every line the loader's result does not account for, and the files' hashes
+   * with the re-checks of them during the run (#232).
+   */
+  serverEnvFiles: ServerEnvFiles;
+  /**
+   * The harness's own environment reaches every server, judge and arm: this names, never giving a value, each variable it passes
+   * on that is not reviewed as harmless (harness-env.ts). The model, effort and thinking variables are fingerprinted by name and
+   * value hash in `inheritedConfiguration.environment` instead (#232).
+   */
+  harnessEnvironment: HarnessEnvironment;
+  /** Whether a variable chose a model, whose price the CLI's table may lack: the CLI then costs it at its main model's rate (#232). */
+  modelPricing: ModelPricing;
+  /**
+   * The key names, never the values, of the settings files the pinned CLI reads for the Design Agent, the Design-Agent-only arm and (managed
+   * settings) every role, recorded before the reservation (#232). The files can set model, effort, thinking, env and apiKeyHelper, and the
+   * harness neither refuses nor overrides them.
+   */
+  settingsKeys: SettingsKeysRecord;
+  /** `HOME` names another folder than the account's own home folder; null when the account's cannot be read. Both are redacted in every stored path, and neither is recorded. */
+  homeDiffersFromAccount: boolean | null;
+  /** The limits the servers and the Design-Agent-only arm run under, and the harness's own (#232). */
+  limits: LimitsRecord;
   models: {
     designAgent: { models: string[]; source: string };
     director: { models: string[]; source: string };
@@ -50,6 +85,26 @@ export interface EnvironmentRecord {
   };
   inheritedConfiguration: InheritedConfiguration;
   harnessFiles: { file: string; sha256: string }[];
+}
+
+export interface DesignLimitsRecord {
+  timeoutMs: number;
+  /** Where the deadline came from, as a redacted label. */
+  timeoutSource: string;
+  /** Null when no inactivity limit applies: the default is not shorter than the deadline. */
+  inactivityMs: number | null;
+  inactivitySource: string;
+}
+
+export interface LimitsRecord {
+  /** The Design Agent as the servers (the Director arm) run it. */
+  designAgent: DesignLimitsRecord;
+  /** The Design-Agent-only arm: the same settings from the same environment, so the arms differ only in what they are meant to. */
+  designAgentOnly: DesignLimitsRecord;
+  /** How long the chat request may stay quiet before the harness gives up: the largest stage limit plus a margin. */
+  chatIdleMs: number;
+  /** Each plan item's Vitest timeout: the sum of its stage limits plus a margin, so only the product's own limits stop a design. */
+  itemTimeoutsMs: Record<string, number>;
 }
 
 export interface TreeFile {
@@ -113,12 +168,6 @@ export interface InheritedConfiguration {
 }
 
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-
-/** Replaces the home folder with `~`, so a recorded path names no account. */
-export function redactPath(p: string, home: string): string {
-  const rel = path.relative(home, p);
-  return rel === "" ? "~" : !rel.startsWith("..") && !path.isAbsolute(rel) ? `~/${rel.split(path.sep).join("/")}` : p;
-}
 
 function fingerprint(file: string, label: string): FileFingerprint {
   try {
@@ -293,10 +342,14 @@ export function mcpServerNames(options: { home: string; project: string; configD
 }
 
 /**
- * The variables that choose a model, its effort or its thinking: the
- * Anthropic model variables, the Claude Code ones for models, effort,
- * thinking and output tokens, `CLAUDE_EFFORT`, `MAX_THINKING_TOKENS`, and the
- * switches that route to another provider's models.
+ * The variables that are fingerprinted by name and value hash because they
+ * choose a model, its effort or its thinking: the Anthropic model variables,
+ * the Claude Code ones for models, effort, thinking and output tokens,
+ * `CLAUDE_EFFORT`, `MAX_THINKING_TOKENS`, and the switches that route to
+ * another provider's models. This is what the record shows, so it is wider
+ * than what a `.env` file may add: that is an exact list of names
+ * (`SERVER_ENV_ALLOWLIST`, server-env.ts), every model name on it matching
+ * this pattern.
  */
 export const MODEL_ENV_NAME =
   /^(ANTHROPIC_[A-Z0-9_]*MODEL[A-Z0-9_]*|CLAUDE_CODE_[A-Z0-9_]*(MODEL|EFFORT|THINK|TOKENS)[A-Z0-9_]*|CLAUDE_EFFORT|MAX_THINKING_TOKENS|CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY))$/;
@@ -309,33 +362,26 @@ export function modelEnvironment(env: Record<string, string | undefined>): EnvVa
     .sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
-/** The model-related variables a checkout's `.env` files set, which the servers load: names and value hashes only. */
-export function envFileVariables(root: string, mode: "prod" | "dev"): (EnvVariable & { file: string })[] {
-  const suffix = mode === "prod" ? "production" : "development";
-  const out: (EnvVariable & { file: string })[] = [];
-  for (const file of [".env", `.env.${suffix}`, ".env.local", `.env.${suffix}.local`]) {
-    let text: string;
-    try {
-      text = readFileSync(path.join(root, file), "utf8");
-    } catch {
-      continue;
-    }
-    const values: Record<string, string> = {};
-    for (const line of text.split(/\r?\n/)) {
-      const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-      if (m) values[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
-    }
-    for (const v of modelEnvironment(values)) out.push({ ...v, file: `<project>/${file}` });
-  }
-  return out;
-}
-
-const CLEAN_ENV_LIMITATION =
-  "The harness strips CLAUDE_CODE_*, CLAUDE_EFFORT, CLAUDECODE, CLAUDE_PID, CLAUDE_CLI_PATH and IMAGE_SERVICE_URL from the environment it gives the servers, the judges and the Design-Agent-only arm, while the app's normal launch through /start passes them through, so a baseline launched by the harness can differ from the app's normal launch. strippedByHarness names the model, effort and thinking variables it removed from the invoking shell.";
+const CLEAN_ENV_LIMITATION = [
+  "The harness strips CLAUDE_CODE_*, CLAUDE_EFFORT, CLAUDECODE, CLAUDE_PID, CLAUDE_CLI_PATH and IMAGE_SERVICE_URL from the environment it gives the servers, the judges and the Design-Agent-only arm, while the app's normal launch through /start passes them through, so a baseline launched by the harness can differ from the app's normal launch.",
+  "strippedByHarness names, with the hash of the value, the model, effort and thinking variables it removed from the invoking shell.",
+  "The servers then get NODE_ENV for their mode, so they load the checkout's .env files as the app does.",
+  "The harness takes what those files add from Next.js's own loader: serverEnvFiles names, never giving a value, the variables they add, and a paid run is refused when a name is not on the exact allowlist or a line of a file is not accounted for by the loader's result.",
+  "The servers are started with Node.js and Next.js's own script, never through npx or npm, so npm adds nothing to a server's environment at its start; what npm put in the harness's own environment, when the harness was started through npx or npm, is recorded by name in harnessEnvironment.unreviewedNames like any other variable.",
+  "They are given CLAUDE_CLI_PATH set to the pinned CLI's real path, the per-server image service address and the per-call caps explicitly.",
+  `The Design-Agent-only arm's CLI gets the environment the loader leaves a server, so it differs from a server's own by what Next.js itself adds to a running server (${NEXT_ADDED_TO_SERVER.join(", ")}: seven measured in a started next start server of the installed Next.js, and one the loader sets, read in its code and not measured; the list does not claim to be complete, and next dev adds more) and, for the one server given the unused image service address (the unavailable-service scenario's), by that address.`,
+  "Every other variable of the harness's own environment reaches the servers, the judges and the arm unchanged.",
+  "harnessEnvironment.unreviewedNames records by name only, never a value, each one that is not on the reviewed list of harmless names (HARMLESS_HARNESS_NAMES in eval/acceptance/harness-env.ts) and not a model variable; it is in results.json, which is never committed, while summary.md and a dry run show only counts of those names by class and name no variable that came from the machine.",
+  "The model, effort and thinking variables are recorded by name and the hash of their value in inheritedConfiguration.environment.received, the invoking shell's in strippedByHarness and the .env files' in envFiles.",
+  "The values of all other variables are never recorded, so a change in one is not seen, only its presence.",
+  "A paid run is refused for exactly the four names MAX_THINKING_TOKENS, CLAUDE_CODE_MAX_OUTPUT_TOKENS, CLAUDE_CODE_MAX_CONTEXT_TOKENS and CLAUDE_CODE_EFFORT_LEVEL in the harness's own environment and for a .env name that is not on the allowlist; other CLI variables (for example ANTHROPIC_BETAS, MAX_MCP_OUTPUT_TOKENS and BASH_MAX_OUTPUT_LENGTH) are recorded by name only, not refused.",
+  "The Design Agent and the Design-Agent-only arm run without --setting-sources, so they load the CLI's settings files, which can set model, effort, thinking, env and apiKeyHelper; managed settings apply to every role, the Director and the judge included.",
+  "settingsKeys records those files' key names, the names under env and the managed drop-in files' names, never any value, in results.json only; summary.md and a dry run name only the CLI's own key names from a fixed list and the fixed file labels, and count every other name; the model a settings file chooses is not otherwise seen.",
+].join(" ");
 const MEMORY_LIMITATION =
   "The Design Agent does not disable auto-memory (the Director does, with autoMemoryEnabled false), so it can read the project's auto-memory folder and write to it: a run can change what a later run reads. The memory tree is fingerprinted once, before the run, by file name, size and hash.";
 const MEMORY_LOCATION_LIMITATION =
-  "The auto-memory folder is located by the CLI's project-folder naming convention (every character that is not a letter or digit becomes a hyphen) for the working directory and for the repository's main worktree, under the configuration folder's projects folder; a CLI version or a setting that places it elsewhere is not seen, and only the memory subfolder is read, never the session transcripts beside it.";
+  "The auto-memory folder is located by the CLI's project-folder naming convention (every character that is not a letter or digit becomes a hyphen) for the working directory and for the repository's main worktree, under the configuration folder's projects folder; a CLI version or a setting that places it elsewhere is not seen, and only the memory subfolder is fingerprinted; the session transcripts beside it are opened only to take the model names and the version field of this run's own sessions, and nothing else in them.";
 const TREE_LIMITATION =
   "Trees skip .git and node_modules folders and .DS_Store files, follow symbolic links, leave a file over 16 MB unhashed and stop at 20,000 files (truncated is then true); file content is hashed and never kept.";
 
@@ -357,8 +403,8 @@ const projectFolderNames = (p: string): string[] => [...new Set([p.replace(/[^a-
 
 /**
  * The auto-memory folder of each project root, `<config dir>/projects/<project folder>/memory`, as a tree
- * of file names, sizes and hashes. Only the memory subfolder is read: the session transcripts beside it
- * never are. A root with no such folder is recorded as absent. The label names the root by role, not by path.
+ * of file names, sizes and hashes. Only the memory subfolder is fingerprinted: the session transcripts
+ * beside it are not part of it. A root with no such folder is recorded as absent. The label names the root by role, not by path.
  */
 export function memoryTrees(options: { userDir: string; userLabel: string; roots: { label: string; path: string }[] }): TreeFingerprint[] {
   const out: TreeFingerprint[] = [];
@@ -397,11 +443,12 @@ export function inheritedConfiguration(options: {
   project: string;
   configDir?: string;
   platform?: NodeJS.Platform;
-  mode?: "prod" | "dev";
   /** The project roots whose auto-memory to fingerprint; the project itself by default. See `memoryRoots`. */
   memoryRoots?: { label: string; path: string }[];
   serverEnv: Record<string, string | undefined>;
   harnessEnv: Record<string, string | undefined>;
+  /** The model-related variables the servers' `.env` files add, by name, value hash and file: what the loader Next.js ships left them (`loadedFileVariables`). */
+  envFileVariables: (EnvVariable & { file: string })[];
 }): InheritedConfiguration {
   const { home, project } = options;
   const userDir = options.configDir || path.join(home, ".claude");
@@ -416,7 +463,7 @@ export function inheritedConfiguration(options: {
   const received = modelEnvironment(options.serverEnv);
   const receivedNames = new Set(received.map((v) => v.name));
   const strippedByHarness = modelEnvironment(options.harnessEnv).filter((v) => !receivedNames.has(v.name));
-  const envFiles = envFileVariables(project, options.mode ?? "prod");
+  const envFiles = options.envFileVariables;
   const count =
     files.filter((f) => f.exists).length +
     trees.reduce((a, t) => a + t.count, 0) +
@@ -450,64 +497,151 @@ export function harnessHashes(dir: string): { file: string; sha256: string }[] {
     .map((file) => ({ file, sha256: sha256(readFileSync(path.join(dir, file))) }));
 }
 
-/** `CLAUDE_CLI_PATH` from the checkout's `.env.local`, which the servers load; null when absent. */
-export function envLocalCliPath(root: string): string | null {
-  let text: string;
-  try {
-    text = readFileSync(path.join(root, ".env.local"), "utf8");
-  } catch {
-    return null;
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?CLAUDE_CLI_PATH\s*=\s*(.*?)\s*$/);
-    if (m) return m[1].replace(/^(['"])(.*)\1$/, "$2") || null;
-  }
-  return null;
-}
-
-/** The CLI's own `--version` line (no model is involved), or null. */
-export function cliVersion(cliPath: string | null, env: NodeJS.ProcessEnv): string | null {
-  if (!cliPath || !existsSync(cliPath)) return null;
-  try {
-    const out = execFileSync(cliPath, ["--version"], { env, timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] }).toString();
-    return out.split(/\r?\n/)[0].trim().slice(0, 120) || null;
-  } catch {
-    return null;
-  }
-}
-
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** What an unreadable transcript is recorded as: never the file or folder name, which can hold an account name. */
+export const TRANSCRIPT_UNREADABLE = "transcript unreadable";
+
+const VERSION = /^\d+\.\d+\.\d+(?:[-+][\w.]+)?$/;
+
+interface TranscriptRead {
+  id: string;
+  /** A transcript file exists for the session. */
+  found: boolean;
+  /** It exists but could not be read. */
+  unreadable: boolean;
+  models: string[];
+  versions: string[];
+}
+
 /**
- * The models named on assistant messages in the CLI's own transcripts of
- * these sessions, under `<config dir>/projects/`. Only the model names are
- * read. The server does not log the Design Agent's model, so this is the
- * only record of it; an absent transcript yields nothing.
+ * Each valid session id once, with what its transcript under
+ * `<config dir>/projects/<project folder>/` holds: the models named on
+ * assistant messages and the CLI versions on its lines. Only those two
+ * fields are taken from a line, and nothing else is kept. A transcript that
+ * cannot be read is marked so for that file alone, never failing the rest.
  */
-export function transcriptModels(sessionIds: string[], configDir: string): string[] {
+function readTranscripts(sessionIds: string[], configDir: string): TranscriptRead[] {
   const projects = path.join(configDir, "projects");
   let folders: string[];
   try {
     folders = readdirSync(projects);
   } catch {
-    return [];
+    folders = [];
   }
-  const models = new Set<string>();
-  for (const id of new Set(sessionIds.filter((s) => SESSION_ID.test(s)))) {
+  return [...new Set(sessionIds.filter((s) => SESSION_ID.test(s)))].map((id) => {
     const folder = folders.find((f) => existsSync(path.join(projects, f, `${id}.jsonl`)));
-    if (!folder) continue;
-    for (const line of readFileSync(path.join(projects, folder, `${id}.jsonl`), "utf8").split("\n")) {
-      if (!line.includes('"model"')) continue;
-      try {
-        const e = JSON.parse(line) as { type?: unknown; message?: { model?: unknown } };
-        const model = e.type === "assistant" ? e.message?.model : null;
-        if (typeof model === "string" && /^[\w.:@/-]{1,128}$/.test(model) && model !== "<synthetic>") models.add(model);
-      } catch {
-        // A partial line is skipped.
+    const read: TranscriptRead = { id, found: !!folder, unreadable: false, models: [], versions: [] };
+    if (!folder) return read;
+    const models = new Set<string>();
+    const versions = new Set<string>();
+    try {
+      for (const line of readFileSync(path.join(projects, folder, `${id}.jsonl`), "utf8").split("\n")) {
+        if (!line.includes('"model"') && !line.includes('"version"')) continue;
+        try {
+          const e = JSON.parse(line) as { type?: unknown; version?: unknown; message?: { model?: unknown } };
+          const model = e.type === "assistant" ? e.message?.model : null;
+          if (typeof model === "string" && /^[\w.:@/-]{1,128}$/.test(model) && model !== "<synthetic>") models.add(model);
+          if (typeof e.version === "string" && e.version.length <= 64 && VERSION.test(e.version)) versions.add(e.version);
+        } catch {
+          // A partial line is skipped.
+        }
       }
+    } catch {
+      read.unreadable = true;
     }
-  }
-  return [...models].sort();
+    read.models = [...models].sort();
+    read.versions = [...versions].sort();
+    return read;
+  });
+}
+
+/**
+ * The models named on assistant messages in the CLI's own transcripts of
+ * these sessions, under `<config dir>/projects/`. Only the model names are
+ * taken. The server does not log the Design Agent's model, so this is the
+ * only record of it; an absent or unreadable transcript yields nothing.
+ */
+export function transcriptModels(sessionIds: string[], configDir: string): string[] {
+  return [...new Set(readTranscripts(sessionIds, configDir).flatMap((t) => t.models))].sort();
+}
+
+/**
+ * The CLI versions a session's transcript records, from the `version` field
+ * the CLI writes on its lines; nothing else is taken. Sorted; empty when the
+ * transcript is absent, unreadable or names none. A resumed session can hold
+ * several. `error` is a fixed string, set only for an unreadable transcript.
+ */
+export function transcriptVersions(sessionIds: string[], configDir: string): { sessionId: string; found: boolean; versions: string[]; error: string | null }[] {
+  return readTranscripts(sessionIds, configDir).map((t) => ({ sessionId: t.id, found: t.found, versions: t.versions, error: t.unreadable ? TRANSCRIPT_UNREADABLE : null }));
+}
+
+/** Which of the run's model calls a session belongs to. */
+export type SessionRole = "design-agent" | "design-agent-only";
+
+export interface SessionVersion {
+  sessionId: string;
+  role: SessionRole;
+  /** The versions its transcript records. */
+  versions: string[];
+  /** `differs` when any recorded version is not the configured one; `unknown` when no transcript, or no version, or an unreadable transcript was found. */
+  status: "matches" | "differs" | "unknown";
+  /** A fixed string when the transcript could not be read. */
+  error: string | null;
+}
+
+export interface SessionVersions {
+  /** The configured CLI's version number, from its `--version` line. */
+  configured: string | null;
+  sessions: SessionVersion[];
+  /** Design Agent runs (the chats that reached the design stage and the Design-Agent-only arm) that ended without a session id, so their version cannot be read. */
+  withoutSession: number;
+  /** Any session recorded a version other than the configured one. */
+  mismatch: boolean;
+  /** Some session's version is unknown (no transcript, no version, an unreadable one) or a run has no session id, so the run's versions are not all verified. A run with no mismatch can still be unverified. */
+  unverified: boolean;
+  /** How the Director's version is shown: it keeps no transcript. */
+  director: PinProof;
+  /** How the judge's version is shown: it keeps no transcript either, so only the pin shows it. */
+  judge: PinProof;
+}
+
+/**
+ * The version each Design Agent session ran (the Director arm's chats and the
+ * Design-Agent-only arm's runs), read from its transcript, against the
+ * configured CLI's `--version` line (#232). The run is flagged when any
+ * session ran another version (`mismatch`), and flagged `unverified` when
+ * any session's version cannot be shown.
+ */
+export function sessionVersions(options: {
+  sessions: { id: string; role: SessionRole }[];
+  withoutSession: number;
+  configDir: string;
+  /** The configured CLI's version number. */
+  configured: string | null;
+  director: PinProof;
+  judge: PinProof;
+}): SessionVersions {
+  const { configured } = options;
+  const roles = new Map(options.sessions.map((s) => [s.id, s.role]));
+  // An id that is not a session UUID names no transcript, so it counts as a run without one.
+  const withoutSession = options.withoutSession + options.sessions.filter((s) => !SESSION_ID.test(s.id)).length;
+  const sessions = transcriptVersions(options.sessions.map((s) => s.id), options.configDir).map(({ sessionId, versions, error }): SessionVersion => ({
+    sessionId,
+    role: roles.get(sessionId) ?? "design-agent",
+    versions,
+    status: versions.length === 0 ? "unknown" : configured && versions.every((v) => v === configured) ? "matches" : "differs",
+    error,
+  }));
+  return {
+    configured,
+    sessions,
+    withoutSession,
+    mismatch: sessions.some((s) => s.status === "differs"),
+    unverified: withoutSession > 0 || sessions.some((s) => s.status === "unknown"),
+    director: options.director,
+    judge: options.judge,
+  };
 }
 
 /** The current commit and whether tracked files differ from it. */
@@ -523,18 +657,21 @@ export function gitState(root: string): { commit: string; dirty: boolean } {
 /** The folders whose paths a stored message must not contain. */
 export interface Redaction {
   home: string;
+  /** The account's own home folder, when `HOME` names another: redacted the same way (#232). */
+  accountHome?: string | null;
   root: string;
 }
 
 const escapeRegExp = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Replaces the checkout with `<checkout>` and the home folder with `~` in
- * `text`, also by their real paths, so a stored error message or a summary
- * names neither. The checkout goes first because it usually lies under the
- * home folder; a longer folder name that merely starts with either is left alone.
+ * Replaces the checkout with `<checkout>` and the home folder, and the
+ * account's own home folder when `HOME` names another, with `~` in `text`,
+ * also by their real paths, so a stored error message or a summary names none
+ * of them. The checkout goes first because it usually lies under the home
+ * folder; a longer folder name that merely starts with either is left alone.
  */
-export function redactText(text: string, redaction: Redaction = { home: os.homedir(), root: CHECKOUT_ROOT }): string {
+export function redactText(text: string, redaction: Redaction = { home: os.homedir(), accountHome: accountHome(), root: CHECKOUT_ROOT }): string {
   const real = (p: string) => {
     try {
       return realpathSync(p);
@@ -550,8 +687,24 @@ export function redactText(text: string, redaction: Redaction = { home: os.homed
     }
   };
   replace(redaction.root, "<checkout>");
-  replace(redaction.home, "~");
+  // The longer folder first, in case one lies under the other.
+  const homes = [...new Set([redaction.home, redaction.accountHome].filter((h): h is string => typeof h === "string" && h.length > 0))].sort((a, b) => b.length - a.length);
+  for (const home of homes) replace(home, "~");
   return out;
+}
+
+/**
+ * Why `assertLinkedWorktree` refuses `root`, or null when it accepts it: the
+ * same check, as text, so that a dry run can say that a paid run would be
+ * refused instead of reporting that nothing would be.
+ */
+export function worktreeRefusal(root: string): string | null {
+  try {
+    assertLinkedWorktree(root);
+    return null;
+  } catch (err) {
+    return (err as Error).message;
+  }
 }
 
 /** The folders the servers read and write under the checkout. */
