@@ -171,6 +171,10 @@ export default function CarouselEditorPage({ params }: PageProps) {
         if (res.ok) {
           toast(`Deleted "${carousel.name}".`);
           router.push("/projects");
+        } else if (res.status === 409) {
+          // A design run is still working on it; the server says what to do.
+          const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+          toast(typeof body?.error === "string" ? body.error : "The project wasn't deleted. Try again.");
         } else toast("The project wasn't deleted. Try again.");
       },
     });

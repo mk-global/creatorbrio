@@ -119,6 +119,8 @@ export interface ContainedLayout {
   privateDirs: readonly string[];
 }
 
+const SYSTEM_TEMP_DIRS = ["/tmp", "/private/tmp"];
+
 /**
  * Folders outside the home folder that hold the person's private files, which
  * the shell must not read: the folder that holds every carousel's folder (only
@@ -126,8 +128,6 @@ export interface ContainedLayout {
  * (it holds the CLI's sign-in on Linux) and, on macOS, the per-user temporary
  * folder. The CLI's shared temporary folder is added by `containedSettings`.
  */
-const SYSTEM_TEMP_DIRS = ["/tmp", "/private/tmp"];
-
 export function privateReadDirs(input: {
   env: Record<string, string | undefined>;
   platform: NodeJS.Platform;

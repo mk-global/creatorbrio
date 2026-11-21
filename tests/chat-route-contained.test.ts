@@ -396,6 +396,23 @@ describe("a contained design run", () => {
     expect(await isAgentSessionBound(own.id, SESSION)).toBe(false);
   });
 
+  it("creates nothing outside the data folder when the legacy profile deletes a carousel", async () => {
+    const { own } = await newCarousels();
+    const unused = path.join(workdir, "no-agent-folders");
+    process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = unused;
+    delete process.env.CREATORBRIO_DESIGN_AGENT_PROFILE;
+    try {
+      const res = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), {
+        params: Promise.resolve({ id: own.id }),
+      });
+      expect(res.status).toBe(200);
+      await expect(stat(unused)).rejects.toThrow();
+    } finally {
+      process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agentsRoot;
+      process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "contained";
+    }
+  });
+
   it("continues a URL-based design with the same server-read page, and takes a follow-up message (#228)", async () => {
     await play("fail");
     let retrievals = 0;

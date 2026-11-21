@@ -93,9 +93,17 @@ export function stagingDirFor(workDir: string): string {
  * place: it is renamed into the quarantine folder under `root` and deleted
  * there. Where it cannot be renamed (another file system), it is deleted in
  * place only on Linux, where nothing the agent started outlives its run, and
- * otherwise left behind and reported.
+ * otherwise left behind and reported. Nothing is created when there is
+ * nothing to remove, so the legacy profile, which has no such folders,
+ * never gets one.
  */
 export async function removeAgentWritable(target: string, root: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  try {
+    await lstat(target);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
   const bin = path.join(root, QUARANTINE);
   await mkdir(bin, { recursive: true, mode: 0o700 });
   const moved = path.join(bin, randomUUID());

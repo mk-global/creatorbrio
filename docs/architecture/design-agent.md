@@ -56,7 +56,7 @@ The contained profile (#156, #186, #226, #227, #228) gives the agent one carouse
   It may write only the carousel's own folder and the run's temporary folder.
   It cannot read the home folder, the repository, the data folder, the CLI's shared temporary folder, the folder that holds every carousel's folder (other than its own folder and its staged images) or, on macOS, the per-user temporary folder.
   A CLI configuration folder kept outside home is denied too, by configuration only: no check has probed it yet.
-  Other system locations stay readable, as the sandbox reads them by default, including the shared `/tmp`, where other runs' temporary folders and, on Linux, the Visual Director's temporary image copies live (#237).
+  Other system locations stay readable, as the sandbox reads them by default, and some shared temporary locations still need closing before activation (#237).
 - **Read tool.** `Read` is allowed only inside the carousel's folder and its staged images, and refused everywhere else.
 - **Environment.** The CLI receives an explicit allowlist of variables (sign-in, locale, proxy and the run's own values); nothing else in the app's environment reaches it.
   The CLI's environment scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) keeps its sign-in variables out of the agent's shell.
@@ -69,11 +69,13 @@ The contained profile (#156, #186, #226, #227, #228) gives the agent one carouse
   A carousel's bindings are removed with it.
   Reference images are copied into a staging folder beside it (`.staged/<carousel id>`), which the agent may read but never write, and the prompt names the copies.
   The folder and its staged images are removed with the carousel.
-- **Nothing outlives a run's boundary.** A process the agent starts in the background can outlive its run on macOS: measured on 2.1.328, plain and new-session background processes kept running after the CLI ended or was stopped, still under the run's sandbox rules.
+- **Processes that outlive a run.** A process the agent starts in the background can outlive its run on macOS: measured on 2.1.328, plain and new-session background processes kept running after the CLI ended or was stopped, still under the run's sandbox rules.
+  Stopping them is open before activation (#237).
   On Linux none did, whether the run ended or was stopped.
-  So the server never deletes inside a folder the agent can still change, since a process changing a folder while it is deleted could redirect the delete outside it.
+  So the server does not delete inside a folder the agent can still change, since a process changing a folder while it is deleted could redirect the delete outside it.
   It first moves the folder into a removal folder (`.removed`) beside the carousels' folders, which the agent cannot write, and deletes it there.
-  On macOS the sandbox's write rules follow paths, so the move cuts a leftover process off; the stand-in qualification's cleanup check shows it (`eval/sandbox-route/qualify.ts`).
+  On macOS the sandbox's write rules follow paths, so the move ends a leftover process's writes to the folder, which the stand-in qualification's cleanup check measures (`eval/sandbox-route/qualify.ts`).
+  On Linux, where `/tmp` can be another file system, a run's temporary folder that cannot be moved is deleted in place after the run, when none of its processes remain.
   A carousel cannot be deleted while its contained run is live, which on Linux, where the sandbox's mount follows a moved folder, is what keeps a live run's processes away from the removal.
 - **Run-scoped authority.** Each run gets a random token, passed only in the agent's environment (as `CREATORBRIO_AGENT_GRANT`, a name the scrub keeps) and accepted only by the agent-only listener for that run's carousel.
   It expires a minute after the run's deadline and is revoked when the run ends, however it ends; it is redacted from the chat stream and the server log, and stored in no run record.
