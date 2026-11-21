@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useAppStatus } from "@/components/app/useAppStatus";
+import { useAppStatus, type DesignAgentStatus } from "@/components/app/useAppStatus";
 import { useStudioStatus } from "@/components/app/useStudioStatus";
 
 function Row({ id, title, status, children }: { id?: string; title: string; status?: React.ReactNode; children: React.ReactNode }) {
@@ -13,6 +13,41 @@ function Row({ id, title, status, children }: { id?: string; title: string; stat
       </div>
       <div className="max-w-[64ch] min-w-0 space-y-2 text-[15px] text-ink/85">{children}</div>
     </div>
+  );
+}
+
+/** The Design Agent's profile (#227): contained, with its CLI version and any warning, or why it cannot run. */
+function DesignAgentTag({ status }: { status: DesignAgentStatus }) {
+  if (status.profile !== "contained") return <span className="tag tag-neutral">{status.profile === "invalid" ? "Setting invalid" : "Not contained"}</span>;
+  if (!status.available) return <span className="tag tag-alert">Unavailable</span>;
+  return status.versionWarning ? <span className="tag tag-alert">Untested version</span> : <span className="tag tag-ok">Contained</span>;
+}
+
+function DesignAgentDetail({ status }: { status?: DesignAgentStatus }) {
+  if (!status) return <p>Whether the Design Agent runs inside Claude Code&apos;s sandbox, with only its own carousel in reach.</p>;
+  if (status.profile !== "contained") {
+    return status.profile === "invalid" ? (
+      <p>CREATORBRIO_DESIGN_AGENT_PROFILE in .env.local is neither legacy nor contained, so designs are refused until it is corrected.</p>
+    ) : (
+      <p>The Design Agent runs with your own Claude Code configuration and without the sandbox. The contained profile is being qualified and is not yet switched on.</p>
+    );
+  }
+  if (!status.available) {
+    return (
+      <>
+        <p>{status.reason} Designing by chat is unavailable until it is fixed; existing work can still be opened, arranged and exported.</p>
+        <p>{status.guidance}</p>
+      </>
+    );
+  }
+  return (
+    <>
+      <p>
+        The Design Agent runs inside Claude Code&apos;s sandbox on Claude Code {status.cliVersion}: it can reach only its own carousel through CreatorBrio, write only that
+        carousel&apos;s folder, and cannot read your home folder or CreatorBrio&apos;s files.
+      </p>
+      {status.versionWarning && <p>{status.versionWarning} Run <code>npm run doctor</code> to check it.</p>}
+    </>
   );
 }
 
@@ -49,6 +84,13 @@ export default function SettingsPage() {
           ) : (
             <p>Designing by chat runs Claude Code on this computer, with your own Claude account. CreatorBrio checks that it can be found, not that you are signed in.</p>
           )}
+        </Row>
+        <Row
+          id="design-agent"
+          title="Design Agent protection"
+          status={!status?.designAgent ? (status ? null : checking) : <DesignAgentTag status={status.designAgent} />}
+        >
+          <DesignAgentDetail status={status?.designAgent} />
         </Row>
         <Row
           title="Image generation"

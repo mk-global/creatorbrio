@@ -3,7 +3,7 @@
 // Pure Node, no dependencies, safe to run pre-`npm install`.
 // Exit 0 if everything required is OK; exit 1 on any required failure.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -62,6 +62,61 @@ if (claudePath) {
   add(CHECK, "Claude CLI", claudePath);
 } else {
   add(FAIL, "Claude CLI", "not found — install from https://docs.anthropic.com/en/docs/claude-code", true);
+}
+
+// 2b. Design Agent profile (#227). The versions are the contained profile's
+// own, in src/lib/design-agent-profile.ts; a test keeps them equal.
+const QUALIFIED_CLI_VERSION = "2.1.328";
+const MINIMUM_CLI_VERSION = "2.1.219";
+
+function envLocalValue(name) {
+  if (process.env[name] !== undefined) return process.env[name];
+  try {
+    const line = readFileSync(".env.local", "utf8").split("\n").find((l) => l.trim().startsWith(`${name}=`));
+    return line ? line.slice(line.indexOf("=") + 1).trim().replace(/^["']|["']$/g, "") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function compareVersions(a, b) {
+  const [x, y] = [a, b].map((v) => v.split(".").map(Number));
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
+  }
+  return 0;
+}
+
+const profile = (envLocalValue("CREATORBRIO_DESIGN_AGENT_PROFILE") ?? "").trim() || "legacy";
+if (profile === "legacy") {
+  add(INFO, "Design Agent", "legacy profile (not contained)");
+} else if (profile !== "contained") {
+  add(FAIL, "Design Agent", `CREATORBRIO_DESIGN_AGENT_PROFILE is "${profile}"; use legacy or contained`, true);
+} else {
+  const problems = [];
+  if (platform() === "win32") problems.push("not available on Windows");
+  if (platform() === "linux") {
+    let kernel = "";
+    try {
+      kernel = readFileSync("/proc/sys/kernel/osrelease", "utf8");
+    } catch {
+      // Unknown kernel: treated as ordinary Linux.
+    }
+    if (/microsoft|wsl/i.test(kernel)) problems.push("not qualified on WSL2");
+    for (const program of ["bwrap", "socat"]) {
+      if (!tryExec(`command -v ${program}`)) problems.push(`${program === "bwrap" ? "bubblewrap" : program} is not installed`);
+    }
+  }
+  const version = claudePath ? (tryExec(`"${claudePath}" --version`) ?? "").match(/^(\d+\.\d+\.\d+)\b/)?.[1] : null;
+  if (!version) problems.push("Claude Code's version could not be read");
+  else if (compareVersions(version, MINIMUM_CLI_VERSION) < 0) problems.push(`Claude Code ${version} is older than ${MINIMUM_CLI_VERSION}`);
+  if (problems.length > 0) {
+    add(FAIL, "Design Agent", `contained profile cannot run: ${problems.join("; ")}`, true);
+  } else if (version !== QUALIFIED_CLI_VERSION) {
+    add(WARN, "Design Agent", `contained, on Claude Code ${version}; only ${QUALIFIED_CLI_VERSION} is qualified`);
+  } else {
+    add(CHECK, "Design Agent", `contained, on Claude Code ${version}`);
+  }
 }
 
 // 3. Dependencies

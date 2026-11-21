@@ -23,6 +23,8 @@ export type ChatErrorCode =
   | "budget_setting_invalid"
   | "timeout_setting_invalid"
   | "inactivity_setting_invalid"
+  | "profile_setting_invalid"
+  | "agent_unavailable"
   | "session_not_found"
   | "run_failed";
 
@@ -99,6 +101,10 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorCode, string> = {
     "The design agent's time limit, DESIGN_AGENT_TIMEOUT_SECONDS, is not a whole number of seconds from 60 to 3600. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
   inactivity_setting_invalid:
     "The design agent's inactivity limit, DESIGN_AGENT_INACTIVITY_SECONDS, is not a whole number of seconds from 60 to 900 that is shorter than DESIGN_AGENT_TIMEOUT_SECONDS. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
+  profile_setting_invalid:
+    "The design agent's profile, CREATORBRIO_DESIGN_AGENT_PROFILE, is neither legacy nor contained. Nothing was changed; correct or remove it in .env.local, restart CreatorBrio and send your message again.",
+  agent_unavailable:
+    "The contained design agent cannot run on this computer. Nothing was changed; see Settings for what it needs.",
   session_not_found:
     "The previous conversation could not be resumed, so it has been reset. Send your message again, or select Continue, to carry on in a new conversation.",
   run_failed: "Something went wrong before the design started. Nothing was changed; send your message again.",

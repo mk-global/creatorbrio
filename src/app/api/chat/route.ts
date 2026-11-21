@@ -1,3 +1,4 @@
+import { bindAgentSession, isAgentSessionBound } from "@/lib/agent-sessions";
 import { NextRequest, NextResponse } from "next/server";
 import { spawn } from "child_process";
 import crossSpawn from "cross-spawn";
@@ -24,6 +25,10 @@ import {
 import { finishCreativeRun, prepareCreativeRun, type CreativeRunInput } from "@/lib/creative-run";
 import { checkConformance } from "@/lib/creative-handoff";
 import { designAgentArgs, designAgentSettings } from "@/lib/design-agent";
+import { designAgentProfileName } from "@/lib/design-agent-profile";
+import { containedAvailability } from "@/lib/design-agent-availability";
+import { agentListenerPort } from "@/lib/agent-listener";
+import { prepareContainedLaunch, type ContainedLaunch } from "@/lib/contained-launch";
 import { continuationOffer } from "@/lib/assets";
 import {
   beginGeneration,
@@ -117,6 +122,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid continue" }, { status: 400 });
   }
 
+  // Read per request, like the other settings; an unknown name is refused, never ignored.
+  const profile = designAgentProfileName();
+  const contained = profile.ok && profile.name === "contained";
+  // The contained agent works in its carousel's own folder, so it needs one.
+  if (contained && (typeof carouselId !== "string" || !carouselId)) {
+    return NextResponse.json({ error: "A design needs a carousel" }, { status: 400 });
+  }
+
   // The carousel's run begins before any work for this request, and a
   // carousel has one active run at a time. From here on, every way this
   // request ends must end the run exactly once.
@@ -129,6 +142,7 @@ export async function POST(request: NextRequest) {
 
   // Build dynamic system prompt with the carousel's brand + carousel + style preset context
   let systemPrompt: string;
+  let listenerPort: number | null = null;
   // Everything the creative run needs; null for a chat without a carousel.
   let creative: CreativeRunInput | null = null;
   try {
@@ -153,12 +167,15 @@ export async function POST(request: NextRequest) {
         retryRunId: isRunId(retryRunId) ? retryRunId : null,
         continueRunId: isRunId(continueRunId) ? continueRunId : null,
         resumingSession: resumeSessionId !== null,
+        pageTextForAgent: contained,
       };
     }
+    // The contained agent reaches only its run's listener; the legacy agent
+    // curls this app's own API, at the origin the request arrived on.
+    listenerPort = contained ? await agentListenerPort() : null;
     systemPrompt = buildSystemPrompt({
-      // The agent curls this app's own API, so it must be told the origin the
-      // request arrived on rather than a fixed port.
-      baseUrl: resolveAppOrigin(request),
+      baseUrl: listenerPort !== null ? `http://localhost:${listenerPort}` : resolveAppOrigin(request),
+      contained,
       brand,
       carousel: promptCarousel,
       stylePreset,
@@ -193,7 +210,17 @@ export async function POST(request: NextRequest) {
 
   const stream = new ReadableStream({
     start(controller) {
+      // The contained run's token is redacted from anything relayed, should the agent repeat it.
+      let launch: ContainedLaunch | null = null;
+      // Kept for the whole request: output and logs written after the run ends are still redacted.
+      let redact = (text: string) => text;
+      const finishLaunch = () => {
+        const current = launch;
+        launch = null;
+        return current ? current.finish() : Promise.resolve();
+      };
       const send = (event: ChatStreamEvent) => {
+        if (event.type === "token" || event.type === "result") event = { ...event, text: redact(event.text) };
         try {
           controller.enqueue(encoder.encode(encodeChatEvent(event)));
         } catch {
@@ -224,6 +251,32 @@ export async function POST(request: NextRequest) {
           send({ type: "done", sessionId: null });
           close();
           return;
+        }
+        if (!profile.ok || contained) {
+          const refusal = !profile.ok
+            ? { code: "profile_setting_invalid" as const, message: CHAT_ERROR_MESSAGES.profile_setting_invalid }
+            : ((await containedAvailability(claudePath).then((a) =>
+                a.available ? null : { code: "agent_unavailable" as const, message: `${a.reason} ${a.guidance} Nothing was changed.` }
+              )) ??
+              // A contained run resumes only a session bound to its own carousel (#237):
+              // the CLI would resume any session it can find, including the person's own.
+              (resumeSessionId &&
+              carouselId &&
+              !(await isAgentSessionBound(carouselId, resumeSessionId).catch((error) => {
+                // An unreadable binding is treated as no binding: the chat starts fresh.
+                console.error("[chat] could not read the session bindings", { carouselId, failureCategory: "session_binding", error: String(error) });
+                return false;
+              }))
+                ? { code: "session_not_found" as const, message: CHAT_ERROR_MESSAGES.session_not_found }
+                : null));
+          if (refusal) {
+            console.warn("[chat] design run refused before it started", { carouselId: carouselId ?? null, stage: "design", failureCategory: refusal.code });
+            fail(refusal.code, refusal.message);
+            await endGeneration("not-started");
+            send({ type: "done", sessionId: null });
+            close();
+            return;
+          }
         }
         // The creative run comes first: linked pages, the plan and its images.
         // It either hands the Design Agent its task message or ends the run
@@ -274,6 +327,29 @@ export async function POST(request: NextRequest) {
           close();
           return;
         }
+        if (contained) {
+          try {
+            launch = await prepareContainedLaunch({
+              carouselId: carouselId!,
+              taskMessage,
+              systemPrompt,
+              resumeSessionId,
+              budgetUsd,
+              listenerPort: listenerPort!,
+              appOrigin: resolveAppOrigin(request),
+              tokenTtlMs: settings.timeoutMs + 60_000,
+            });
+            redact = launch.redact;
+          } catch (err) {
+            console.error("[chat] contained design agent could not be prepared", { carouselId: carouselId ?? null, message: (err as Error)?.message });
+            fail("start_failed");
+            if (creativeRun) await finishCreativeRun(carouselId!, creativeRun.runId, "failed");
+            await endGeneration("not-started");
+            send({ type: "done", sessionId: null });
+            close();
+            return;
+          }
+        }
         design(taskMessage, creativeRun);
       })();
 
@@ -286,8 +362,10 @@ export async function POST(request: NextRequest) {
       const spawner = isWindowsShim ? crossSpawn : spawn;
 
       try {
-        childProcess = spawner(claudePath, designArgs(taskMessage), {
-          cwd: process.cwd(),
+        childProcess = spawner(claudePath, launch ? launch.args : designArgs(taskMessage), {
+          cwd: launch ? launch.cwd : process.cwd(),
+          // The contained profile's explicit allowlist; the legacy agent inherits everything.
+          ...(launch ? { env: launch.env as NodeJS.ProcessEnv } : {}),
           signal: abortController.signal,
           stdio: ["pipe", "pipe", "pipe"],
         });
@@ -303,6 +381,11 @@ export async function POST(request: NextRequest) {
         });
         fail("start_failed");
         void (creativeRun ? finishCreativeRun(carouselId!, creativeRun.runId, "failed") : Promise.resolve())
+          .catch((error) => {
+            // The token is still revoked and the run ended below.
+            console.error("[chat] could not record the end of a creative run", { carouselId, message: (error as Error)?.message });
+          })
+          .then(finishLaunch)
           .then(() => endGeneration("not-started"))
           .finally(close);
         return;
@@ -483,7 +566,8 @@ export async function POST(request: NextRequest) {
       const STDERR_CAP = 8192;
       childProcess.stderr?.on("data", (chunk: Buffer) => {
         if (stderrBuf.length < STDERR_CAP) {
-          stderrBuf = (stderrBuf + chunk.toString()).slice(-STDERR_CAP);
+          // Redacted as a whole, so a token split across chunks is still caught.
+          stderrBuf = redact(stderrBuf + chunk.toString()).slice(-STDERR_CAP);
         }
       });
 
@@ -522,6 +606,8 @@ export async function POST(request: NextRequest) {
         childProcess.kill();
         fail(childProcess.pid === undefined ? "start_failed" : "agent_failed");
         await released;
+        // A process that is still running keeps its token until it exits.
+        if (childProcess.pid === undefined || childProcess.exitCode !== null || childProcess.signalCode !== null) await finishLaunch();
         close();
       });
 
@@ -561,6 +647,8 @@ export async function POST(request: NextRequest) {
           });
         }
 
+        // The agent has exited: its token stops working and its temporary folder goes.
+        await finishLaunch();
         // Saved before "done", so the editor's next status check sees it.
         const outcome = outcomeFor(code);
         if (creativeRun) await finishDesign(creativeRun, outcome);
@@ -604,6 +692,12 @@ export async function POST(request: NextRequest) {
           slidesExpected: creativeRun?.plan.execution.slideCount ?? null,
           continuationAvailable: offer !== null,
         });
+        // The session a contained run hands back is the one its carousel may resume.
+        if (contained && carouselId && nextSessionId) {
+          await bindAgentSession(carouselId, nextSessionId).catch((error) =>
+            console.error("[chat] could not bind the session to its carousel", { carouselId, failureCategory: "session_binding", error: String(error) })
+          );
+        }
         send({ type: "done", sessionId: nextSessionId });
         close();
       });

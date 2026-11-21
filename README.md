@@ -94,6 +94,11 @@ The same idea is being extended to video: one production that you can edit by ha
 CreatorBrio is developed on macOS, and CI runs on Linux.
 Windows has code paths for starting the app but is not tested, and `/stop` does not work there.
 
+The contained Design Agent profile, which is off by default while it is qualified, has stricter requirements.
+It runs on macOS, and on Linux with **bubblewrap and socat** installed (for example `sudo apt install bubblewrap socat`); Debian 12 is the only Linux it has been tested on.
+It is not available on native Windows or WSL2, which have not been tested.
+It has been tested on Claude Code 2.1.328, refuses versions older than 2.1.219, and warns about any other version; `npm run doctor` checks the platform, the sandbox prerequisites and the version.
+
 ### Install and start
 
 With Claude Code:
@@ -181,7 +186,8 @@ flowchart LR
 **Carousels.**
 The **Visual Director** is a separate Claude CLI call that can only read copies of the carousel's own images; it returns a plan the server validates in full (slide count, each slide's treatment, which images go where, and any to generate).
 The plan's intent is stored on the carousel as its **Creative Brief**.
-The **design agent** then receives your message and the plan; the chat route runs it with `--allowedTools Bash WebFetch Read`, and it saves each slide by calling the app's own API.
+The **design agent** then receives your message and the plan, and saves each slide by calling the app's own API.
+Today it runs with `--allowedTools Bash WebFetch Read` and your own Claude Code configuration; a contained profile, which runs it inside Claude Code's sandbox with access to only its own carousel, is being qualified and is off by default (`CREATORBRIO_DESIGN_AGENT_PROFILE`, see [design-agent.md](docs/architecture/design-agent.md#profiles)).
 After it finishes, the server compares the slides with the plan and reports any differences without changing them.
 Slides are body-level HTML; one function, `wrapSlideHtml()`, turns them into full documents for both the preview and the export, so what you see is what you download.
 

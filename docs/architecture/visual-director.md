@@ -168,11 +168,14 @@ At most five images are generated per request, and never more than the slide cou
 ## Isolation and limits
 
 The Director runs as its own Claude CLI invocation, separate from the Design Agent's session.
+Its isolation is recorded as `DIRECTOR_PROFILE` in `src/lib/visual-director.ts`, in the same execution profile model as the contained Design Agent ([design-agent.md](design-agent.md#profiles)), and tests pin its arguments to that record.
+Its model and effort are the CLI's defaults for the signed-in account, as the recorded quality baseline ran it; because it loads no setting sources, no personal settings file can change them.
 
 Director tools: `Read`
 
 - `Read` is limited to a fresh temporary working directory outside the repository, holding neutral copies of the carousel's reference images and intact assets (`reference-1.png`, `asset-1.png`); a read anywhere else is denied.
 - No user or project settings, no MCP servers and no automatic memory are loaded.
+- Linked-page text reaches it inside an untrusted-page block whose delimiters page text cannot spell (`untrustedPageContent()` in `src/lib/source-text.ts`).
 - No session is written or resumed, so the Director cannot touch the Design Agent's conversation.
 - Its input arrives on standard input, never in the process arguments.
 - Each run is bounded by a mandatory 120-second timeout, after which the Director is stopped (and killed if it ignores the stop); cancelling the request stops it the same way.

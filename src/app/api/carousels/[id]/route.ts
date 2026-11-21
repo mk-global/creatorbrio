@@ -1,3 +1,5 @@
+import { forgetAgentSessions } from "@/lib/agent-sessions";
+import { removeCarouselWorkDir } from "@/lib/agent-workspace";
 import { NextResponse } from "next/server";
 import { getCarousel, updateCarousel, deleteCarousel, carouselResponse } from "@/lib/carousels";
 import { dataErrorResponse } from "@/lib/api-errors";
@@ -67,5 +69,13 @@ export async function DELETE(
   if (!deleted) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  // The contained Design Agent's folder goes with its carousel (#227).
+  await removeCarouselWorkDir(id).catch((err) => {
+    console.error("[carousels] could not remove the design agent's folder", { carouselId: id, message: (err as Error)?.message });
+  });
+  // So are the sessions its contained runs may resume (#237).
+  await forgetAgentSessions(id).catch((err) => {
+    console.error("[carousels] could not forget the design agent's sessions", { carouselId: id, message: (err as Error)?.message });
+  });
   return NextResponse.json({ success: true });
 }

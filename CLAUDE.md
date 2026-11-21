@@ -55,7 +55,7 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - `GET/PUT /api/brands/[id]`: one brand's configuration
 - `GET /api/carousels?brandId=` and `GET /api/templates?brandId=` filter by brand; `POST /api/carousels` takes an optional `brandId`, fixed for the carousel's life
 - `GET/POST /api/templates`: templates; `POST /api/templates/[id]/use` takes an optional `{ name }` and keeps the template's brand and format
-- `GET /api/status`: whether Claude Code is found and image generation is set up, for Home and Settings; no paths, URLs or secrets
+- `GET /api/status`: whether Claude Code is found, image generation is set up, and which Design Agent profile runs (for `contained`, whether it can run here, its CLI version and any version warning), for Home and Settings; no paths, URLs or secrets
 - `POST /api/upload` — Upload (images PNG/JPG/WebP, fonts WOFF2/TTF; max 10MB, type checked by magic bytes)
 - `GET /api/fonts` — Google Fonts list
 - `POST/GET/DELETE /api/video/session`: pair a browser with a one-time code from `npm run studio:pair` (printed only in the operator's terminal), check its session, sign out. The session is an HttpOnly, SameSite=Strict cookie scoped to `/api/video`; cookie requests also need `X-CreatorBrio-Request: studio`, same-origin fetch metadata and, on writes, the app's exact Origin. `GET /api/video/session?status=1` answers `{ paired }` with a 200, so pages outside the Studio never log a 401. `npm run studio:pair -- --revoke-all` signs out every browser
@@ -71,7 +71,7 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - All data mutations go through `src/lib/data.ts` (never direct fs writes for JSON), except Video Studio productions, which go through the production store and its cross-process commit protocol
 - Update routes never pass a parsed request body straight to a mutator. They select the fields the endpoint defines as mutable via `src/lib/api-input.ts`; everything else is server-owned
 - iframe slides always use `sandbox=""` attribute (no JavaScript execution)
-- The Claude subprocess gets `--allowedTools Bash WebFetch Read`: `Bash` to curl the local API routes, `WebFetch` to research while designing, `Read` to view reference images
+- The Design Agent has two profiles, chosen by `CREATORBRIO_DESIGN_AGENT_PROFILE` (`docs/architecture/design-agent.md#profiles`). `legacy` (the default until #237) gets `--allowedTools Bash WebFetch Read`: `Bash` to curl the local API routes, `WebFetch` to research while designing, `Read` to view reference images. `contained` (`src/lib/design-agent-profile.ts`) gets only `Bash` and `Read` inside Claude Code's sandbox, no personal configuration, linked pages as server-read text, and reaches only the run-scoped agent-only listener (`src/lib/agent-listener.ts`) for its own carousel
 
 ## Instagram Dimensions
 

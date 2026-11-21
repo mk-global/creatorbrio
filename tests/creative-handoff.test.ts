@@ -136,3 +136,26 @@ describe("checkConformance", () => {
     expect(placed).toEqual({ deviations: [], notes: [] });
   });
 });
+
+describe("linked pages in the design message (#228)", () => {
+  const page = (text: string, i: number) => ({ url: `https://example.com/${i}`, host: "example.com", title: `Page ${i}`, text, truncated: false });
+
+  it("keeps the whole message within one command-line argument, cutting page text at a character boundary", async () => {
+    const { MAX_DESIGN_MESSAGE_BYTES } = await import("@/lib/creative-handoff");
+    const { MAX_CHAT_MESSAGE_LENGTH } = await import("@/lib/chat-stream");
+    const longest = "日".repeat(MAX_CHAT_MESSAGE_LENGTH);
+    const pages = [1, 2, 3].map((i) => page("語".repeat(20_000), i));
+    const message = buildDesignMessage(longest, { plan: plan(), assets, references: refs, sources: pages.map((p) => p.url), pages });
+    expect(Buffer.byteLength(message)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+    expect(message.match(/\[truncated\]/g)).toHaveLength(3);
+    expect(message).not.toContain("�");
+    expect(message.startsWith(longest)).toBe(true);
+  });
+
+  it("leaves pages that fit unchanged", () => {
+    const pages = [page("Short facts.", 1)];
+    const message = buildDesignMessage("Make 3 slides", { plan: plan(), assets, references: refs, sources: [pages[0].url], pages });
+    expect(message).toContain("Short facts.");
+    expect(message).not.toContain("[truncated]");
+  });
+});

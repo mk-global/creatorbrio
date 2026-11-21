@@ -41,7 +41,7 @@ Agents also cannot approve: the engine refuses person-only statuses and operatio
   - agents, which the specification limits to MCP tools with no shell and no access to `data/` (spec 06 §9);
   - any process that can reach the port but cannot read the user's files;
   - an agent changing a request field to act as a person.
-- **Not protected:** a process running with arbitrary execution as the same operating-system user can read every local secret: the key file, the session and pairing records' directory, and the browser's cookie store. It can also run `npm run studio:pair` itself, or edit `data/` directly. That includes today's carousel Design Agent, which has Bash. Separating such a process from the person needs operating-system account separation, which is outside this local, single-user design. Pairing does not change this, and nothing here claims to be a browser or operating-system sandbox.
+- **Not protected:** a process running with arbitrary execution as the same operating-system user can read every local secret: the key file, the session and pairing records' directory, and the browser's cookie store. It can also run `npm run studio:pair` itself, or edit `data/` directly. That includes the carousel Design Agent's legacy profile, which has Bash without a sandbox; its contained profile cannot read these files, because its shell's sandbox denies the home folder, the repository and the data folder ([design-agent.md](design-agent.md#contained)). Separating such a process from the person needs operating-system account separation, which is outside this local, single-user design. Pairing does not change this, and nothing here claims to be a browser or operating-system sandbox.
 
 ## Pairing a browser
 
