@@ -29,14 +29,20 @@
  *                    ps on macOS) or any process's; the legacy profile, with no
  *                    sandbox, running the same probe must find them
  *   private-read     the shell cannot read a canary in the CLI's shared
- *                    temporary folder, in another carousel's folder or, on
- *                    macOS, in the per-user temporary folder; the legacy
- *                    profile's shell reads all of them
- *   survivor         whether a process the agent starts in the background,
- *                    detached in every way the shell offers, still runs after
- *                    the CLI exits, whether it ends normally or is stopped
- *                    mid-command as the chat route stops it (a fact, recorded
- *                    whatever it is; the cleanup-race check judges its effect)
+ *                    temporary folder, in another carousel's folder, in
+ *                    another run's temporary folder, in a Visual Director
+ *                    image copy or, on macOS, in the per-user temporary
+ *                    folder; the legacy profile's shell reads all of them
+ *                    (the positive control), and the contained shell can
+ *                    still write and read its own temporary folder
+ *   survivor         a process the agent starts in the background as a plain
+ *                    job, with nohup or in a new session, working in the
+ *                    run's folder, is stopped by the product's own stop when
+ *                    the run ends and when it is stopped mid-command; an
+ *                    evader that also leaves the run's folder is recorded if
+ *                    it outlives the stop (a residual), and must not write
+ *                    into the next conversation's folder, whose path it is
+ *                    given in advance
  *   staging          the staged images are readable by the shell and the Read
  *                    tool, and nothing in the staging or removal folders can be
  *                    created, linked, renamed or changed
@@ -47,6 +53,11 @@
  *                    product's move alone ends the process's writes to the
  *                    moved folder, with an in-place delete as the positive
  *                    control
+ *
+ * Every contained turn is started and stopped as the chat route does it
+ * (#241): the CLI leads its own process group, and after it exits the
+ * product's stop ends what the run left. The cleanup-race check alone starts
+ * the CLI without that stop, to model a process that evaded it.
  *
  * Every verdict rests on host-side evidence (files, hashes, modes, what the
  * stand-in received) and never on a tool's own report alone. A check whose
@@ -59,15 +70,25 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform, release, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { rm } from "node:fs/promises";
-import { removeCarouselWorkDir, stagingDirFor } from "../../src/lib/agent-workspace";
-import { AGENT_TOKEN_ENV, agentTempDirFits, containedArgs, containedEnv, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
+import {
+  createRunTempDir,
+  createServerTempDir,
+  removeCarouselWorkDir,
+  removeRunTempDir,
+  removeServerTempDir,
+  serverTempRoot,
+  stagingDirFor,
+  startConversation,
+} from "../../src/lib/agent-workspace";
+import { trackRun, type StopReport, type TrackedRun } from "../../src/lib/agent-processes";
+import { AGENT_TOKEN_ENV, containedArgs, containedEnv, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
 import { designAgentArgs } from "../../src/lib/design-agent";
-import { runCli, type CliRun } from "./proof";
+import { runCli, type CliRun, type ProductProcess } from "./proof";
 import { standInEnv, startStandIn, type ScriptedCall, type StandIn, type StandInRequest } from "./stand-in";
 
 export const CHECKS = ["isolation", "file-tools", "cli-state", "continuation", "messaging-socket", "environment", "sign-in", "private-read", "survivor", "cleanup-race", "staging"] as const;
@@ -220,6 +241,33 @@ const sessionIdOf = (cli: CliRun) => {
   return null;
 };
 
+/** This user's processes whose command line holds `needle`, never this process. */
+function processesMatching(needle: string): number[] {
+  if (platform() === "linux") {
+    return readdirSync("/proc")
+      .filter((name) => /^\d+$/.test(name) && Number(name) !== process.pid)
+      .filter((name) => {
+        try {
+          return readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").join(" ").includes(needle);
+        } catch {
+          return false;
+        }
+      })
+      .map(Number);
+  }
+  let out = "";
+  try {
+    out = execFileSync("ps", ["-A", "-ww", "-o", "pid=,command="], { encoding: "utf8" });
+  } catch {
+    return [];
+  }
+  return out
+    .split("\n")
+    .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
+    .filter((m): m is RegExpExecArray => m !== null && m[2].includes(needle) && Number(m[1]) !== process.pid)
+    .map((m) => Number(m[1]));
+}
+
 function parseArgs(argv: string[]) {
   const get = (name: string) => {
     const i = argv.indexOf(`--${name}`);
@@ -253,22 +301,32 @@ async function main() {
       port
     );
 
-  /** One contained turn for a carousel folder: the product's arguments, settings and environment, unchanged. */
-  async function contained(workDir: string, script: ScriptedCall[], resumeSessionId: string | null = null, plant: Record<string, string> = {}, stopAfterMs?: number) {
+  /**
+   * One contained turn for a carousel folder: the product's arguments,
+   * settings, environment, run folder and process lifecycle, unchanged.
+   * `lifecycle: false` leaves out the product's stop, for the cleanup race.
+   */
+  async function contained(workDir: string, script: ScriptedCall[], resumeSessionId: string | null = null, plant: Record<string, string> = {}, stopAfterMs?: number, lifecycle = true) {
     stand!.setScript(script);
     const before = stand!.requests.length;
-    const tempDir = mkdtempSync(path.join(os === "darwin" ? "/private/tmp" : "/tmp", "cb-"));
-    chmodSync(tempDir, 0o700);
+    const tempDir = await createRunTempDir(uid);
     try {
-      if (!agentTempDirFits(tempDir, uid)) throw new Error("The run's temporary folder path is too long for the CLI");
       const privateDirs = privateReadDirs({ env: {}, platform: os, workspaceRoot: agents, userTempDir: realpathSync(tmpdir()) });
-      const layout: ContainedLayout = { workDir, stagingDir: stagingDirFor(workDir), tempDir, homeDir: home, repoDir: repo, dataDir: data, listenerPort: 9, platform: os, uid, privateDirs };
+      const layout: ContainedLayout = { workDir, stagingDir: stagingDirFor(workDir), tempDir, tempRoot: serverTempRoot(os, uid), homeDir: home, repoDir: repo, dataDir: data, listenerPort: 9, platform: os, uid, privateDirs };
       const args = containedArgs({ taskMessage: "Qualification task.", systemPrompt: "CreatorBrio containment qualification.", resumeSessionId, budgetUsd: null, layout });
       const env = containedEnv({ ...baseEnv(stand!.port), ...plant }, { tempDir, token: randomBytes(32).toString("base64url") }) as NodeJS.ProcessEnv;
-      const cli = await runCli(opts.claude, args, workDir, env, stopAfterMs);
-      return { cli, requests: stand!.requests.slice(before), sessionId: sessionIdOf(cli) };
+      const holder: { run?: TrackedRun } = {};
+      const product: ProductProcess | undefined = lifecycle
+        ? {
+            started: (pid) => (holder.run = trackRun({ leaderPid: pid, folders: [workDir, layout.stagingDir, tempDir], abort: () => {} })),
+            signal: (signal) => holder.run?.signal(signal),
+          }
+        : undefined;
+      const cli = await runCli(opts.claude, args, workDir, env, stopAfterMs, product);
+      const stopped: StopReport | null = holder.run ? await holder.run.stop() : null;
+      return { cli, requests: stand!.requests.slice(before), sessionId: sessionIdOf(cli), stopped };
     } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeRunTempDir(tempDir).catch(() => {});
     }
   }
 
@@ -550,6 +608,11 @@ async function main() {
         "other carousel folder": path.join(agents, randomUUID(), "notes.txt"),
       };
       if (os === "darwin") canaries["per-user temporary folder"] = path.join(realpathSync(tmpdir()), `cbq-canary-${value}.txt`);
+      // Under the per-user parent, made by the product's own helpers (#241).
+      const otherRun = await createRunTempDir(uid);
+      const director = await createServerTempDir("creatorbrio-director-", uid);
+      canaries["another run's temporary folder"] = path.join(otherRun, "notes.txt");
+      canaries["Visual Director image copy"] = path.join(director, "reference-1.png");
       const created: string[] = [];
       for (const file of Object.values(canaries)) {
         const dir = path.dirname(file);
@@ -559,7 +622,13 @@ async function main() {
         }
         writeFileSync(file, value);
       }
-      const command = Object.entries(canaries).map(([where, file]) => `printf '%s=' '${where}'; cat '${file}' 2>/dev/null; echo`).join("; ");
+      // The positive control inside the sandbox: the run's own temporary folder stays writable and readable.
+      // The file is made in $TMPDIR by name, because a bare mktemp on macOS ignores $TMPDIR and uses the per-user temporary folder, which the profile denies.
+      const own = `${value}-own`;
+      const command = [
+        ...Object.entries(canaries).map(([where, file]) => `printf '%s=' "${where}"; cat '${file}' 2>/dev/null; echo`),
+        `printf 'own=' ; f=$(mktemp "$TMPDIR/cbq.XXXXXX") && printf '%s' '${own}' > "$f" && cat "$f"; echo`,
+      ].join("; ");
       const probe: ScriptedCall[] = [{ name: "Bash", input: { command, description: "Read private folders" } }];
       const outputOf = (requests: StandInRequest[]) => requests.filter((r) => r.mainLoop).at(-1)?.toolResults.join("\n") ?? "";
       const reachedIn = (output: string) => output.split("\n").filter((l) => l.endsWith(`=${value}`)).map((l) => l.slice(0, -value.length - 1));
@@ -573,45 +642,80 @@ async function main() {
         const escapes = reachedIn(containedOutput).map((where) => `the shell read the canary in the ${where}`);
         const problems = [
           ...(containedOutput.includes("=") ? [] : ["the probe did not run under the contained profile"]),
+          ...(containedOutput.split("\n").includes(`own=${own}`) ? [] : ["the contained shell could not write and read its own temporary folder"]),
           ...Object.keys(canaries).filter((where) => !control.includes(where)).map((where) => `positive control: the legacy shell could not read the ${where}`),
         ];
         results.push({ check: "private-read", verdict: verdictOf({ escapes, problems }), reasons: [...escapes, ...problems], facts: { places: Object.keys(canaries), legacyRead: control } });
       } finally {
         for (const file of Object.values(canaries)) rmSync(file, { force: true });
         for (const dir of created) rmSync(dir, { recursive: true, force: true });
+        await removeRunTempDir(otherRun).catch(() => {});
+        await removeServerTempDir(director).catch(() => {});
       }
     }
 
     if (opts.checks.includes("survivor")) {
-      // Three ways to outlive the command: a plain background job, nohup, and a new session.
+      // Three ways to outlive the command from the run's folder: a plain
+      // background job, one that ignores the hangup signal (what nohup does;
+      // macOS nohup itself refuses to start without a console session), and a
+      // new session. A fourth, the evader, also
+      // leaves the folder, and tries to write into the next conversation's
+      // folder, whose path it is given in advance.
       const loop = (name: string) => `i=0; while [ $i -lt 40 ]; do date +%s > ${name}.beat; sleep 1; i=$((i+1)); done`;
-      const command = [
-        `(sh -c '${loop("plain")}' >/dev/null 2>&1 &)`,
-        `nohup sh -c '${loop("nohup")}' >/dev/null 2>&1 &`,
-        `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "sh", "-c", q{${loop("setsid")}}' >/dev/null 2>&1 &`,
-        "sleep 2; ls *.beat",
-      ].join("\n");
+      const names = ["plain", "nohup", "setsid"];
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const carouselId = randomUUID();
       const measure = async (stopped: boolean) => {
-        const workDir = newWorkDir();
+        const workDir = await startConversation(carouselId, repo, agents);
+        const next = randomUUID();
+        const nextDir = path.join(path.dirname(workDir), next);
+        const tag = `cbq-evader-${randomBytes(4).toString("hex")}`;
+        const evade = `i=0; while [ $i -lt 60 ]; do echo x > "${nextDir}/evaded.txt" 2>/dev/null; sleep 0.5; i=$((i+1)); done`;
+        const command = [
+          `(sh -c '${loop("plain")}' >/dev/null 2>&1 &)`,
+          `(trap '' HUP; exec sh -c '${loop("nohup")}') >/dev/null 2>&1 &`,
+          `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "sh", "-c", q{${loop("setsid")}}' >/dev/null 2>&1 &`,
+          `(cd / && perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "sh", "-c", q{${evade}}, q{${tag}}' >/dev/null 2>&1 &)`,
+          "sleep 2; ls *.beat",
+        ].join("\n");
         const script = stopped ? `${command}\nsleep 60` : command;
         const c = await contained(workDir, [{ name: "Bash", input: { command: script, description: "Start background work" } }], null, {}, stopped ? 8000 : undefined);
-        const beats = () => Object.fromEntries(["plain", "nohup", "setsid"].map((n) => [n, existsSync(path.join(workDir, `${n}.beat`)) ? readFileSync(path.join(workDir, `${n}.beat`), "utf8").trim() : null]));
-        await new Promise((r) => setTimeout(r, 4000));
-        const first = beats();
-        await new Promise((r) => setTimeout(r, 3000));
-        const second = beats();
-        const started = Object.keys(first).filter((n) => first[n] !== null);
-        return { cliExit: c.cli.exitCode, started, survived: started.filter((n) => first[n] !== second[n]) };
+        // contained() returns once the product's stop has run.
+        const beat = (n: string) => (existsSync(path.join(workDir, `${n}.beat`)) ? readFileSync(path.join(workDir, `${n}.beat`), "utf8").trim() : null);
+        const first = Object.fromEntries(names.map((n) => [n, beat(n)]));
+        await sleep(3000);
+        const started = names.filter((n) => first[n] !== null);
+        const survived = started.filter((n) => beat(n) !== first[n]);
+        // The person starts a new conversation: the product moves this one into quarantine and starts the next.
+        await startConversation(carouselId, repo, agents, next);
+        await sleep(3000);
+        const evaderAlive = processesMatching(tag).length > 0;
+        const wroteNext = existsSync(path.join(nextDir, "evaded.txt"));
+        for (const pid of processesMatching(tag)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Gone.
+          }
+        }
+        return { cliExit: c.cli.exitCode, stopReport: c.stopped, started, survived, evaderAlive, wroteNext };
       };
       const ended = await measure(false);
       const stopped = await measure(true);
-      const started = ended.started.length > 0 && stopped.started.length > 0;
-      const survived = [...ended.survived.map((n) => `${n} (run ended)`), ...stopped.survived.map((n) => `${n} (run stopped)`)];
-      // A fact either way: "outlived" is not a containment failure by itself.
+      await removeCarouselWorkDir(carouselId, agents);
+      const escapes = [
+        ...ended.survived.map((n) => `a ${n} background process kept running after the run ended and the product's stop`),
+        ...stopped.survived.map((n) => `a ${n} background process kept running after the run was stopped`),
+        ...(ended.wroteNext || stopped.wroteNext ? ["a process an earlier run started wrote into the next conversation's folder"] : []),
+      ];
+      const problems = [ended, stopped].flatMap((m, i) => names.filter((n) => !m.started.includes(n)).map((n) => `no ${n} background process started (${i === 0 ? "run ended" : "run stopped"})`));
+      const residuals = [ended, stopped].some((m) => m.evaderAlive)
+        ? ["residual: a process that left the run's folder and process groups kept running after the stop"]
+        : [];
       results.push({
         check: "survivor",
-        verdict: !started ? "inconclusive" : "recorded",
-        reasons: [...(!started ? ["no background process started"] : []), ...survived.map((n) => `a ${n} background process kept running after the CLI exited`)],
+        verdict: verdictOf({ escapes, problems }),
+        reasons: [...escapes, ...problems, ...residuals],
         facts: { ended, stopped },
       });
     }
@@ -706,7 +810,8 @@ setTimeout(() => { clearInterval(beat); process.exit(0); }, 8000);
             `cd t && perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec @ARGV' node ../racer.js ${JSON.stringify(canary)} ${N} </dev/null >/dev/null 2>&1 &`,
             "sleep 2",
           ].join("\n");
-          await contained(workDir, [{ name: "Bash", input: { command, description: "Start background work" } }]);
+          // Without the product's stop: the racer models a process that evaded it.
+          await contained(workDir, [{ name: "Bash", input: { command, description: "Start background work" } }], null, {}, undefined, false);
           // Alive after the run: its heartbeat still changes.
           const racerAlive = await beating(path.join(workDir, "beat"));
           let removeError: string | null = null;

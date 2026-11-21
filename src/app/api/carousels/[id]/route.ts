@@ -1,7 +1,7 @@
 import { forgetAgentSessions } from "@/lib/agent-sessions";
 import { removeCarouselWorkDir } from "@/lib/agent-workspace";
 import { designAgentProfileName } from "@/lib/design-agent-profile";
-import { isGenerating } from "@/lib/generation-status";
+import { ALREADY_BEING_DELETED_ERROR, DELETE_WHILE_RUNNING_ERROR, isBeingDeleted, reserveForDeletion } from "@/lib/generation-status";
 import { NextResponse } from "next/server";
 import { getCarousel, updateCarousel, deleteCarousel, carouselResponse } from "@/lib/carousels";
 import { dataErrorResponse } from "@/lib/api-errors";
@@ -67,23 +67,30 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  // A contained run's processes can still write its folder, so the folder is
-  // never removed while the run is live (#227). The legacy profile has no folder.
+  // A contained run's processes can still write its folders, so they are
+  // never removed while the run is live (#227). The delete takes the
+  // carousel's run slot, so a run cannot start while it is under way either
+  // (#241). The legacy profile has no folders and deletes as before.
   const profile = designAgentProfileName();
-  if (profile.ok && profile.name === "contained" && isGenerating(id)) {
-    return NextResponse.json({ error: "A design run is still working on this project. Stop it, then delete the project." }, { status: 409 });
+  const release = profile.ok && profile.name === "contained" ? reserveForDeletion(id) : null;
+  if (profile.ok && profile.name === "contained" && !release) {
+    return NextResponse.json({ error: isBeingDeleted(id) ? ALREADY_BEING_DELETED_ERROR : DELETE_WHILE_RUNNING_ERROR }, { status: 409 });
   }
-  const deleted = await deleteCarousel(id);
-  if (!deleted) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  try {
+    const deleted = await deleteCarousel(id);
+    if (!deleted) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    // The contained Design Agent's folders go with their carousel (#227).
+    await removeCarouselWorkDir(id).catch((err) => {
+      console.error("[carousels] could not remove the design agent's folder", { carouselId: id, message: (err as Error)?.message });
+    });
+    // So are the sessions its contained runs may resume (#237).
+    await forgetAgentSessions(id).catch((err) => {
+      console.error("[carousels] could not forget the design agent's sessions", { carouselId: id, message: (err as Error)?.message });
+    });
+    return NextResponse.json({ success: true });
+  } finally {
+    release?.();
   }
-  // The contained Design Agent's folder goes with its carousel (#227).
-  await removeCarouselWorkDir(id).catch((err) => {
-    console.error("[carousels] could not remove the design agent's folder", { carouselId: id, message: (err as Error)?.message });
-  });
-  // So are the sessions its contained runs may resume (#237).
-  await forgetAgentSessions(id).catch((err) => {
-    console.error("[carousels] could not forget the design agent's sessions", { carouselId: id, message: (err as Error)?.message });
-  });
-  return NextResponse.json({ success: true });
 }

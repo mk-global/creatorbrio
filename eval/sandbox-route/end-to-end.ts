@@ -12,7 +12,7 @@
  *
  *   node --import ./eval/t1/register.mjs eval/sandbox-route/end-to-end.ts [--claude path]
  */
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import http from "node:http";
 import { homedir } from "node:os";
@@ -62,6 +62,7 @@ async function main() {
       taskMessage: "Create one slide.",
       systemPrompt,
       resumeSessionId: null,
+      conversationId: null,
       budgetUsd: null,
       listenerPort,
       appOrigin: app.origin,
@@ -72,9 +73,15 @@ async function main() {
     const tempDir = launch.env.CLAUDE_CODE_TMPDIR;
     const token = launch.env.CREATORBRIO_AGENT_GRANT;
     const exit = await new Promise<number>((resolve) => {
-      const child = execFile(claude, launch.args, { cwd: launch.cwd, env: launch.env as NodeJS.ProcessEnv, timeout: 120_000 }, (error) =>
-        resolve(error ? Number((error as { code?: unknown }).code ?? 1) || 1 : 0)
-      );
+      // Started as the chat route starts it: the leader of its own process group.
+      const child = spawn(claude, launch.args, { cwd: launch.cwd, env: launch.env as NodeJS.ProcessEnv, detached: true, stdio: ["pipe", "ignore", "ignore"] });
+      const timer = setTimeout(() => launch.signal("SIGKILL"), 120_000);
+      if (child.pid !== undefined) launch.track(child.pid, () => launch.signal("SIGTERM"));
+      child.on("error", () => resolve(1));
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        resolve(code ?? 1);
+      });
       child.stdin?.end();
     });
     const toolResult = stand.requests.filter((r) => r.mainLoop).at(-1)?.toolResults.at(-1) ?? "";

@@ -20,9 +20,10 @@
  * - Claude Code's sandbox for the shell, required (`failIfUnavailable`), with
  *   no unsandboxed escape hatch, a strict network allowlist naming only the
  *   run's listener port, the home folder, repository and data folder
- *   read-denied with only the carousel's folder and its staged images
- *   re-allowed, and the CLI's shared per-user temporary folder read- and
- *   write-denied;
+ *   read-denied with only the conversation's folder and its staged images
+ *   re-allowed, the per-user parent of every run's temporary folder
+ *   read-denied with only the run's own folder re-allowed, and the CLI's
+ *   shared per-user temporary folder read- and write-denied;
  * - an explicit environment allowlist, plus the run's own short temporary
  *   folder and the listener token.
  *
@@ -103,12 +104,18 @@ export const AGENT_TOKEN_ENV = "CREATORBRIO_AGENT_GRANT";
 export const MAX_AGENT_TEMP_PATH_BYTES = 44;
 
 export interface ContainedLayout {
-  /** The carousel's own folder: the working folder, and the only place outside the run's temporary folder the agent writes. */
+  /** The conversation's own folder: the working folder, and the only place outside the run's temporary folder the agent writes. */
   workDir: string;
   /** The server-only folder of the images the agent may view: readable, never writable. */
   stagingDir: string;
   /** The run's own temporary folder (`CLAUDE_CODE_TMPDIR`), short enough for the CLI to use it. */
   tempDir: string;
+  /**
+   * The per-user parent of every run's temporary folder and of the Visual
+   * Director's image copies (`serverTempRoot`): read-denied, with only
+   * `tempDir` re-allowed, so a run never reads another run's files.
+   */
+  tempRoot: string;
   homeDir: string;
   repoDir: string;
   dataDir: string;
@@ -157,7 +164,7 @@ export function agentTempDirFits(tempDir: string, uid: number): boolean {
 export function containedSettings(layout: ContainedLayout): Record<string, unknown> {
   // The CLI's shared temporary folder holds the person's other sessions'
   // files; the shell is given the run's own folder instead.
-  const denyRead = [layout.homeDir, layout.repoDir, layout.dataDir, ...sharedCliTempFolders(layout.uid), ...layout.privateDirs];
+  const denyRead = [layout.homeDir, layout.repoDir, layout.dataDir, ...sharedCliTempFolders(layout.uid), layout.tempRoot, ...layout.privateDirs];
   // The login keychains are read inside the calling process, so the folder is
   // denied by name too, even though the home folder already covers it (#220).
   if (layout.platform === "darwin") denyRead.push(path.join(layout.homeDir, "Library", "Keychains"));
@@ -175,7 +182,10 @@ export function containedSettings(layout: ContainedLayout): Record<string, unkno
       },
       filesystem: {
         denyRead: unique(denyRead),
-        allowRead: [layout.workDir, layout.stagingDir],
+        // Each re-allows a folder inside a denied one: the conversation's and
+        // its staged images in the agent folders' root, and the run's own
+        // temporary folder in the per-user parent.
+        allowRead: [layout.workDir, layout.stagingDir, layout.tempDir],
         denyWrite: [...sharedCliTempFolders(layout.uid), layout.stagingDir],
       },
     },
@@ -187,6 +197,7 @@ export function containedSettings(layout: ContainedLayout): Record<string, unkno
       deny: unique([
         readRule(layout.repoDir),
         readRule(layout.dataDir),
+        readRule(layout.tempRoot),
         readRule(path.join(layout.homeDir, ".claude")),
         `Read(/${path.join(layout.homeDir, ".claude.json")})`,
         ...(layout.platform === "darwin" ? [readRule(path.join(layout.homeDir, "Library", "Keychains"))] : []),

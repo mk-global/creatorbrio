@@ -332,6 +332,17 @@ export const APP_EXPECTED_PATTERNS: string[] = [
   "checkout:.next/cache/**",
   "tmp:creatorbrio-director-*/**",
   "tmp:creatorbrio-director-*",
+  // With the contained Design Agent (#241): the per-user parent (`cb` and the
+  // user id in base 36), each server's own folder with its run markers and
+  // the Visual Director's image copies, and the empty removal folder. A run's
+  // own temporary folder, or anything left in removal, is not expected to
+  // outlive its run, so one left behind is still reported.
+  "tmp:cb*",
+  "tmp:cb*/.removed",
+  "tmp:cb*/.s*",
+  "tmp:cb*/.s*/run-*",
+  "tmp:cb*/.s*/creatorbrio-director-*",
+  "tmp:cb*/.s*/creatorbrio-director-*/**",
   "home:.npm/_logs/**",
   "home:.npm/_update-notifier-last-checked",
 ];

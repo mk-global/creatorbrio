@@ -7,7 +7,9 @@ import {
   beginGeneration,
   classifyRunExit,
   getInterruption,
+  isBeingDeleted,
   isGenerating,
+  reserveForDeletion,
   slideFingerprint,
 } from "@/lib/generation-status";
 import {
@@ -298,6 +300,36 @@ describe("generation status", () => {
     expect(fresh.isGenerating(id)).toBe(true);
     await finish("completed");
     expect(fresh.isGenerating(id)).toBe(false);
+  });
+});
+
+describe("a deletion and a run share the carousel's slot (#241)", () => {
+  it("refuses a deletion while a run holds the slot, and takes it once the run has ended", async () => {
+    const { id, finish } = await startRun();
+    expect(reserveForDeletion(id)).toBeNull();
+    expect(isBeingDeleted(id)).toBe(false);
+    await finish("completed");
+    const release = reserveForDeletion(id);
+    expect(release).not.toBeNull();
+    expect(isBeingDeleted(id)).toBe(true);
+    expect(isGenerating(id)).toBe(false);
+    release!();
+    expect(isBeingDeleted(id)).toBe(false);
+  });
+
+  it("refuses a run and a second deletion while a deletion holds the slot, and a late release frees nothing else", async () => {
+    const carousel = await createCarousel("Deleting", "4:5");
+    const release = reserveForDeletion(carousel.id)!;
+    expect(beginGeneration(carousel.id)).toBeNull();
+    expect(reserveForDeletion(carousel.id)).toBeNull();
+    release();
+    const run = beginGeneration(carousel.id);
+    expect(run).not.toBeNull();
+    // Releasing the deletion again does not free the run's slot.
+    release();
+    expect(isGenerating(carousel.id)).toBe(true);
+    await run!.end("not-started");
+    expect(isGenerating(carousel.id)).toBe(false);
   });
 });
 

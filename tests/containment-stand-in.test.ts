@@ -4,6 +4,7 @@
  * and the product arms run the shipped profile unchanged.
  */
 import path from "node:path";
+import { serverTempRoot } from "@/lib/agent-workspace";
 import { afterEach, describe, expect, it } from "vitest";
 import { STAND_IN_API_KEY, standInEnv, startStandIn, type StandIn } from "../eval/sandbox-route/stand-in";
 import {
@@ -104,9 +105,9 @@ describe("the product arms", () => {
   });
 
   it("take their settings from the shipped profile, with the stand-in listener and the arm's folder", () => {
-    const layout = productLayout(WORK, "/tmp/cb-abc123", 40123, LAYOUT, "/home/q", "linux", 1000);
-    expect(layout).toEqual({ workDir: WORK, stagingDir: path.join(path.dirname(WORK), ".staged", path.basename(WORK)), tempDir: "/tmp/cb-abc123", homeDir: "/home/q", repoDir: LAYOUT.repoDir, dataDir: LAYOUT.dataDir, listenerPort: 40123, platform: "linux", uid: 1000, privateDirs: [path.dirname(WORK)] });
-    expect(containedSettings(layout)).toMatchObject({ sandbox: { network: { allowedDomains: ["localhost:40123"] }, filesystem: { allowRead: [WORK, path.join(path.dirname(WORK), ".staged", path.basename(WORK))] } } });
+    const layout = productLayout(WORK, "/tmp/cbrs/a1b", 40123, LAYOUT, "/home/q", "linux", 1000);
+    expect(layout).toEqual({ workDir: WORK, stagingDir: path.join(path.dirname(WORK), ".staged", path.basename(WORK)), tempDir: "/tmp/cbrs/a1b", tempRoot: serverTempRoot("linux", 1000), homeDir: "/home/q", repoDir: LAYOUT.repoDir, dataDir: LAYOUT.dataDir, listenerPort: 40123, platform: "linux", uid: 1000, privateDirs: [path.dirname(WORK)] });
+    expect(containedSettings(layout)).toMatchObject({ sandbox: { network: { allowedDomains: ["localhost:40123"] }, filesystem: { allowRead: [WORK, path.join(path.dirname(WORK), ".staged", path.basename(WORK)), "/tmp/cbrs/a1b"] } } });
   });
 
   it("judge the link and traversal reads by whether the data canary came back", () => {

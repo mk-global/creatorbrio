@@ -6,14 +6,19 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   classify,
+  descendantsOf,
+  lsofProbe,
   main,
   parseLsofCwd,
   parseLsofListeners,
   parsePortArg,
   parseProcNetTcp,
+  parseProcStatLine,
   parsePsLine,
+  parsePsProcesses,
   planStop,
   procProbe,
+  stopDescendants,
 } from "../scripts/stop-server.mjs";
 
 const ROOT = "/work/creatorbrio";
@@ -246,6 +251,96 @@ describe("acting on the decision", () => {
     const sys = fakeSystem([{ pid: 10, port: 3010 }], [{ 10: next() }]);
     expect(await main({ ...sys.options, args: ["3010 && kill 1"] })).toBe(2);
     expect(sys.signalled).toEqual([]);
+  });
+});
+
+describe("the server's descendants", () => {
+  // The server 10 started a worker 11, which started a Design Agent run 12;
+  // the run started 13. Process 20 is unrelated, and 14 belongs to another user.
+  const at = (pid: number, ppid: number, start = "t0", uid = UID) => ({ pid, ppid, uid, start });
+  const table = [at(1, 0), at(10, 1), at(11, 10), at(12, 11), at(13, 12), at(14, 12, "t0", 0), at(20, 1)];
+
+  it("are every process below the server, read from one listing", () => {
+    expect(descendantsOf(10, table).map((p) => p.pid)).toEqual([11, 12, 13, 14]);
+    expect(descendantsOf(20, table)).toEqual([]);
+  });
+
+  it("parse as ps and /proc print them", () => {
+    expect(parsePsProcesses("  10     1   501 Sun Nov 22 01:02:03 2026\nbad\n")).toEqual([at(10, 1, "Sun Nov 22 01:02:03 2026")]);
+    expect(parseProcStatLine("13 (sh (x)) S 12 13 13 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 98765 0")).toEqual({ ppid: 12, start: "98765" });
+  });
+
+  function system(listing: () => ReturnType<typeof at>[], ignoresTerm: number[] = []) {
+    const sent: [number, string][] = [];
+    const dead = new Set<number>();
+    return {
+      sent,
+      probe: { listListeners: () => [], processInfo: () => null, listProcesses: () => listing().filter((p) => !dead.has(p.pid)) },
+      signal: (pid: number, sig: string = "SIGTERM") => {
+        sent.push([pid, sig]);
+        if (sig === "SIGKILL" || !ignoresTerm.includes(pid)) dead.add(pid);
+      },
+      alive: (pid: number) => !dead.has(pid),
+    };
+  }
+
+  it("that outlive the server get SIGTERM, then SIGKILL if they ignore it", async () => {
+    const recorded = descendantsOf(10, table).filter((p) => p.uid === UID);
+    const sys = system(() => table.filter((p) => p.pid !== 10 && p.pid !== 11), [13]);
+    const result = await stopDescendants(recorded, { ...sys, graceMs: 200 });
+    expect(result).toEqual({ stopped: 2, left: 0 });
+    expect(sys.sent).toEqual([
+      [12, "SIGTERM"],
+      [13, "SIGTERM"],
+      [13, "SIGKILL"],
+    ]);
+  });
+
+  it("are never confused with a later process that reused an id", async () => {
+    const recorded = [at(12, 11, "t0")];
+    const sys = system(() => [at(12, 1, "t1")]);
+    expect(await stopDescendants(recorded, { ...sys, graceMs: 100 })).toEqual({ stopped: 0, left: 0 });
+    expect(sys.sent).toEqual([]);
+  });
+
+  it("are stopped by /stop once the server is gone, and left to a server that is still running", async () => {
+    const lines: string[] = [];
+    let serverUp = true;
+    const sys = system(() => table.filter((p) => serverUp || (p.pid !== 10 && p.pid !== 11)));
+    const options = {
+      root: ROOT,
+      uid: UID,
+      args: [],
+      timeoutMs: 100,
+      log: (line: string) => lines.push(line),
+      probe: { ...sys.probe, listListeners: () => [{ pid: 10, port: 3010 }], processInfo: (pid: number) => (pid === 10 ? next() : null) },
+    };
+    // The server ignores the stop: nothing below it is touched.
+    expect(await main({ ...options, alive: () => true, signal: (pid: number, sig?: NodeJS.Signals) => sys.signal(pid, sig) })).toBe(1);
+    expect(sys.sent).toEqual([[10, "SIGTERM"]]);
+    sys.sent.length = 0;
+    // The server stops, its worker with it; the run and what it started outlived them.
+    const code = await main({
+      ...options,
+      alive: (pid: number) => (pid === 10 ? serverUp : sys.alive(pid)),
+      signal: (pid: number, sig?: NodeJS.Signals) => (pid === 10 ? (serverUp = false) : sys.signal(pid, sig)),
+    });
+    expect(code).toBe(0);
+    expect(sys.sent).toEqual([
+      [12, "SIGTERM"],
+      [13, "SIGTERM"],
+    ]);
+    expect(lines.join("\n")).toMatch(/Stopped 2 process\(es\) the server had started/);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("the process listing on this system", () => {
+  it("lists this process under its parent, with a start time", () => {
+    const listing = (process.platform === "linux" ? procProbe : lsofProbe).listProcesses();
+    const self = listing.find((p) => p.pid === process.pid);
+    expect(self).toMatchObject({ ppid: process.ppid, uid: process.getuid?.() });
+    expect(self?.start).toBeTruthy();
+    expect(descendantsOf(process.ppid, listing).some((p) => p.pid === process.pid)).toBe(true);
   });
 });
 

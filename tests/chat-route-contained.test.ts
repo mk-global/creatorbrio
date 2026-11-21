@@ -1,6 +1,6 @@
 /**
  * The contained Design Agent through the real chat route (#156, #186, #226,
- * #227, #228), with a stand-in for the CLI. The stand-in does what the
+ * #227, #228, #241), with a stand-in for the CLI. The stand-in does what the
  * contained agent can: it reads the listener's address from its prompt and
  * its token from its environment, saves slides through the listener, and
  * tries what it must not. The listener forwards to the app's real carousel
@@ -12,9 +12,11 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { serverTempRoot } from "@/lib/agent-workspace";
 import type { BrandConfig } from "@/types/brand";
 import { CHAT_ERROR_MESSAGES, createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
-import { isAgentSessionBound } from "@/lib/agent-sessions";
+import { boundConversation } from "@/lib/agent-sessions";
+import { CAROUSEL_BEING_DELETED_ERROR, reserveForDeletion } from "@/lib/generation-status";
 import { stubDirector } from "./helpers/stub-director";
 import { startAppRoutesServer, type AppRoutesServer } from "./helpers/app-routes-server";
 import net from "node:net";
@@ -78,7 +80,13 @@ const call = (method, target, body) => new Promise((resolve) => {
 });
 (async () => {
   out({ type: "system", subtype: "init", session_id: "${SESSION}" });
-  if (scenario === "hang") { setInterval(() => {}, 1000); return; }
+  if (scenario === "hang") {
+    // Something the agent started in the background, in a session of its own, that ignores SIGTERM.
+    const child = require("node:child_process").spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", cwd: process.cwd() });
+    rec("child-pid", String(child.pid));
+    setInterval(() => {}, 1000);
+    return;
+  }
   const results = { slides: [] };
   for (let i = 1; i <= 3; i++) results.slides.push(await call("POST", "/api/carousels/" + id + "/slides", { html: "<h1>Slide " + i + "</h1>" }));
   const other = fs.readFileSync(path.join(dir, "other"), "utf8");
@@ -154,10 +162,12 @@ afterEach(async () => {
   director.restore();
   creativeRunDeps.retrieveSources = originalRetrieve;
   vi.restoreAllMocks();
-  try {
-    process.kill(Number(await readFile(path.join(fakeDir, "pid"), "utf8")), "SIGKILL");
-  } catch {
-    // Already exited, or never started.
+  for (const name of ["pid", "child-pid"]) {
+    try {
+      process.kill(Number(await readFile(path.join(fakeDir, name), "utf8")), "SIGKILL");
+    } catch {
+      // Already exited, or never started.
+    }
   }
   process.chdir(originalCwd);
   delete process.env.CREATORBRIO_DESIGN_AGENT_PROFILE;
@@ -260,18 +270,26 @@ describe("a contained design run", () => {
     const argv = await recordedJson<string[]>("argv.json");
     expect(argv).toEqual(expect.arrayContaining(["--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--permission-mode", "dontAsk"]));
     expect(argv.join(" ")).not.toMatch(/WebFetch|bypassPermissions/);
-    expect(await recorded("cwd")).toBe(path.join(agentsRoot, own.id));
-    // Every carousel's folder is denied to the shell but its own, and its staged images are read-only.
+    // A folder of its own for this conversation, under the carousel's (#241).
+    const cwd = await recorded("cwd");
+    expect(path.dirname(cwd)).toBe(path.join(agentsRoot, own.id));
+    expect(path.basename(cwd)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    // Every carousel's folder is denied to the shell but its own, its staged
+    // images are read-only, and of the server's temporary folders only the
+    // run's own is readable.
     const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]);
-    expect(settings.sandbox.filesystem.denyRead).toContain(agentsRoot);
-    expect(settings.sandbox.filesystem.allowRead).toEqual([path.join(agentsRoot, own.id), path.join(agentsRoot, ".staged", own.id)]);
-
     const env = await recordedJson<Record<string, string>>("env.json");
+    expect(settings.sandbox.filesystem.denyRead).toContain(agentsRoot);
+    expect(settings.sandbox.filesystem.denyRead).toContain(serverTempRoot());
+    expect(settings.sandbox.filesystem.allowRead).toEqual([cwd, path.join(agentsRoot, own.id, ".staged", path.basename(cwd)), env.CLAUDE_CODE_TMPDIR]);
+
     expect(env.SYNTHETIC_APP_SECRET).toBeUndefined();
     expect(env.CREATORBRIO_DESIGN_AGENT_PROFILE).toBeUndefined();
     expect(env.CREATORBRIO_AGENT_GRANT).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(env.DISABLE_AUTOUPDATER).toBe("1");
-    expect(env.CLAUDE_CODE_TMPDIR).toMatch(/^(\/private)?\/tmp\/cb-/);
+    // Directly in the per-user parent (here this test file's injected one), named with three characters.
+    expect(path.dirname(env.CLAUDE_CODE_TMPDIR)).toBe(serverTempRoot());
+    expect(path.basename(env.CLAUDE_CODE_TMPDIR)).toMatch(/^[0-9a-z]{3}$/);
     // The run's temporary folder is gone once the run has ended.
     await expect(stat(env.CLAUDE_CODE_TMPDIR)).rejects.toThrow();
   });
@@ -324,9 +342,23 @@ describe("a contained design run", () => {
     expect(await getCarousel(own.id)).not.toBeNull();
     await stat(path.join(agentsRoot, own.id));
 
+    const childPid = Number(await recorded("child-pid"));
+    const running = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(running(childPid)).toBe(true);
+
     await reader.cancel();
     expect(await until(async () => (await callListener(port, token, `/api/carousels/${own.id}`)) === 401)).toBe(true);
-    expect((await remove()).status).toBe(200);
+    // The stop reached what the agent started in a session of its own, which ignored SIGTERM (#241).
+    expect(await until(async () => !running(childPid))).toBe(true);
+    // The run holds its slot until everything it started has stopped, then the carousel can go.
+    expect(await until(async () => (await remove()).status === 200)).toBe(true);
     await expect(stat(path.join(agentsRoot, own.id))).rejects.toThrow();
     for (const name of await readdir(path.join(workdir, "data"))) {
       expect(await readFile(path.join(workdir, "data", name), "utf8").catch(() => "")).not.toContain(token);
@@ -341,20 +373,60 @@ describe("a contained design run", () => {
     expect(await readdir(agentsRoot)).not.toContain(missing);
   });
 
-  it("starts a new conversation from an empty folder and keeps it when resuming", async () => {
+  it("starts each conversation in a new folder, keeps it when resuming, and moves the previous one away whole (#241)", async () => {
     await play("success");
     const { own } = await newCarousels();
     await postChat({ carouselId: own.id });
-    const folder = path.join(agentsRoot, own.id);
-    expect(await readdir(folder)).toContain("notes.txt");
+    const first = await recorded("cwd");
+    expect(await readdir(first)).toContain("notes.txt");
 
-    await writeFile(path.join(folder, "earlier.txt"), "from the last turn");
+    await writeFile(path.join(first, "earlier.txt"), "from the last turn");
     await postChat({ carouselId: own.id, sessionId: SESSION });
-    expect(await readdir(folder)).toContain("earlier.txt");
+    expect(await recorded("cwd")).toBe(first);
+    expect(await readdir(first)).toContain("earlier.txt");
     expect(await recordedJson<string[]>("argv.json")).toEqual(expect.arrayContaining(["--resume", SESSION]));
 
     await postChat({ carouselId: own.id, sessionId: null });
-    expect(await readdir(folder)).not.toContain("earlier.txt");
+    const second = await recorded("cwd");
+    expect(second).not.toBe(first);
+    expect(await readdir(second)).not.toContain("earlier.txt");
+    await expect(stat(first)).rejects.toThrow();
+    expect(await readdir(path.join(agentsRoot, own.id))).toEqual([path.basename(second)]);
+    expect(await readdir(path.join(agentsRoot, ".removed"))).toEqual([]);
+    expect(await boundConversation(own.id, SESSION)).toBe(path.basename(second));
+  });
+
+  it("starts afresh rather than recreating a resumed conversation's folder that is gone (#241)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    await postChat({ carouselId: own.id });
+    const folder = await recorded("cwd");
+    await rm(folder, { recursive: true });
+    await rm(path.join(fakeDir, "pid"), { force: true });
+    const { events } = await postChat({ carouselId: own.id, sessionId: SESSION });
+    expect(events).toContainEqual({ type: "error", code: "session_not_found", message: CHAT_ERROR_MESSAGES.session_not_found });
+    await expect(recorded("pid")).rejects.toThrow();
+    await expect(stat(folder)).rejects.toThrow();
+  });
+
+  it("does not start while the carousel is being deleted, and starts once the deletion has let go (#241)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const release = reserveForDeletion(own.id);
+    expect(release).not.toBeNull();
+    try {
+      const refused = await postChat({ carouselId: own.id });
+      expect(refused.status).toBe(409);
+      expect(JSON.parse(refused.raw)).toEqual({ error: CAROUSEL_BEING_DELETED_ERROR });
+      await expect(recorded("pid")).rejects.toThrow();
+      // A second deletion is refused too, in the same style.
+      const again = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), { params: Promise.resolve({ id: own.id }) });
+      expect(again.status).toBe(409);
+    } finally {
+      release!();
+    }
+    const { events } = await postChat({ carouselId: own.id });
+    expect(events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
   });
 
   it("resumes only a session the server bound to the same carousel, and refuses any other before the agent starts (#237)", async () => {
@@ -386,7 +458,7 @@ describe("a contained design run", () => {
     await postChat({ carouselId: own.id });
     const folder = path.join(agentsRoot, own.id);
     await stat(folder);
-    const staged = path.join(agentsRoot, ".staged", own.id);
+    const staged = path.join(folder, ".staged", path.basename(await recorded("cwd")));
     await mkdir(staged, { recursive: true });
     await writeFile(path.join(staged, "a1.png"), "PNG");
     const res = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), {
@@ -397,7 +469,7 @@ describe("a contained design run", () => {
     await expect(stat(staged)).rejects.toThrow();
     expect(await readdir(path.join(agentsRoot, ".removed"))).toEqual([]);
     // Its sessions are forgotten with it.
-    expect(await isAgentSessionBound(own.id, SESSION)).toBe(false);
+    expect(await boundConversation(own.id, SESSION)).toBeNull();
   });
 
   it("creates nothing outside the data folder when the legacy profile deletes a carousel", async () => {

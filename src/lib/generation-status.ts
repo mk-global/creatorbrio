@@ -9,7 +9,10 @@ import type { Carousel } from "@/types/carousel";
  *
  * A carousel has at most one active run. `/api/chat` begins it before doing
  * any work for the request and ends it exactly once, however the request
- * ends; a second request while one is active is refused. While a run is
+ * ends; a second request while one is active is refused. Deleting a carousel
+ * whose contained Design Agent may have folders takes the same slot
+ * (`reserveForDeletion`), so a delete is refused while a run holds it and a
+ * run cannot begin while a delete holds it (#241). While a run is
  * active the carousel is "generating", which is held in process memory: a
  * server restart kills every subprocess, so nothing can stay generating
  * across one. Memory lives on `globalThis` because Next.js may bundle this
@@ -94,6 +97,8 @@ async function currentFingerprint(carouselId: string): Promise<string | null> {
 interface ActiveRun {
   /** Resolves once the run's start, with its baseline, is saved. */
   started: Promise<void>;
+  /** A deletion holding the carousel's slot; absent for a run, including one from an earlier module version. */
+  deleting?: true;
 }
 
 // Keeps the product's former name: a running server that reloads this module
@@ -245,7 +250,29 @@ async function recoverAbandonedRun(carouselId: string): Promise<void> {
 
 /** True while a run for this carousel has not ended. */
 export function isGenerating(carouselId: string): boolean {
-  return registry().has(carouselId);
+  const active = registry().get(carouselId);
+  return active !== undefined && !active.deleting;
+}
+
+/** True while a deletion holds the carousel's slot. */
+export function isBeingDeleted(carouselId: string): boolean {
+  return registry().get(carouselId)?.deleting === true;
+}
+
+/**
+ * Takes the carousel's slot for a deletion, or returns null, changing
+ * nothing, while a run (or another deletion) holds it. The check and the
+ * reservation happen together, like `beginGeneration`. Nothing is recorded:
+ * the returned function releases the slot, and releasing again has no effect.
+ */
+export function reserveForDeletion(carouselId: string): (() => void) | null {
+  const runs = registry();
+  if (runs.has(carouselId)) return null;
+  const active: ActiveRun = { started: Promise.resolve(), deleting: true };
+  runs.set(carouselId, active);
+  return () => {
+    if (runs.get(carouselId) === active) runs.delete(carouselId);
+  };
 }
 
 /**
@@ -370,6 +397,15 @@ export async function readCreativeRuns(): Promise<Record<string, CreativeRunReco
 /** What the chat route answers when the carousel already has an active run. */
 export const GENERATION_ALREADY_RUNNING_ERROR =
   "A generation is already running for this carousel. Wait for it to finish, or stop it, then send your message again.";
+
+/** What the chat route answers while the carousel is being deleted. */
+export const CAROUSEL_BEING_DELETED_ERROR = "This project is being deleted, so a design cannot start for it.";
+
+/** What the delete route answers while the carousel's contained run is live. */
+export const DELETE_WHILE_RUNNING_ERROR = "A design run is still working on this project. Stop it, then delete the project.";
+
+/** What the delete route answers while another deletion of the carousel is in progress. */
+export const ALREADY_BEING_DELETED_ERROR = "This project is already being deleted.";
 
 /** What the export route answers while a run is still writing slides. */
 export const GENERATION_IN_PROGRESS_ERROR =

@@ -279,7 +279,8 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/video-renders/` | Exported videos, their captions and manifests |
 | `data/video-auth/`, `data/video-studio.key` | Paired browser sessions and the local key the Video Studio API uses; keep them private |
 | `public/uploads/` | Uploaded logos and reference images, and generated images |
-| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's working folder and its staged copies of reference images (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); `/reset` does not remove it |
+| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's folder for its current conversation and its staged copies of reference images (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); a new conversation replaces the previous folder; `/reset` does not remove it |
+| `/tmp/cb<user id in base 36>/` (under `/private/tmp/` on macOS) | Only with the contained Design Agent profile: each run's temporary folder and the Visual Director's image copies, private to you; removed after each run, and leftovers at the next server start |
 | `.env.local` | Local settings such as `CLAUDE_CLI_PATH`, the time and spending limits above, and `IMAGE_SERVICE_URL` (loopback addresses only) |
 
 Chat transcripts, and the session ID that lets the next message continue the conversation, are kept in your browser's local storage for each carousel; Claude Code also keeps its own record of each session.
@@ -296,7 +297,7 @@ Inside Claude Code:
 | Command | What it does |
 |---|---|
 | `/start [port]` | Set up if needed, start the server in the background and open the browser. Safe to re-run. |
-| `/stop [port]` | Stop this checkout's CreatorBrio server, whatever its port. Other applications and other checkouts' servers are never stopped. macOS and Linux. |
+| `/stop [port]` | Stop this checkout's CreatorBrio server, whatever its port, and any process it started that outlives it. Other applications and other checkouts' servers are never stopped. macOS and Linux. |
 | `/reset` | Delete local carousels, templates, brands, style presets and uploads, then re-seed defaults. Asks first. |
 | `/doctor` | Check Node, the Claude CLI, dependencies, data files and port 3000. |
 

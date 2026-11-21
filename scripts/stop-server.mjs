@@ -22,6 +22,13 @@
 // if it matches, and otherwise says what is there and leaves it running.
 // Nothing is recorded at start, so there is no state to go stale.
 //
+// The server's descendants (a Design Agent run and what it started) are
+// listed before the server is signalled and stopped after it, if any outlived
+// it: SIGTERM, then SIGKILL after a bounded wait. Each is identified by its
+// process id and start time, so a process id reused meanwhile is never hit.
+// The server stops its own contained runs when it is signalled (#241); this
+// covers a server that could not.
+//
 // Usage: node scripts/stop-server.mjs [port]
 // Exit status: 0 stopped or nothing to stop, 1 refused or ambiguous, 2 usage.
 
@@ -43,6 +50,7 @@ const NEXT_SERVER_COMMAND =
   /^(next-server(\s|$)|\S*\bnode(\.exe)?\s+\S*[\\/]next\s+(dev|start)(\s|$))/;
 
 const STOP_TIMEOUT_MS = 10_000;
+const DESCENDANT_GRACE_MS = 3_000;
 
 // ---------------------------------------------------------------------------
 // Reading the system. Each probe answers two questions: which processes listen
@@ -79,6 +87,40 @@ export function parseLsofListeners(output) {
 export function parsePsLine(output) {
   const match = output.trim().match(/^(\d+)\s+(.*)$/);
   return match ? { uid: Number(match[1]), command: match[2].trim() } : null;
+}
+
+/** Reads `ps -A -o pid=,ppid=,uid=,lstart=` output; the start time identifies a process with its id. */
+export function parsePsProcesses(output) {
+  const out = [];
+  for (const line of output.split("\n")) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S.*?)\s*$/);
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), uid: Number(m[3]), start: m[4] });
+  }
+  return out;
+}
+
+/** Reads one `/proc/<pid>/stat` line: the parent and the start time (field 22). */
+export function parseProcStatLine(text) {
+  const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+  const ppid = Number(fields[1]);
+  return Number.isInteger(ppid) && fields[19] !== undefined ? { ppid, start: fields[19] } : null;
+}
+
+/** Every process descended from `root`, from one listing; never `root` itself. */
+export function descendantsOf(root, processes) {
+  const children = new Map();
+  for (const p of processes) children.set(p.ppid, [...(children.get(p.ppid) ?? []), p]);
+  const found = [];
+  const seen = new Set([root]);
+  const queue = [...(children.get(root) ?? [])];
+  while (queue.length > 0) {
+    const p = queue.shift();
+    if (seen.has(p.pid)) continue;
+    seen.add(p.pid);
+    found.push(p);
+    queue.push(...(children.get(p.pid) ?? []));
+  }
+  return found;
 }
 
 /** Reads `lsof -a -p <pid> -d cwd -Fn` output: the `n` line is the directory. */
@@ -125,6 +167,9 @@ export const lsofProbe = {
     if (!ps) return null;
     const cwd = parseLsofCwd(run("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]));
     return { ...ps, cwd: cwd && realDir(cwd) };
+  },
+  listProcesses() {
+    return parsePsProcesses(run("ps", ["-A", "-o", "pid=,ppid=,uid=,lstart="]));
   },
 };
 
@@ -180,6 +225,20 @@ export const procProbe = {
     } catch {
       return null;
     }
+  },
+  listProcesses() {
+    const out = [];
+    for (const entry of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = parseProcStatLine(fs.readFileSync(`/proc/${entry}/stat`, "utf-8"));
+        const uid = Number(fs.readFileSync(`/proc/${entry}/status`, "utf-8").match(/^Uid:\s+(\d+)/m)?.[1]);
+        if (stat && Number.isInteger(uid)) out.push({ pid: Number(entry), ...stat, uid });
+      } catch {
+        // Gone, or not ours to inspect.
+      }
+    }
+    return out;
   },
 };
 
@@ -292,13 +351,26 @@ export function parsePortArg(arg) {
   return port >= 1 && port <= 65535 ? port : NaN;
 }
 
+/**
+ * @typedef {{ pid: number, ppid: number, uid: number, start: string }} ListedProcess
+ * @typedef {{
+ *   listListeners(): { pid: number, port: number }[],
+ *   processInfo(pid: number): { uid: number, command: string, cwd: string | null } | null,
+ *   listProcesses?: () => ListedProcess[],
+ * }} Probe
+ * @param {{
+ *   args?: string[], root?: string, uid?: number, probe?: Probe,
+ *   signal?: (pid: number, sig?: NodeJS.Signals) => void, alive?: (pid: number) => boolean,
+ *   timeoutMs?: number, log?: (line: string) => void,
+ * }} [options]
+ */
 export async function main({
   args = process.argv.slice(2),
   root = ROOT,
   uid = process.getuid?.(),
   probe = process.platform === "linux" ? procProbe : lsofProbe,
-  signal = (pid) => {
-    process.kill(pid, "SIGTERM");
+  signal = (pid, sig = /** @type {NodeJS.Signals} */ ("SIGTERM")) => {
+    process.kill(pid, sig);
   },
   alive = isAlive,
   timeoutMs = STOP_TIMEOUT_MS,
@@ -326,6 +398,11 @@ export async function main({
     log(plan.message);
     return plan.action === "none" ? 0 : 1;
   }
+
+  // The server's descendants, listed while it still runs: once it exits they
+  // belong to another parent and cannot be told apart.
+  const listing = probe.listProcesses?.() ?? [];
+  const descendants = plan.pids.flatMap((pid) => descendantsOf(pid, listing)).filter((p) => p.uid === uid);
 
   // Check each process again right before signalling it, so a PID that has
   // exited, or been reused by something else since it was listed, is never hit.
@@ -357,6 +434,12 @@ export async function main({
   }
   const ports = plan.ports.map((p) => `:${p}`).join(", ");
   const still = signalled.filter(alive);
+  // Only once the server is gone: until then its descendants are its own to stop.
+  if (still.length === 0) {
+    const leftover = await stopDescendants(descendants, { probe, signal, alive });
+    if (leftover.stopped > 0) log(`Stopped ${leftover.stopped} process(es) the server had started that outlived it.`);
+    if (leftover.left > 0) log(`${leftover.left} process(es) the server had started are still running after SIGKILL.`);
+  }
   if (still.length > 0) {
     log(
       `Asked the server on ${ports} to stop (PID ${signalled.join(", ")}), ` +
@@ -366,6 +449,40 @@ export async function main({
   }
   log(`Stopped the CreatorBrio server on ${ports} (PID ${signalled.join(", ")}).${plan.message}`);
   return 0;
+}
+
+/**
+ * Stops the recorded descendants still running as the same processes (same
+ * id and start time): SIGTERM, a bounded wait, then SIGKILL.
+ * @param {ListedProcess[]} recorded
+ * @param {{ probe: Probe, signal: (pid: number, sig?: NodeJS.Signals) => void, alive: (pid: number) => boolean, graceMs?: number }} options
+ */
+export async function stopDescendants(recorded, { probe, signal, alive, graceMs = DESCENDANT_GRACE_MS }) {
+  if (recorded.length === 0) return { stopped: 0, left: 0 };
+  const same = () => {
+    const now = new Map((probe.listProcesses?.() ?? []).map((p) => [p.pid, p.start]));
+    return recorded.filter((p) => now.get(p.pid) === p.start && alive(p.pid));
+  };
+  const targets = same();
+  if (targets.length === 0) return { stopped: 0, left: 0 };
+  for (const p of targets) {
+    try {
+      signal(p.pid, "SIGTERM");
+    } catch {
+      // Gone meanwhile.
+    }
+  }
+  const deadline = Date.now() + graceMs;
+  while (same().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+  for (const p of same()) {
+    try {
+      signal(p.pid, "SIGKILL");
+    } catch {
+      // Gone meanwhile.
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return { stopped: targets.length, left: same().length };
 }
 
 const invokedDirectly =

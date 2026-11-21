@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { copyFile, mkdtemp, realpath, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crossSpawn from "cross-spawn";
@@ -27,7 +27,8 @@ import {
 } from "./director-plan";
 import { confineUploadedPng } from "./reference-images";
 import { untrustedPageContent } from "./source-text";
-import type { ExecutionProfile } from "./design-agent-profile";
+import { designAgentProfileName, type ExecutionProfile } from "./design-agent-profile";
+import { createServerTempDir, removeServerTempDir } from "./agent-workspace";
 
 /**
  * The Visual Director: one separate, stateless Claude CLI invocation per
@@ -506,26 +507,46 @@ export function directorArgs(workDir: string, budgetUsd: number | null): string[
   ];
 }
 
+/**
+ * The Director's own folder for the images it views. Outside the repository,
+ * so its CLAUDE.md is never loaded. With the contained Design Agent it is
+ * in the server's folder in the per-user parent that agent's shell cannot read, on every
+ * platform, so one run's shell never reads another's image copies (#241);
+ * with the legacy agent it stays in the system's temporary folder.
+ */
+async function createDirectorDir(): Promise<string> {
+  const profile = designAgentProfileName();
+  if (profile.ok && profile.name === "contained" && process.platform !== "win32") {
+    return createServerTempDir("creatorbrio-director-", process.getuid?.() ?? 0);
+  }
+  return mkdtemp(path.join(os.tmpdir(), "creatorbrio-director-"));
+}
+
 async function prepareWorkDir(request: DirectorRequest) {
-  // Outside the repository, so its CLAUDE.md is never loaded.
-  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "creatorbrio-director-")));
-  const references = new Map<string, string>();
-  for (const [i, ref] of request.references.entries()) {
-    const name = `reference-${i + 1}.png`;
-    await copyFile(ref.absPath, path.join(dir, name));
-    references.set(ref.id, name);
+  const dir = await realpath(await createDirectorDir());
+  try {
+    const references = new Map<string, string>();
+    for (const [i, ref] of request.references.entries()) {
+      const name = `reference-${i + 1}.png`;
+      await copyFile(ref.absPath, path.join(dir, name));
+      references.set(ref.id, name);
+    }
+    const assets = new Map<string, string>();
+    let n = 0;
+    for (const { asset, intact } of request.assets) {
+      if (!intact) continue;
+      const confined = await confineUploadedPng(asset.url);
+      if (!confined.ok) continue;
+      const name = `asset-${++n}.png`;
+      await copyFile(confined.absPath, path.join(dir, name));
+      assets.set(asset.id, name);
+    }
+    return { dir, references, assets };
+  } catch (err) {
+    // A copy that fails leaves no folder behind.
+    await removeServerTempDir(dir).catch(() => {});
+    throw err;
   }
-  const assets = new Map<string, string>();
-  let n = 0;
-  for (const { asset, intact } of request.assets) {
-    if (!intact) continue;
-    const confined = await confineUploadedPng(asset.url);
-    if (!confined.ok) continue;
-    const name = `asset-${++n}.png`;
-    await copyFile(confined.absPath, path.join(dir, name));
-    assets.set(asset.id, name);
-  }
-  return { dir, references, assets };
 }
 
 interface CliOutcome {
@@ -660,7 +681,7 @@ export async function runDirector(
     } catch {
       outcome = { ok: false, code: "start_failed", usage: usage(null) };
     } finally {
-      if (work) await rm(work.dir, { recursive: true, force: true }).catch(() => {});
+      if (work) await removeServerTempDir(work.dir).catch(() => {});
     }
   }
 
