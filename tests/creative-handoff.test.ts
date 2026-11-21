@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { HANDOFF_END, HANDOFF_START, buildDesignMessage, buildHandoff, checkConformance, type ResolvedImage } from "@/lib/creative-handoff";
+import { HANDOFF_END, HANDOFF_START, buildContinuationMessage, buildDesignMessage, buildHandoff, checkConformance, type ResolvedImage } from "@/lib/creative-handoff";
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
 import type { ReadyPlan } from "@/lib/director-plan";
 import type { ResolvedReferenceImage } from "@/types/carousel";
@@ -150,6 +150,32 @@ describe("linked pages in the design message (#228)", () => {
     expect(message.match(/\[truncated\]/g)).toHaveLength(3);
     expect(message).not.toContain("�");
     expect(message.startsWith(longest)).toBe(true);
+  });
+
+  it("leaves room for a Continue in a new conversation, so linked pages never make it overflow the argument", async () => {
+    const { MAX_DESIGN_MESSAGE_BYTES } = await import("@/lib/creative-handoff");
+    const { MAX_CHAT_MESSAGE_LENGTH } = await import("@/lib/chat-stream");
+    // The plan at its limits: 20 slides, each visual intent 200 characters of a three-byte script.
+    const slides = Array.from({ length: 20 }, (_, i) => ({ index: i + 1, visualIntent: "夜".repeat(200), treatment: "typography" as const, assetRefs: [], styleReferenceIds: [] }));
+    const big = plan({ slideCount: 20, slides, assets: [] });
+    const pages = [1, 2, 3].map((i) => page("語".repeat(20_000), i));
+    const saved = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `0b9e2f4c-1d3a-4e5f-8a7b-${String(i).padStart(12, "0")}`, order: i, notes: "注".repeat(200) }));
+    const continueAfter = (message: string, withPages: boolean, n: number) =>
+      Buffer.byteLength(
+        buildContinuationMessage({
+          plan: big,
+          slides: saved(n),
+          originalTask: buildDesignMessage(message, { plan: big, assets: new Map(), references: [], sources: withPages ? pages.map((p) => p.url) : [], pages: withPages ? pages : undefined }),
+          resumingSession: false,
+        })
+      );
+    for (const n of [0, 10, 19]) {
+      // A long request that fits: its Continue still fits once pages fill their budget.
+      expect(continueAfter("日".repeat(10_000), true, n)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+      // The longest request leaves pages no text, so they add only their delimiters.
+      const longest = "日".repeat(MAX_CHAT_MESSAGE_LENGTH);
+      expect(continueAfter(longest, true, n) - continueAfter(longest, false, n)).toBeLessThan(2048);
+    }
   });
 
   it("leaves pages that fit unchanged", () => {

@@ -102,7 +102,7 @@ if (profile === "legacy") {
     } catch {
       // Unknown kernel: treated as ordinary Linux.
     }
-    if (/microsoft|wsl/i.test(kernel)) problems.push("not qualified on WSL2");
+    if (/microsoft|wsl/i.test(kernel)) problems.push("not tested on WSL2");
     for (const program of ["bwrap", "socat"]) {
       if (!tryExec(`command -v ${program}`)) problems.push(`${program === "bwrap" ? "bubblewrap" : program} is not installed`);
     }
@@ -113,7 +113,7 @@ if (profile === "legacy") {
   if (problems.length > 0) {
     add(FAIL, "Design Agent", `contained profile cannot run: ${problems.join("; ")}`, true);
   } else if (version !== QUALIFIED_CLI_VERSION) {
-    add(WARN, "Design Agent", `contained, on Claude Code ${version}; only ${QUALIFIED_CLI_VERSION} is qualified`);
+    add(WARN, "Design Agent", `contained, on Claude Code ${version}; only ${QUALIFIED_CLI_VERSION} has been tested`);
   } else {
     add(CHECK, "Design Agent", `contained, on Claude Code ${version}`);
   }

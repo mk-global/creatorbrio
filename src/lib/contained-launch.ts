@@ -5,7 +5,7 @@
  * profile. `finish` always revokes the token and removes the temporary folder,
  * however the run ends.
  */
-import { realpath } from "node:fs/promises";
+import { realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { issueAgentToken } from "@/lib/agent-listener";
@@ -16,6 +16,7 @@ import {
   ensureCarouselWorkDir,
   removeRunTempDir,
   stageUploadsForAgent,
+  stagingDirFor,
 } from "@/lib/agent-workspace";
 import { containedArgs, containedEnv, privateReadDirs, type ContainedLayout } from "@/lib/design-agent-profile";
 
@@ -50,14 +51,18 @@ export async function prepareContainedLaunch(options: {
   const workDir = await ensureCarouselWorkDir(options.carouselId, repoDir);
   // A new conversation starts from an empty folder: the server's side of the
   // person clearing the chat. A resumed one keeps its folder.
-  if (!options.resumeSessionId) await emptyCarouselWorkDir(workDir);
+  const stagingDir = stagingDirFor(workDir);
+  if (!options.resumeSessionId) {
+    await emptyCarouselWorkDir(workDir);
+    await rm(stagingDir, { recursive: true, force: true });
+  }
   const tempDir = await createRunTempDir(uid);
   let revoke: (() => void) | null = null;
   try {
-    // The prompt and the task name uploads by absolute path; the agent may read
-    // only its own folder, so both name the copies staged there instead.
+    // The prompt and the task name uploads by absolute path; the agent cannot
+    // read the repository, so both name the copies staged for it instead.
     const spellings = [uploadsDir, await realpath(uploadsDir).catch(() => uploadsDir)];
-    const [systemPrompt, taskMessage] = await stageUploadsForAgent([options.systemPrompt, options.taskMessage], spellings, workDir);
+    const [systemPrompt, taskMessage] = await stageUploadsForAgent([options.systemPrompt, options.taskMessage], spellings, stagingDir);
     const issued = issueAgentToken({ carouselId: options.carouselId, appOrigin: options.appOrigin, ttlMs: options.tokenTtlMs });
     revoke = issued.revoke;
     const privateDirs = privateReadDirs({
@@ -72,6 +77,7 @@ export async function prepareContainedLaunch(options: {
     }
     const layout: ContainedLayout = {
       workDir,
+      stagingDir,
       tempDir,
       homeDir: await realpath(os.homedir()),
       repoDir,
@@ -90,12 +96,19 @@ export async function prepareContainedLaunch(options: {
       finish: async () => {
         revoke?.();
         revoke = null;
-        await removeRunTempDir(tempDir).catch(() => {});
+        await removeRunTempDir(tempDir, path.dirname(workDir)).catch(logLeftBehind(tempDir));
       },
     };
   } catch (err) {
     revoke?.();
-    await removeRunTempDir(tempDir).catch(() => {});
+    await removeRunTempDir(tempDir, path.dirname(workDir)).catch(logLeftBehind(tempDir));
     throw err;
   }
+}
+
+/** A run's temporary folder that could not be removed stays on disk; it is reported, never silently left. */
+function logLeftBehind(dir: string) {
+  return (err: unknown) => {
+    console.error("[design-agent] could not remove a run's temporary folder", { folder: path.basename(dir), code: (err as NodeJS.ErrnoException)?.code ?? null });
+  };
 }

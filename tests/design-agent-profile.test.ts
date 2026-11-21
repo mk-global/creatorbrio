@@ -16,6 +16,7 @@ import { DIRECTOR_PROFILE, directorArgs } from "@/lib/visual-director";
 
 const LAYOUT: ContainedLayout = {
   workDir: "/home/designer/.creatorbrio/design-agent/2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89",
+  stagingDir: "/home/designer/.creatorbrio/design-agent/.staged/2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89",
   tempDir: "/tmp/cb-Ab12Cd",
   homeDir: "/home/designer",
   repoDir: "/srv/creatorbrio",
@@ -62,7 +63,7 @@ describe("contained profile arguments", () => {
     expect(flagValues(argv, "--model")).toEqual(["claude-opus-5-5"]);
     expect(flagValues(argv, "--effort")).toEqual(["medium"]);
     expect(flagValues(argv, "--tools")).toEqual(["Bash", "Read"]);
-    expect(flagValues(argv, "--allowedTools")).toEqual(["Bash", `Read(/${LAYOUT.workDir}/**)`]);
+    expect(flagValues(argv, "--allowedTools")).toEqual(["Bash", `Read(/${LAYOUT.workDir}/**)`, `Read(/${LAYOUT.stagingDir}/**)`]);
     expect(flagValues(argv, "--permission-mode")).toEqual(["dontAsk"]);
     expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
     expect(argv).toContain("--strict-mcp-config");
@@ -124,7 +125,8 @@ describe("contained profile settings", () => {
       "/private/tmp/claude-1000",
       "/home/designer/.creatorbrio/design-agent",
     ]);
-    expect(settings.sandbox.filesystem.allowRead).toEqual([LAYOUT.workDir]);
+    // The staged images are readable, never writable.
+    expect(settings.sandbox.filesystem.allowRead).toEqual([LAYOUT.workDir, LAYOUT.stagingDir]);
   });
 
   it("names the private folders outside home: the workspace root, a configuration folder and the macOS per-user temporary folder", () => {
@@ -132,15 +134,17 @@ describe("contained profile settings", () => {
     expect(privateReadDirs({ ...input, env: {}, platform: "linux" })).toEqual(["/srv/agents"]);
     expect(privateReadDirs({ ...input, env: { CLAUDE_CONFIG_DIR: "/opt/claude-config/" }, platform: "linux" })).toEqual(["/srv/agents", "/opt/claude-config"]);
     expect(privateReadDirs({ ...input, env: { CLAUDE_CONFIG_DIR: "relative" }, platform: "darwin" })).toEqual(["/srv/agents", "/var/folders/ab/synthetic/T"]);
+    // Without TMPDIR the per-user folder is the shared system one, which holds the run's own folder.
+    expect(privateReadDirs({ ...input, env: {}, platform: "darwin", userTempDir: "/private/tmp" })).toEqual(["/srv/agents"]);
   });
 
   it("denies writing the CLI's shared temporary folder in every spelling", () => {
-    expect(settings.sandbox.filesystem.denyWrite).toEqual(["/tmp/claude-1000", "/private/tmp/claude-1000"]);
+    expect(settings.sandbox.filesystem.denyWrite).toEqual(["/tmp/claude-1000", "/private/tmp/claude-1000", LAYOUT.stagingDir]);
     expect(settings.sandbox.filesystem).not.toHaveProperty("allowWrite");
   });
 
   it("allows the Read tool only in the carousel's folder and denies the protected folders by name", () => {
-    expect(settings.permissions.allow).toEqual([`Read(/${LAYOUT.workDir}/**)`]);
+    expect(settings.permissions.allow).toEqual([`Read(/${LAYOUT.workDir}/**)`, `Read(/${LAYOUT.stagingDir}/**)`]);
     expect(settings.permissions.deny).toEqual([
       "Read(//srv/creatorbrio/**)",
       "Read(//srv/creatorbrio/data/**)",
@@ -184,6 +188,12 @@ describe("contained profile environment", () => {
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
       [AGENT_TOKEN_ENV]: "T0KEN",
     });
+  });
+
+  it("passes an absolute CLI configuration folder and drops a relative one, which would resolve in the agent's folder", () => {
+    const run = { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN" };
+    expect(containedEnv({ CLAUDE_CONFIG_DIR: "/opt/claude-config" }, run).CLAUDE_CONFIG_DIR).toBe("/opt/claude-config");
+    expect(containedEnv({ CLAUDE_CONFIG_DIR: "claude-config" }, run).CLAUDE_CONFIG_DIR).toBeUndefined();
   });
 });
 

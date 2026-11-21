@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -10,8 +10,10 @@ import {
   emptyCarouselWorkDir,
   ensureCarouselWorkDir,
   removeCarouselWorkDir,
+  removeAgentWritable,
   removeRunTempDir,
   stageUploadsForAgent,
+  stagingDirFor,
 } from "@/lib/agent-workspace";
 
 const ID = "2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89";
@@ -95,8 +97,37 @@ describe("the run's temporary folder", () => {
       expect(dir).toMatch(/^(\/private)?\/tmp\/cb-[A-Za-z0-9]{6}$/);
       expect((await stat(dir)).mode & 0o777).toBe(0o700);
     } finally {
-      await removeRunTempDir(dir);
+      await removeRunTempDir(dir, root);
     }
+    await expect(stat(dir)).rejects.toThrow();
+  });
+});
+
+describe("removing what the agent could write", () => {
+  it("moves it into the removal folder beside the carousels' folders before deleting it, and never follows a link", async () => {
+    const dir = await ensureCarouselWorkDir(ID, repo, root);
+    const outside = path.join(base, "outside");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "keep"), "keep");
+    await mkdir(path.join(dir, "nested", "deep"), { recursive: true });
+    await writeFile(path.join(dir, "nested", "deep", "keep"), "agent");
+    await symlink(outside, path.join(dir, "nested", "link"));
+    await removeAgentWritable(path.join(dir, "nested"), root);
+    await expect(stat(path.join(dir, "nested"))).rejects.toThrow();
+    expect(await readFile(path.join(outside, "keep"), "utf8")).toBe("keep");
+    expect(await readdir(path.join(root, ".removed"))).toEqual([]);
+    // A link in the agent's place is moved and removed as a link.
+    await symlink(outside, path.join(dir, "swapped"));
+    await removeAgentWritable(path.join(dir, "swapped"), root);
+    expect(await readdir(outside)).toEqual(["keep"]);
+    // Nothing there is not an error.
+    await expect(removeAgentWritable(path.join(dir, "gone"), root)).resolves.toBeUndefined();
+  });
+
+  it("removes the run's temporary folder the same way", async () => {
+    const dir = await createRunTempDir(501);
+    await writeFile(path.join(dir, "x"), "x");
+    await removeRunTempDir(dir, root);
     await expect(stat(dir)).rejects.toThrow();
   });
 });
@@ -104,17 +135,20 @@ describe("the run's temporary folder", () => {
 describe("images the agent may view", () => {
   const uploads = () => path.join(repo, "public", "uploads");
 
-  it("are copied into the carousel's folder, and only staged paths are rewritten", async () => {
+  it("are copied into a server-only staging folder beside the carousel's, and only staged paths are rewritten", async () => {
     const dir = await ensureCarouselWorkDir(ID, repo, root);
+    const staged = stagingDirFor(dir);
+    expect(staged).toBe(path.join(root, ".staged", ID));
     await writeFile(path.join(uploads(), "a1.png"), "PNG-A");
     await writeFile(path.join(uploads(), "b2.webp"), "WEBP-B");
     const prompt = `Look at ${uploads()}/a1.png and ${uploads()}/missing.png.`;
     const task = `Also ${uploads()}/b2.webp, and ${uploads()}/a1.png again.`;
-    const [p, t] = await stageUploadsForAgent([prompt, task], uploads(), dir);
-    const staged = path.join(dir, "uploads");
+    const [p, t] = await stageUploadsForAgent([prompt, task], uploads(), staged);
     expect(p).toBe(`Look at ${staged}/a1.png and ${uploads()}/missing.png.`);
     expect(t).toBe(`Also ${staged}/b2.webp, and ${staged}/a1.png again.`);
     expect((await readdir(staged)).sort()).toEqual(["a1.png", "b2.webp"]);
+    // Nothing is staged in the folder the agent can write.
+    expect(await readdir(dir)).toEqual([]);
 
     // A copy, not a link: changing it never changes the upload.
     await writeFile(path.join(staged, "a1.png"), "CHANGED");
@@ -133,35 +167,20 @@ describe("images the agent may view", () => {
       `${uploads()}/../../secret.png`,
       `${path.join(repo, "data")}/x.png`,
     ].join(" ");
-    const [out] = await stageUploadsForAgent([text], uploads(), dir);
+    const [out] = await stageUploadsForAgent([text], uploads(), stagingDirFor(dir));
     expect(out).toBe(text);
-    await expect(readdir(path.join(dir, "uploads"))).resolves.toEqual([]);
+    await expect(readdir(stagingDirFor(dir))).resolves.toEqual([]);
   });
 
-  it("never writes through a link the agent planted in its folder, on a resumed run (audit P1)", async () => {
+  it("keeps what earlier turns staged, so a resumed conversation can still view them", async () => {
     const dir = await ensureCarouselWorkDir(ID, repo, root);
+    const staged = stagingDirFor(dir);
     await writeFile(path.join(uploads(), "a1.png"), "PNG-A");
-    const text = `${uploads()}/a1.png`;
-    await stageUploadsForAgent([text], uploads(), dir);
-    const victim = path.join(base, "victim.txt");
-    await writeFile(victim, "KEEP");
-    const victimDir = path.join(base, "victim-dir");
-    await mkdir(victimDir);
-
-    // The agent replaces its staged copy with a link to a file outside its folder.
-    await rm(path.join(dir, "uploads", "a1.png"));
-    await symlink(victim, path.join(dir, "uploads", "a1.png"));
-    const [again] = await stageUploadsForAgent([text], uploads(), dir);
-    expect(await readFile(victim, "utf8")).toBe("KEEP");
-    expect(again).toBe(`${path.join(dir, "uploads")}/a1.png`);
-    expect(await readFile(path.join(dir, "uploads", "a1.png"), "utf8")).toBe("PNG-A");
-
-    // Or it replaces the staging folder itself with a link to another folder.
-    await rm(path.join(dir, "uploads"), { recursive: true });
-    await symlink(victimDir, path.join(dir, "uploads"));
-    await stageUploadsForAgent([text], uploads(), dir);
-    expect(await readdir(victimDir)).toEqual([]);
-    expect((await lstat(path.join(dir, "uploads"))).isSymbolicLink()).toBe(false);
+    await writeFile(path.join(uploads(), "b2.png"), "PNG-B");
+    await stageUploadsForAgent([`${uploads()}/a1.png`], uploads(), staged);
+    const [again] = await stageUploadsForAgent([`${uploads()}/a1.png ${uploads()}/b2.png`], uploads(), staged);
+    expect(again).toBe(`${staged}/a1.png ${staged}/b2.png`);
+    expect((await readdir(staged)).sort()).toEqual(["a1.png", "b2.png"]);
   });
 
   it("stages every spelling of the uploads folder in one pass", async () => {
@@ -171,15 +190,15 @@ describe("images the agent may view", () => {
     await writeFile(path.join(uploads(), "a1.png"), "PNG-A");
     await writeFile(path.join(uploads(), "b2.png"), "PNG-B");
     const other = path.join(alias, "public", "uploads");
-    const [out] = await stageUploadsForAgent([`${uploads()}/a1.png ${other}/b2.png`], [uploads(), other], dir);
-    const staged = path.join(dir, "uploads");
+    const staged = stagingDirFor(dir);
+    const [out] = await stageUploadsForAgent([`${uploads()}/a1.png ${other}/b2.png`], [uploads(), other], staged);
     expect(out).toBe(`${staged}/a1.png ${staged}/b2.png`);
     expect((await readdir(staged)).sort()).toEqual(["a1.png", "b2.png"]);
   });
 
   it("leaves text without uploads untouched and creates nothing", async () => {
     const dir = await ensureCarouselWorkDir(ID, repo, root);
-    expect(await stageUploadsForAgent(["no images here"], uploads(), dir)).toEqual(["no images here"]);
-    expect(await readdir(dir)).toEqual([]);
+    expect(await stageUploadsForAgent(["no images here"], uploads(), stagingDirFor(dir))).toEqual(["no images here"]);
+    await expect(stat(stagingDirFor(dir))).rejects.toThrow();
   });
 });

@@ -261,6 +261,11 @@ function listenOn(server: http.Server, port: number, host: string): Promise<numb
     server.once("error", reject);
     server.listen(port, host, () => {
       server.off("error", reject);
+      // A later failure, such as running out of file descriptors, is reported
+      // rather than left uncaught, where it would stop the app.
+      server.on("error", (err: NodeJS.ErrnoException) => {
+        console.error("[agent-listener] server error", { host, code: err.code ?? null });
+      });
       resolve((server.address() as { port: number }).port);
     });
   });

@@ -15,13 +15,14 @@
  *   off, and an explicit model and effort, so no personal instruction, rule,
  *   skill, agent, hook, plugin, MCP server or settings model reaches it;
  * - only the `Bash` and `Read` tools, so it has no web fetch and no file-editing
- *   tool; `Read` is allowed only inside the carousel's own folder, and the
+ *   tool; `Read` is allowed only inside the carousel's own folder and its staged images, and the
  *   `dontAsk` permission mode refuses everything not allowed;
  * - Claude Code's sandbox for the shell, required (`failIfUnavailable`), with
  *   no unsandboxed escape hatch, a strict network allowlist naming only the
  *   run's listener port, the home folder, repository and data folder
- *   read-denied with only the carousel's folder re-allowed, and the CLI's shared
- *   per-user temporary folder write-denied;
+ *   read-denied with only the carousel's folder and its staged images
+ *   re-allowed, and the CLI's shared per-user temporary folder read- and
+ *   write-denied;
  * - an explicit environment allowlist, plus the run's own short temporary
  *   folder and the listener token.
  *
@@ -102,8 +103,10 @@ export const AGENT_TOKEN_ENV = "CREATORBRIO_AGENT_GRANT";
 export const MAX_AGENT_TEMP_PATH_BYTES = 44;
 
 export interface ContainedLayout {
-  /** The carousel's own folder: the working folder, and the only place the agent reads or writes. */
+  /** The carousel's own folder: the working folder, and the only place outside the run's temporary folder the agent writes. */
   workDir: string;
+  /** The server-only folder of the images the agent may view: readable, never writable. */
+  stagingDir: string;
   /** The run's own temporary folder (`CLAUDE_CODE_TMPDIR`), short enough for the CLI to use it. */
   tempDir: string;
   homeDir: string;
@@ -123,6 +126,8 @@ export interface ContainedLayout {
  * (it holds the CLI's sign-in on Linux) and, on macOS, the per-user temporary
  * folder. The CLI's shared temporary folder is added by `containedSettings`.
  */
+const SYSTEM_TEMP_DIRS = ["/tmp", "/private/tmp"];
+
 export function privateReadDirs(input: {
   env: Record<string, string | undefined>;
   platform: NodeJS.Platform;
@@ -132,7 +137,9 @@ export function privateReadDirs(input: {
   const dirs = [input.workspaceRoot];
   const configDir = input.env.CLAUDE_CONFIG_DIR?.trim();
   if (configDir && path.isAbsolute(configDir)) dirs.push(path.resolve(configDir));
-  if (input.platform === "darwin") dirs.push(input.userTempDir);
+  // Without TMPDIR the per-user folder falls back to the shared system one,
+  // which holds the run's own temporary folder and nothing of the person's.
+  if (input.platform === "darwin" && !SYSTEM_TEMP_DIRS.includes(input.userTempDir)) dirs.push(input.userTempDir);
   return unique(dirs);
 }
 
@@ -168,13 +175,13 @@ export function containedSettings(layout: ContainedLayout): Record<string, unkno
       },
       filesystem: {
         denyRead: unique(denyRead),
-        allowRead: [layout.workDir],
-        denyWrite: sharedCliTempFolders(layout.uid),
+        allowRead: [layout.workDir, layout.stagingDir],
+        denyWrite: [...sharedCliTempFolders(layout.uid), layout.stagingDir],
       },
     },
     permissions: {
       // The leading slash plus an absolute path is the CLI's absolute-path form.
-      allow: [readRule(layout.workDir)],
+      allow: [readRule(layout.workDir), readRule(layout.stagingDir)],
       // The sandbox does not govern the Read tool; anything not allowed above
       // is refused by the dontAsk mode, and these are refused by name as well.
       deny: unique([
@@ -220,6 +227,7 @@ export function containedArgs(options: {
     "--allowedTools",
     "Bash",
     readRule(options.layout.workDir),
+    readRule(options.layout.stagingDir),
     "--permission-mode",
     CONTAINED_PROFILE.permissionMode,
     "--setting-sources",
@@ -279,6 +287,9 @@ export function containedEnv(
     const value = source[name];
     if (typeof value === "string" && value !== "") env[name] = value;
   }
+  // A relative configuration folder would resolve inside the agent's own
+  // folder, which it can write; the CLI's default is used instead.
+  if (env.CLAUDE_CONFIG_DIR !== undefined && !path.isAbsolute(env.CLAUDE_CONFIG_DIR)) delete env.CLAUDE_CONFIG_DIR;
   env.CLAUDE_CODE_TMPDIR = run.tempDir;
   // The pinned CLI must not replace itself with an unqualified version.
   env.DISABLE_AUTOUPDATER = "1";

@@ -47,8 +47,7 @@ They reach the browser as `stage` events in the typed stream contract (`src/lib/
    Each page is fetched through the source-retrieval boundary (`src/lib/source-retrieval.ts`).
    Any page that cannot be read stops the run before planning, naming the host and the kind of failure and suggesting the user paste the text.
    Page text goes to the Director as untrusted content; the legacy handoff lists the pages by URL and stores no page text.
-   Under the contained profile the handoff also carries each page's text, so the run's continuation record keeps it for as long as the run can be continued.
-   With the contained Design Agent profile, which has no web fetch, the handoff also carries each page's text in its own untrusted-page block ([design-agent.md](design-agent.md#contained)).
+   With the contained Design Agent profile, which has no web fetch, the handoff also carries each page's text in its own untrusted-page block ([design-agent.md](design-agent.md#contained)), so the run's continuation record keeps it for as long as the run can be continued.
    `untrustedPageContent()` in `src/lib/source-text.ts` builds that block for both readers, and makes any spelling of its delimiters inside page text inert, so a page cannot close its block.
 2. **Planning visuals** runs the Visual Director (see [visual-director.md](visual-director.md)).
    A ready plan's brief update is not saved at this stage: it is merged into the carousel's Creative Brief only when the run goes on to design, after its images are attached.

@@ -40,30 +40,41 @@ It curls the app's own API at the origin the request arrived on.
 
 The contained profile (#156, #186, #226, #227, #228) gives the agent one carousel and nothing else.
 
-- **Explicit configuration.** The CLI loads no setting sources, no MCP servers and no slash commands, so no personal instructions, tools, plugins, hooks or memory reach it.
+- **Explicit configuration.** The CLI loads no setting sources, no MCP servers and no slash commands.
+  A stand-in check with planted personal and project instructions, rules, skills, agents, hooks, a settings model and MCP servers found none of them reaching the agent.
+  Whether a personal plugin or advisor setting is also kept out has not been checked yet (#237).
+  Personal shell startup files are not yet isolated: the CLI copies their functions and aliases into the agent's shell commands (#237).
   The model (`claude-opus-5-5`), effort (`medium`), tools (`Bash` and `Read`) and permission mode (`dontAsk`) are fixed by the profile, and auto-memory and the auto-updater are off.
   Thinking is the CLI's own adaptive default for the model, recorded in the profile rather than passed.
-- **No web fetch.** The agent has no `WebFetch` or `WebSearch`.
+- **No web fetch.** The agent has no `WebFetch` or `WebSearch`, so the topic research the legacy agent could do while designing is removed: it works from the request, the plan and the pages linked in the message.
   The server reads linked pages itself, as it does for the Visual Director, and gives the agent their text in its task message inside an untrusted-page block that page text cannot close.
   The pages share what is left of the single command-line argument the task travels in (`MAX_DESIGN_MESSAGE_BYTES`), cut at a character boundary and marked truncated when they do not fit.
+  They leave room for a Continue in a new conversation, which repeats the task with the plan's slides, so pages never make a Continue fail to start.
   A retry reads the pages again.
 - **Sandbox.** Every shell command runs inside Claude Code's sandbox, which must be available (`failIfUnavailable`) and cannot be bypassed (`allowUnsandboxedCommands: false`).
-  The shell can reach only the run's listener, through the sandbox's proxy with a strict allowlist.
+  The shell can reach only the run's listener, through the sandbox's proxy with a strict allowlist; on macOS the evidence's positive control for an external address used HTTP only.
   It may write only the carousel's own folder and the run's temporary folder.
-  It cannot read the home folder, the repository, the data folder, the CLI's shared temporary folder, the folder that holds every carousel's folder (other than its own), a CLI configuration folder kept outside home or, on macOS, the per-user temporary folder.
-  Other system locations stay readable, as the sandbox reads them by default.
-- **Read tool.** `Read` is allowed only inside the carousel's folder, and refused everywhere else.
+  It cannot read the home folder, the repository, the data folder, the CLI's shared temporary folder, the folder that holds every carousel's folder (other than its own folder and its staged images) or, on macOS, the per-user temporary folder.
+  A CLI configuration folder kept outside home is denied too, by configuration only: no check has probed it yet.
+  Other system locations stay readable, as the sandbox reads them by default, including the shared `/tmp`, where other runs' temporary folders and, on Linux, the Visual Director's temporary image copies live (#237).
+- **Read tool.** `Read` is allowed only inside the carousel's folder and its staged images, and refused everywhere else.
 - **Environment.** The CLI receives an explicit allowlist of variables (sign-in, locale, proxy and the run's own values); nothing else in the app's environment reaches it.
   The CLI's environment scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) keeps its sign-in variables out of the agent's shell.
   Measured on 2.1.328 on macOS and Linux with a synthetic value planted in each sign-in variable: the shell found none in its own environment, its ancestors' environments or the process table, while the legacy profile's shell, running the same probe, found them.
   Residual exposure, measured on 2.1.328 on macOS and Linux: the CLI itself still gives the shell its messaging socket's address, whose connections the sandbox refuses, and the sandbox proxy's own username and password, which reach only that proxy.
-- **Its own folder.** The agent works in `~/.creatorbrio/design-agent/<carousel id>`, outside the repository (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it to another absolute path). A new conversation starts from an empty folder; a resumed one keeps it, so the CLI's session continues.
+- **Its own folder.** The agent works in `~/.creatorbrio/design-agent/<carousel id>`, outside the repository (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it to another absolute path).
+  A new conversation starts from an empty folder; a resumed one keeps it, so the CLI's session continues.
   The CLI resumes any session it can find, whatever folder it began in.
   So a contained run resumes only a session the server bound to the same carousel after an earlier contained run (`src/lib/agent-sessions.ts`, `data/design-agent-sessions.json`); any other session id, including one from before the contained profile or from the person's own Claude Code use, is refused as not found before the agent starts, and the chat starts a fresh conversation.
   A carousel's bindings are removed with it.
-  Reference images are copied into the folder, and the prompt names the copies.
-  The server rebuilds that copy folder for every run and creates each copy exclusively, so it never writes through a link the agent left there.
-  The folder is removed with its carousel.
+  Reference images are copied into a staging folder beside it (`.staged/<carousel id>`), which the agent may read but never write, and the prompt names the copies.
+  The folder and its staged images are removed with the carousel.
+- **Nothing outlives a run's boundary.** A process the agent starts in the background can outlive its run on macOS: measured on 2.1.328, plain and new-session background processes kept running after the CLI ended or was stopped, still under the run's sandbox rules.
+  On Linux none did, whether the run ended or was stopped.
+  So the server never deletes inside a folder the agent can still change, since a process changing a folder while it is deleted could redirect the delete outside it.
+  It first moves the folder into a removal folder (`.removed`) beside the carousels' folders, which the agent cannot write, and deletes it there.
+  On macOS the sandbox's write rules follow paths, so the move cuts a leftover process off; the stand-in qualification's cleanup check shows it (`eval/sandbox-route/qualify.ts`).
+  A carousel cannot be deleted while its contained run is live, which on Linux, where the sandbox's mount follows a moved folder, is what keeps a live run's processes away from the removal.
 - **Run-scoped authority.** Each run gets a random token, passed only in the agent's environment (as `CREATORBRIO_AGENT_GRANT`, a name the scrub keeps) and accepted only by the agent-only listener for that run's carousel.
   It expires a minute after the run's deadline and is revoked when the run ends, however it ends; it is redacted from the chat stream and the server log, and stored in no run record.
 
@@ -90,7 +101,7 @@ Tokens are never logged.
 
 #### Where it runs
 
-The contained profile's containment has been tested, with a stand-in for the model, on macOS and on Debian 12 Linux with bubblewrap and socat installed, with Claude Code 2.1.328.
+The contained profile's containment has been tested, with a stand-in for the model, on macOS and on Debian 12 Linux (a container in Docker Desktop's Linux virtual machine) with bubblewrap and socat installed, with Claude Code 2.1.328.
 Its M1 qualification (real-model runs, the T1 hostile-input run and the creative-quality comparison) is still open, and it stays off until #237 activates it.
 Other Linux distributions have not been tested.
 It is not available on Windows or WSL2, which have not been tested, and it refuses a Claude Code older than 2.1.219.

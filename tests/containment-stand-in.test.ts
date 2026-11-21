@@ -105,8 +105,8 @@ describe("the product arms", () => {
 
   it("take their settings from the shipped profile, with the stand-in listener and the arm's folder", () => {
     const layout = productLayout(WORK, "/tmp/cb-abc123", 40123, LAYOUT, "/home/q", "linux", 1000);
-    expect(layout).toEqual({ workDir: WORK, tempDir: "/tmp/cb-abc123", homeDir: "/home/q", repoDir: LAYOUT.repoDir, dataDir: LAYOUT.dataDir, listenerPort: 40123, platform: "linux", uid: 1000, privateDirs: [path.dirname(WORK)] });
-    expect(containedSettings(layout)).toMatchObject({ sandbox: { network: { allowedDomains: ["localhost:40123"] }, filesystem: { allowRead: [WORK] } } });
+    expect(layout).toEqual({ workDir: WORK, stagingDir: path.join(path.dirname(WORK), ".staged", path.basename(WORK)), tempDir: "/tmp/cb-abc123", homeDir: "/home/q", repoDir: LAYOUT.repoDir, dataDir: LAYOUT.dataDir, listenerPort: 40123, platform: "linux", uid: 1000, privateDirs: [path.dirname(WORK)] });
+    expect(containedSettings(layout)).toMatchObject({ sandbox: { network: { allowedDomains: ["localhost:40123"] }, filesystem: { allowRead: [WORK, path.join(path.dirname(WORK), ".staged", path.basename(WORK))] } } });
   });
 
   it("judge the link and traversal reads by whether the data canary came back", () => {

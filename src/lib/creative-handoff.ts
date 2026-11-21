@@ -1,5 +1,5 @@
 import { untrustedPageContent } from "@/lib/source-text";
-import type { ResolvedReferenceImage, Slide } from "@/types/carousel";
+import { MAX_SLIDES, type ResolvedReferenceImage, type Slide } from "@/types/carousel";
 import type { ReadyPlan, SlideCountBasis } from "./director-plan";
 
 /**
@@ -64,7 +64,6 @@ const AUTHORITY =
 
 const quoted = (name: string) => JSON.stringify(name.slice(0, 100));
 
-/** The task message for the Design Agent: the user's message, then the visual plan. */
 /**
  * The most a design message may take in UTF-8 bytes. The Design Agent
  * receives it as one command-line argument, and Linux allows at most 128 KiB
@@ -73,13 +72,33 @@ const quoted = (name: string) => JSON.stringify(name.slice(0, 100));
  */
 export const MAX_DESIGN_MESSAGE_BYTES = 128 * 1024 - 4 * 1024;
 
+/** The most one saved slide's line in a Continue takes: its number, ID and an 80-character note. */
+const SAVED_SLIDE_LINE_BYTES = 400;
+/** Room for the contained launch's rewrite of upload paths to their staged copies. */
+const PATH_REWRITE_BYTES = 8 * 1024;
+
+/**
+ * What a Continue in a new conversation can add around the stored design
+ * message: its framing, every slide of the plan still to make, every saved
+ * slide's line, and the rewrite of upload paths. Pages leave this much room,
+ * so a Continue fits the same argument.
+ */
+function continuationReserve(plan: ReadyPlan): number {
+  return (
+    Buffer.byteLength(buildContinuationMessage({ plan, slides: [], originalTask: "", resumingSession: false })) +
+    MAX_SLIDES * SAVED_SLIDE_LINE_BYTES +
+    PATH_REWRITE_BYTES
+  );
+}
+
+/** The task message for the Design Agent: the user's message, then the visual plan. */
 export function buildDesignMessage(userMessage: string, input: HandoffInput): string {
   const build = (pages: HandoffInput["pages"]) => `${userMessage}\n\n${buildHandoff({ ...input, pages })}`;
   if (!input.pages || input.pages.length === 0) return build(input.pages);
   // Linked pages share what is left of the argument once everything else is
   // in, in order, so a long page never makes the run fail to start.
   const empty = input.pages.map((page) => ({ ...page, title: "", text: "", truncated: true }));
-  let budget = Math.max(0, MAX_DESIGN_MESSAGE_BYTES - Buffer.byteLength(build(empty)));
+  let budget = Math.max(0, MAX_DESIGN_MESSAGE_BYTES - Buffer.byteLength(build(empty)) - continuationReserve(input.plan));
   const pages = input.pages.map((page, i) => {
     const share = Math.floor(budget / (input.pages!.length - i));
     const fitted = fitPage(page, share);

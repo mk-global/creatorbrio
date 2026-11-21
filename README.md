@@ -271,6 +271,7 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/style-presets.json` | Style presets the design agent can save |
 | `data/staged-actions.json` | Records for an internal API that the UI does not use |
 | `data/.font-cache/` | Cached Google Fonts used by export |
+| `data/design-agent-sessions.json` | Which Claude sessions each carousel's contained Design Agent may resume (only with the contained profile) |
 | `data/generation-runs.json` | Whether each carousel's last chat run finished, and its last creative run, including a plan kept for 24 hours so a run stopped before design can be retried |
 | `data/asset-staging/` | Generated images waiting to be added to a carousel; removed once added, or after 24 hours |
 | `data/video/` | Video Studio productions, each with its full edit history |
@@ -278,6 +279,7 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/video-renders/` | Exported videos, their captions and manifests |
 | `data/video-auth/`, `data/video-studio.key` | Paired browser sessions and the local key the Video Studio API uses; keep them private |
 | `public/uploads/` | Uploaded logos and reference images, and generated images |
+| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's working folder and its staged copies of reference images (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); `/reset` does not remove it |
 | `.env.local` | Local settings such as `CLAUDE_CLI_PATH`, the time and spending limits above, and `IMAGE_SERVICE_URL` (loopback addresses only) |
 
 Chat transcripts, and the session ID that lets the next message continue the conversation, are kept in your browser's local storage for each carousel; Claude Code also keeps its own record of each session.

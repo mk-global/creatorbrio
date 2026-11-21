@@ -257,6 +257,10 @@ describe("a contained design run", () => {
     expect(argv).toEqual(expect.arrayContaining(["--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--permission-mode", "dontAsk"]));
     expect(argv.join(" ")).not.toMatch(/WebFetch|bypassPermissions/);
     expect(await recorded("cwd")).toBe(path.join(agentsRoot, own.id));
+    // Every carousel's folder is denied to the shell but its own, and its staged images are read-only.
+    const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]);
+    expect(settings.sandbox.filesystem.denyRead).toContain(agentsRoot);
+    expect(settings.sandbox.filesystem.allowRead).toEqual([path.join(agentsRoot, own.id), path.join(agentsRoot, ".staged", own.id)]);
 
     const env = await recordedJson<Record<string, string>>("env.json");
     expect(env.SYNTHETIC_APP_SECRET).toBeUndefined();
@@ -309,8 +313,17 @@ describe("a contained design run", () => {
     const port = Number(/localhost:(\d+)/.exec((await recordedJson<string[]>("argv.json")).join(" "))![1]);
     expect(await callListener(port, token, `/api/carousels/${own.id}`)).toBe(200);
 
+    // While the run is live its processes can still write its folder, so the
+    // carousel is not deleted (#227); the legacy profile keeps deleting.
+    const remove = () => deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), { params: Promise.resolve({ id: own.id }) });
+    expect((await remove()).status).toBe(409);
+    expect(await getCarousel(own.id)).not.toBeNull();
+    await stat(path.join(agentsRoot, own.id));
+
     await reader.cancel();
     expect(await until(async () => (await callListener(port, token, `/api/carousels/${own.id}`)) === 401)).toBe(true);
+    expect((await remove()).status).toBe(200);
+    await expect(stat(path.join(agentsRoot, own.id))).rejects.toThrow();
     for (const name of await readdir(path.join(workdir, "data"))) {
       expect(await readFile(path.join(workdir, "data", name), "utf8").catch(() => "")).not.toContain(token);
     }
@@ -363,17 +376,22 @@ describe("a contained design run", () => {
     expect(await recordedJson<string[]>("argv.json")).toEqual(expect.arrayContaining(["--resume", SESSION]));
   });
 
-  it("removes the carousel's folder when the carousel is deleted", async () => {
+  it("removes the carousel's folder and its staged images when the carousel is deleted, leaving nothing in the removal folder", async () => {
     await play("success");
     const { own } = await newCarousels();
     await postChat({ carouselId: own.id });
     const folder = path.join(agentsRoot, own.id);
     await stat(folder);
+    const staged = path.join(agentsRoot, ".staged", own.id);
+    await mkdir(staged, { recursive: true });
+    await writeFile(path.join(staged, "a1.png"), "PNG");
     const res = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), {
       params: Promise.resolve({ id: own.id }),
     });
     expect(res.status).toBe(200);
     await expect(stat(folder)).rejects.toThrow();
+    await expect(stat(staged)).rejects.toThrow();
+    expect(await readdir(path.join(agentsRoot, ".removed"))).toEqual([]);
     // Its sessions are forgotten with it.
     expect(await isAgentSessionBound(own.id, SESSION)).toBe(false);
   });
