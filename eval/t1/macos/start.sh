@@ -4,8 +4,11 @@
 # `down`, and the whole VM is a clone that is deleted after the run anyway.
 #
 #   start.sh discover        the facts the host needs to write the run's configuration (JSON)
+#   start.sh es-start <event>...   start eslogger for those event types, writing to a FIFO the observer reads; run from an ssh session of its own
+#   start.sh egress-user     make the egress proxy's own service account (idempotent) and its folder; prints its uid (JSON)
 #   start.sh install-config  read the run's configuration (one JSON document) on standard input into /var/t1
 #   start.sh config-file <name>   read one file on standard input into the records' config folder
+#   start.sh watchdog <epoch>      a root job, independent of the host, that at that time kills the subject's processes (the app, the CLI and the token in their environment)
 #   start.sh up              plant canaries, start the harness services as launchd daemons,
 #                            confine the subject with pf, point the system resolver at the
 #                            logging one, start the observer, and wait until all are ready
@@ -21,7 +24,10 @@ H=$T1/harness
 STATE=/var/t1
 RUN=/var/run/t1
 ANCHOR=com.apple/250.T1Confinement
-SERVICES="dns-logger web egress-proxy canary-services"
+# The egress proxy is not among these: it runs as its own service account, the only user pf lets reach the network, with its own folder outside /var/t1.
+SERVICES="dns-logger web canary-services"
+EGRESS_USER=_t1egress
+EGRESS_DIR=/var/t1-egress
 SUBJECT=designer
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 cmd=${1:-}
@@ -94,15 +100,15 @@ unmount_virtiofs() {
   [ -z "$(virtiofs_mounts)" ] || { echo "a VirtioFS mount remains" >&2; exit 1; }
 }
 
-plist() { # label, log, program arguments...
+plist() { # label, log, program arguments...  (the service user and its folder from PLIST_USER, PLIST_CONFIG and PLIST_RECORDS; root and /var/t1 by default)
   local label=$1 log=$2
   shift 2
   {
     printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n'
     printf '<key>Label</key><string>%s</string>\n<key>ProgramArguments</key><array>\n' "$label"
     for a in "$@"; do printf '<string>%s</string>\n' "$a"; done
-    printf '</array>\n<key>EnvironmentVariables</key><dict><key>T1_CONFIG_FILE</key><string>%s/config.json</string><key>T1_RECORDS</key><string>%s/records</string></dict>\n' "$STATE" "$STATE"
-    printf '<key>UserName</key><string>root</string><key>RunAtLoad</key><true/><key>KeepAlive</key><false/>\n'
+    printf '</array>\n<key>EnvironmentVariables</key><dict><key>T1_CONFIG_FILE</key><string>%s</string><key>T1_RECORDS</key><string>%s</string></dict>\n' "${PLIST_CONFIG:-$STATE/config.json}" "${PLIST_RECORDS:-$STATE/records}"
+    printf '<key>UserName</key><string>%s</string><key>RunAtLoad</key><true/><key>KeepAlive</key><false/>\n' "${PLIST_USER:-root}"
     printf '<key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string>\n</dict></plist>\n' "$log" "$log"
   } >"/Library/LaunchDaemons/$label.plist"
   chmod 644 "/Library/LaunchDaemons/$label.plist"
@@ -110,13 +116,15 @@ plist() { # label, log, program arguments...
   launchctl bootstrap system "/Library/LaunchDaemons/$label.plist"
 }
 
-wait_ready() { # records file, label
+wait_ready() { # records file, label [folder holding raw/ (default: the run's records)]
+  local dir=${3:-$STATE/records}
   for _ in $(seq 1 120); do
-    grep -q '"type":"ready"' "$STATE/records/raw/$1" 2>/dev/null && return 0
+    grep -q '"type":"ready"' "$dir/raw/$1" 2>/dev/null && return 0
     sleep 0.5
   done
   echo "$2 did not become ready" >&2
-  tail -5 "$STATE/logs/"* >&2 || true
+  launchctl list 2>/dev/null | grep t1.harness >&2 || true
+  tail -n 8 "$STATE/logs/"* "$EGRESS_DIR/egress-proxy.log" >&2 2>&1 || true
   exit 1
 }
 
@@ -131,19 +139,89 @@ discover)
   printf '{"gateway4":"%s","gateway6":"%s","interface":"%s","address4":"%s","mask4":"%s","upstreamDns":"%s","subjectUid":%s,"names":["%s","%s","%s"],"provenance":%s}\n' \
     "$gw4" "$gw6" "$en" "$addr4" "$mask" "$dns" "$(id -u "$SUBJECT")" "$(scutil --get ComputerName 2>/dev/null | tr -d '"\\')" "$(scutil --get LocalHostName 2>/dev/null | tr -d '"\\')" "$(hostname -s | tr -d '"\\')" "$(cat "$T1/provenance.json")"
   ;;
+es-start)
+  # eslogger mutes the events of its own audit session (the ssh session it is started in) while still counting them in its sequence numbers. So it is started here,
+  # in an ssh session nothing else uses (after `up`, which started the observer, and before the app), and the observer, the harness's services and the subject all
+  # run in other sessions: their events reach it, and a skipped sequence number means the system really dropped an event. It needs the Full Disk Access Remote Login
+  # grants, which it takes at start and keeps.
+  for ev in "$@"; do [[ "$ev" =~ ^[a-z_]+$ ]] || { echo "bad event type" >&2; exit 2; }; done
+  [ -p "$STATE/observer/es.fifo" ] || { echo "the observer's FIFO does not exist; run up first" >&2; exit 1; }
+  # Opened for reading and writing so it never blocks; the job's own end is the only writer once this shell exits, so the observer sees the stream end if eslogger dies.
+  exec 3<>"$STATE/observer/es.fifo"
+  nohup eslogger "$@" >&3 2>"$STATE/logs/eslogger.log" </dev/null 3>&- &
+  echo $! >"$STATE/eslogger.pid"
+  exec 3>&-
+  echo started
+  ;;
+egress-user)
+  # The one account pf lets reach the network (for the model API and its resolvers). A service account below uid 500, not root and not the subject:
+  # root cannot be the match, because pf attributes a setuid tool's packets (traceroute) to root, and the account has no shell, no home and no password.
+  if ! id "$EGRESS_USER" >/dev/null 2>&1; then
+    egress_id=""
+    for u in $(seq 370 394); do
+      dscl . -list /Users UniqueID | awk -v u="$u" '$2==u{f=1} END{exit !f}' && continue
+      dscl . -list /Groups PrimaryGroupID | awk -v u="$u" '$2==u{f=1} END{exit !f}' && continue
+      egress_id=$u
+      break
+    done
+    [ -n "$egress_id" ] || { echo "no free service uid" >&2; exit 1; }
+    dscl . -create "/Groups/$EGRESS_USER" PrimaryGroupID "$egress_id"
+    dscl . -create "/Users/$EGRESS_USER"
+    dscl . -create "/Users/$EGRESS_USER" UniqueID "$egress_id"
+    dscl . -create "/Users/$EGRESS_USER" PrimaryGroupID "$egress_id"
+    dscl . -create "/Users/$EGRESS_USER" UserShell /usr/bin/false
+    dscl . -create "/Users/$EGRESS_USER" NFSHomeDirectory /var/empty
+    dscl . -create "/Users/$EGRESS_USER" RealName "T1 egress proxy"
+    dscl . -create "/Users/$EGRESS_USER" IsHidden 1
+  fi
+  # No password at all (the field is the one that matches no input), whether the account was just made or was already there.
+  dscl . -create "/Users/$EGRESS_USER" Password '*'
+  install -d -o "$EGRESS_USER" -g "$(id -g "$EGRESS_USER")" -m 700 "$EGRESS_DIR" "$EGRESS_DIR/raw"
+  # By outcome, as lockdown.sh does for the others: no password is accepted for this account, and the Password field is the star.
+  weak=""
+  for p in "$EGRESS_USER" "${EGRESS_USER#_}" lume admin; do dscl . -authonly "$EGRESS_USER" "$p" >/dev/null 2>&1 && weak="$weak $p"; done
+  field=$(dscl . -read "/Users/$EGRESS_USER" Password | awk '{print $2}')
+  printf '{"egressUid":%s,"egressDir":"%s","passwordField":"%s","passwordsAccepted":"%s"}\n' "$(id -u "$EGRESS_USER")" "$EGRESS_DIR" "$field" "${weak# }"
+  ;;
+watchdog)
+  # The run's last line of defence, independent of the host's process: if the host dies or hangs, the clone keeps running, and at the deadline this job kills the subject's
+  # processes and then halts the whole machine, so nothing the subject started (a launchd job, a daemonized process, anything the kill missed) can go on holding the token.
+  deadline=${1:-}
+  [[ "$deadline" =~ ^[0-9]{10}$ ]] || { echo "bad deadline" >&2; exit 2; }
+  rm -f "$STATE/watchdog-fired"
+  cat >/Library/LaunchDaemons/t1.harness.watchdog.plist <<WD
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>t1.harness.watchdog</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>-c</string><string>while [ "\$(date +%s)" -lt $deadline ]; do sleep 5; done; /usr/bin/pkill -9 -u $SUBJECT; rm -f $STATE/token.fifo; date +%s &gt;$STATE/watchdog-fired; /bin/sync; /sbin/shutdown -h now</string></array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
+</dict></plist>
+WD
+  chmod 644 /Library/LaunchDaemons/t1.harness.watchdog.plist
+  chown root:wheel /Library/LaunchDaemons/t1.harness.watchdog.plist
+  launchctl bootstrap system /Library/LaunchDaemons/t1.harness.watchdog.plist
+  echo watching
+  ;;
 install-config)
-  # One JSON document on standard input: the configuration, canaries, nonce, the app's environment and the pf anchor.
+  # One JSON document on standard input: the configuration, canaries, the app's environment and the pf anchor.
   install -d -o root -g wheel -m 700 "$STATE" "$STATE/records" "$STATE/records/config" "$STATE/logs"
   umask 077
   cat >"$STATE/config.json"
   node_json 'const c=JSON.parse(require("fs").readFileSync("/var/t1/config.json","utf8")); require("fs").writeFileSync("/var/t1/pf.conf", c.pf, {mode: 0o600});'
   chown root:wheel "$STATE/config.json" "$STATE/pf.conf"
+  # The egress proxy's own copy: its configuration and the canary values it matches, nothing else (not the app's environment, not the pf anchor).
+  node_json 'const c=JSON.parse(require("fs").readFileSync("/var/t1/config.json","utf8")); require("fs").writeFileSync("/var/t1-egress/config.json", JSON.stringify({config: c.config, canaries: c.canaries}), {mode: 0o600});'
+  chown "$EGRESS_USER:$(id -g "$EGRESS_USER")" "$EGRESS_DIR/config.json"
   ;;
 config-file)
   name=$1
   case "$name" in */* | .*) echo "bad name" >&2; exit 1 ;; esac
-  cat >"$STATE/records/config/$name"
-  chmod 600 "$STATE/records/config/$name"
+  # Through a temporary file and a rename: the web server reads the page on every request and must never see half of one.
+  tmp=$(mktemp "$STATE/records/config/.w.XXXXXX")
+  cat >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$STATE/records/config/$name"
   ;;
 up)
   # lume attaches a VirtioFS device (its live share) to every VM; nothing of the host stays mounted while the subject runs.
@@ -158,9 +236,12 @@ up)
   for s in $SERVICES; do
     plist "t1.harness.$s" "$STATE/logs/$s.log" "$T1/node/bin/node" --no-warnings --import "$H/register.mjs" "$H/services/$s.ts"
   done
+  # The egress proxy as its own service account, with its own folder: it can read only its configuration and write only its own log.
+  PLIST_USER=$EGRESS_USER PLIST_CONFIG=$EGRESS_DIR/config.json PLIST_RECORDS=$EGRESS_DIR \
+    plist "t1.harness.egress-proxy" "$EGRESS_DIR/egress-proxy.log" "$T1/node/bin/node" --no-warnings --import "$H/register.mjs" "$H/services/egress-proxy.ts"
   wait_ready dns.jsonl "the resolver"
   wait_ready web.jsonl "the web server"
-  wait_ready proxy.jsonl "the egress proxy"
+  wait_ready proxy.jsonl "the egress proxy" "$EGRESS_DIR"
   wait_ready sockets.jsonl "the canary listeners"
   # The subject's confinement, logged with its uid on pflog0.
   pfctl -a "$ANCHOR" -f "$STATE/pf.conf" 2>/dev/null
@@ -170,7 +251,10 @@ up)
   # IPv6 link-local, both layers, before the observer or the app: the all-users pf rule proven by a self-test, then IPv6 off.
   selftest=$(link_local_selftest)
   ipv6_off
-  # The observer, started from this SSH session so it keeps Remote Login's Full Disk Access.
+  # The observer, started from this SSH session. It reads eslogger's output from a FIFO; eslogger itself is started afterwards from a session of its own (es-start).
+  install -d -o root -g wheel -m 700 "$STATE/observer"
+  rm -f "$STATE/observer/es.fifo"
+  mkfifo -m 600 "$STATE/observer/es.fifo"
   nohup "$H/macos/t1.sh" services/observer.ts serve </dev/null >"$STATE/logs/observer.log" 2>&1 &
   echo $! >"$STATE/observer.pid"
   wait_ready observer.jsonl "the observer"
@@ -233,19 +317,24 @@ scan)
   "$H/macos/t1.sh" macos/scan-ports.ts "$1"
   ;;
 records)
-  tar -C "$STATE/records" -czf - .
+  # The egress proxy's log lives in its own folder; copy it in as a regular file (never through a link), then archive as plain ustar, no extended headers or mac metadata:
+  # the host parses this archive itself and refuses anything but regular files and folders.
+  if [ -f "$EGRESS_DIR/raw/proxy.jsonl" ] && [ ! -L "$EGRESS_DIR/raw/proxy.jsonl" ]; then cat "$EGRESS_DIR/raw/proxy.jsonl" >"$STATE/records/raw/proxy.jsonl"; fi
+  COPYFILE_DISABLE=1 tar --format ustar --no-xattrs --no-mac-metadata -C "$STATE/records" -czf - raw config
   ;;
 status)
-  printf '{"uplinkInet6":"%s","virtiofsMounts":%s,"pfRules":%s,"pfEnabled":%s,"resolvers":"%s"}\n' "$(uplink_inet6)" "$(virtiofs_mounts | wc -l | tr -d ' ')" "$(pfctl -a "$ANCHOR" -s rules 2>/dev/null | wc -l | tr -d ' ')" "$(pfctl -s info 2>/dev/null | grep -c 'Status: Enabled')" "$(scutil --dns | awk '/nameserver\[/{print $3}' | sort -u | paste -sd, -)"
+  printf '{"watchdogFired":%s,"uplinkInet6":"%s","virtiofsMounts":%s,"pfRules":%s,"pfEnabled":%s,"resolvers":"%s"}\n' "$([ -f "$STATE/watchdog-fired" ] && echo true || echo false)" "$(uplink_inet6)" "$(virtiofs_mounts | wc -l | tr -d ' ')" "$(pfctl -a "$ANCHOR" -s rules 2>/dev/null | wc -l | tr -d ' ')" "$(pfctl -s info 2>/dev/null | grep -c 'Status: Enabled')" "$(scutil --dns | awk '/nameserver\[/{print $3}' | sort -u | paste -sd, -)"
   ;;
 down)
-  for s in app $SERVICES; do
+  for s in app egress-proxy watchdog $SERVICES; do
     launchctl bootout "system/t1.harness.$s" 2>/dev/null || true
     rm -f "/Library/LaunchDaemons/t1.harness.$s.plist"
   done
   pkill -u "$SUBJECT" 2>/dev/null || true
   [ -f "$STATE/observer.pid" ] && kill "$(cat "$STATE/observer.pid")" 2>/dev/null || true
   pkill -f "$H/services/observer.ts" 2>/dev/null || true
+  [ -f "$STATE/eslogger.pid" ] && kill "$(cat "$STATE/eslogger.pid")" 2>/dev/null || true
+  pkill -x eslogger 2>/dev/null || true
   pfctl -a "$ANCHOR" -F all 2>/dev/null || true
   [ -s "$STATE/pf.token" ] && pfctl -X "$(cat "$STATE/pf.token")" 2>/dev/null || true
   if [ -f "$STATE/dns-saved/services" ]; then
@@ -261,7 +350,7 @@ down)
   echo down
   ;;
 *)
-  echo "usage: start.sh discover|install-config|config-file|up|token|channels|scan|records|status|down" >&2
+  echo "usage: start.sh discover|es-start|egress-user|install-config|config-file|up|token|channels|scan|records|status|down" >&2
   exit 2
   ;;
 esac

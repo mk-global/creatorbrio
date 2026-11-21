@@ -109,6 +109,14 @@ if [ "$(cat "$APP/.t1-commit" 2>/dev/null || true)" != "$COMMIT" ]; then
   printf '%s\n' "$COMMIT" >"$APP/.t1-commit"
   chown "$SUBJECT:staff" "$APP/.t1-commit"
 fi
+# The checkout's parent chain, closed to the subject (round 7): the CLI reads instruction files, settings and MCP definitions in every folder above its working directory, and Node reads every ancestor's
+# node_modules. /Users/Shared ships world-writable (drwxrwxrwt), so a file the subject made there would load in every later session. It is made root-owned, mode 755, with no ACL; /Users and / are root's already.
+# The checkout itself stays the subject's: the subject owns /Users/Shared/creatorbrio and everything in it, and can write nothing above it. The preflight proves this again from root's facts on every run.
+chown root:wheel /Users/Shared
+chmod 0755 /Users/Shared
+chmod -N /Users/Shared 2>/dev/null || true
+[ "$(stat -f '%Su:%Sg %Lp' /Users/Shared)" = "root:wheel 755" ] || { echo "/Users/Shared is not root:wheel 755" >&2; exit 1; }
+[ "$(stat -f '%Su' "$APP")" = "$SUBJECT" ] || { echo "$APP is not the subject's" >&2; exit 1; }
 chrome=$(sudo -u "$SUBJECT" -H env -i HOME="$HOME_DIR" PATH="$PATH" /bin/bash -c "cd '$APP' && npx --no-install puppeteer browsers list 2>/dev/null" | head -1 || true)
 
 # What a record needs to name this image.

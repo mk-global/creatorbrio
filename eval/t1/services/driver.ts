@@ -1,18 +1,21 @@
 /**
  * The driver (#225): plays the operator against the app's public API on its
  * main port, from the observer container (which shares the subject's network
- * namespace but not its processes or files). Every request carries the run's
- * nonce in `X-T1-Driver`, which the subject never sees, so the capture can
- * tell the driver's requests from the subject's. A model phase ends at the
+ * namespace but not its processes or files). Every connection is opened on a
+ * socket of its own and recorded with the local source port the kernel gave it
+ * and the interval it was opened in, so the capture tells the driver's
+ * connections from the subject's by that source port and the time of the SYN,
+ * facts the driver itself records, and never by anything in the request (the
+ * app server receives every header, and the subject owns the app's code). A model phase ends at the
  * app's own `done` or `error` event or at the deadline; the driver records
  * which, the session the app returned and the canaries, by id, the stream
  * disclosed, never the stream itself.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { request, type ClientRequest } from "node:http";
 import path from "node:path";
 import { matchCanaries, type CanaryValues } from "../lib/scrub";
-import { RAW, RECORDS, type HarnessConfig } from "./common";
+import { jsonl, RAW, RECORDS, type HarnessConfig } from "./common";
 
 export interface DriverState {
   brandId: string;
@@ -26,17 +29,30 @@ interface Reply {
   body: string;
 }
 
-function call(cfg: HarnessConfig, nonce: string, method: string, url: string, body?: unknown, timeoutMs = 30_000): Promise<Reply> {
+/**
+ * Records one connection of the driver's: its local source port, the app-side port, and the interval from just before the connection was made to when it connected, on the observers' clock, which the
+ * capture's SYN falls inside. A source port alone is reusable after the connection closes; the port with its time is not.
+ */
+function recordConnection(cfg: HarnessConfig, req: ClientRequest, startedAt: number): void {
+  req.on("socket", (socket) => {
+    socket.on("connect", () => {
+      jsonl("driver-conns.jsonl").write({ type: "conn", sport: socket.localPort ?? 0, dport: cfg.appPort, from: startedAt, to: Date.now() });
+    });
+  });
+}
+
+function call(cfg: HarnessConfig, method: string, url: string, body?: unknown, timeoutMs = 30_000): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+    const startedAt = Date.now();
     const req = request(
       {
         host: "127.0.0.1",
         port: cfg.appPort,
         method,
         path: url,
-        // The nonce goes first so it sits in the request's first segment.
-        headers: { "X-T1-Driver": nonce, Host: `127.0.0.1:${cfg.appPort}`, ...(data ? { "Content-Type": "application/json", "Content-Length": String(data.length) } : {}) },
+        agent: false,
+        headers: { Host: `127.0.0.1:${cfg.appPort}`, ...(data ? { "Content-Type": "application/json", "Content-Length": String(data.length) } : {}) },
         timeout: timeoutMs,
       },
       (res) => {
@@ -45,6 +61,7 @@ function call(cfg: HarnessConfig, nonce: string, method: string, url: string, bo
         res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text }));
       },
     );
+    recordConnection(cfg, req, startedAt);
     req.on("timeout", () => req.destroy(new Error("timeout")));
     req.on("error", reject);
     req.end(data);
@@ -54,11 +71,11 @@ function call(cfg: HarnessConfig, nonce: string, method: string, url: string, bo
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Waits for the app, then creates the synthetic brands and the two carousels through the public API. */
-export async function setup(cfg: HarnessConfig, nonce: string): Promise<DriverState> {
+export async function setup(cfg: HarnessConfig): Promise<DriverState> {
   const deadline = Date.now() + 180_000;
   for (;;) {
     try {
-      if ((await call(cfg, nonce, "GET", "/api/brands", undefined, 5000)).status === 200) break;
+      if ((await call(cfg, "GET", "/api/brands", undefined, 5000)).status === 200) break;
     } catch {
       // Not listening yet.
     }
@@ -66,7 +83,7 @@ export async function setup(cfg: HarnessConfig, nonce: string): Promise<DriverSt
     await sleep(1000);
   }
   const create = async (url: string, body: unknown) => {
-    const r = await call(cfg, nonce, "POST", url, body);
+    const r = await call(cfg, "POST", url, body);
     if (r.status !== 201) throw new Error(`POST ${url} answered ${r.status}`);
     return (JSON.parse(r.body) as { id: string }).id;
   };
@@ -93,6 +110,8 @@ export interface ChatRecord {
   httpStatus: number;
   errorCode: string | null;
   sessionId: string | null;
+  /** The session id the driver put in the request: the hostile phase's own, for the follow-up that resumes it, and null for a phase that starts a session. */
+  resumedFrom: string | null;
   startedAt: number;
   endedAt: number;
   events: Record<string, number>;
@@ -105,14 +124,14 @@ export interface ChatRecord {
  * event (after an `error`, if any) or the deadline. The message text is the
  * harness's own file in the records folder.
  */
-export function chat(cfg: HarnessConfig, nonce: string, canaries: CanaryValues, phase: string, messageFile: string, resumeFrom: string | null): Promise<ChatRecord> {
+export function chat(cfg: HarnessConfig, canaries: CanaryValues, phase: string, messageFile: string, resumeFrom: string | null): Promise<ChatRecord> {
   const state = readState();
   const message = readFileSync(path.join(RECORDS, "config", messageFile), "utf8");
   const sessionId = resumeFrom ? (JSON.parse(readFileSync(path.join(RAW, `driver-${resumeFrom}.json`), "utf8")) as ChatRecord).sessionId : null;
   const body = Buffer.from(JSON.stringify({ message, carouselId: state.runCarouselId, ...(sessionId ? { sessionId } : {}) }));
   const startedAt = Date.now();
   return new Promise((resolve) => {
-    const rec: ChatRecord = { phase, status: "timeout", httpStatus: 0, errorCode: null, sessionId: null, startedAt, endedAt: 0, events: {}, stages: [], disclosed: [] };
+    const rec: ChatRecord = { phase, status: "timeout", httpStatus: 0, errorCode: null, sessionId: null, resumedFrom: sessionId, startedAt, endedAt: 0, events: {}, stages: [], disclosed: [] };
     const disclosed = new Set<string>();
     let settled = false;
     const settle = () => {
@@ -124,13 +143,15 @@ export function chat(cfg: HarnessConfig, nonce: string, canaries: CanaryValues, 
       writeFileSync(path.join(RAW, `driver-${phase}.json`), JSON.stringify(rec, null, 2));
       resolve(rec);
     };
+    const connectStartedAt = Date.now();
     const req = request(
       {
         host: "127.0.0.1",
         port: cfg.appPort,
         method: "POST",
         path: "/api/chat",
-        headers: { "X-T1-Driver": nonce, Host: `127.0.0.1:${cfg.appPort}`, "Content-Type": "application/json", "Content-Length": String(body.length) },
+        agent: false,
+        headers: { Host: `127.0.0.1:${cfg.appPort}`, "Content-Type": "application/json", "Content-Length": String(body.length) },
       },
       (res) => {
         rec.httpStatus = res.statusCode ?? 0;
@@ -176,6 +197,7 @@ export function chat(cfg: HarnessConfig, nonce: string, canaries: CanaryValues, 
         res.on("error", settle);
       },
     );
+    recordConnection(cfg, req, connectStartedAt);
     req.on("error", settle);
     const timer = setTimeout(() => {
       rec.status = "timeout";

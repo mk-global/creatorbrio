@@ -4,21 +4,46 @@
  * to public addresses that name resolves to, refuses everything else, and
  * logs every request with its decision and byte counts. It never logs a
  * payload, and names outside the harness's own are kept only as a suffix
- * plus a hash. Runs as root in the egress container, the only container on
- * both the internal network and an outbound bridge.
+ * plus a hash. It counts model API connections and bytes per phase (the
+ * observer mirrors the current phase into a file it reads) and refuses beyond
+ * the configured ceiling, logging each refusal, because the subject holds the
+ * token and could start model calls of its own. Every tunnel has a lifetime
+ * cap (the phase deadline plus the driver's margin), and the tunnels of a
+ * phase are closed when the phase ends, so nothing opened in one window
+ * carries traffic in the next; a tunnel the proxy closes says why in its
+ * closing line. A connection turned away for the proxy's own limit is logged as
+ * lost evidence. Runs as root in the egress
+ * container on Linux (the only container on both the internal network and an
+ * outbound bridge) and, on macOS, as its own service account, the one user the
+ * pf anchor lets reach the network.
  */
 import { lookup, Resolver } from "node:dns/promises";
 import { createConnection, createServer, type Socket } from "node:net";
 import { nameSummary, proxyAddressAllowed, proxyDecision } from "../lib/policy";
-import { boundText, matchCanaries } from "../lib/scrub";
-import { heartbeat, jsonl, loadCanaries, loadConfig, onStop } from "./common";
+import { boundText, matchCanaries, plainOrHash, sha256 } from "../lib/scrub";
+import { PhaseLedger } from "../lib/spend";
+import { heartbeat, jsonl, loadCanaries, loadConfig, onStop, readPhase } from "./common";
 
 const cfg = loadConfig();
 const canaries = loadCanaries();
 const log = jsonl("proxy.jsonl");
 const known = [...Object.keys(cfg.harnessNames), ...cfg.modelHosts];
 const MAX_HEAD = 16 * 1024;
+const MAX_OPEN = 256;
 let open = 0;
+let turnedAway = 0;
+const ledger = cfg.modelBudget ? new PhaseLedger(cfg.modelBudget) : null;
+/** A tunnel's longest life: the phase deadline and the driver's margin, so nothing outlives the phase it was opened for. */
+const LIFETIME_MS = ((cfg.phaseDeadlineSeconds ?? 2400) + 120) * 1000;
+/** The open tunnels, with the phase each was opened in, so a phase's end and its byte ceiling can close them. */
+const tunnels = new Set<{ phase: string; model: boolean; close: (cap: string) => void }>();
+let currentPhase = readPhase();
+const phaseWatch = setInterval(() => {
+  const now = readPhase();
+  if (now === currentPhase) return;
+  currentPhase = now;
+  for (const t of [...tunnels]) if (t.phase !== now) t.close("phase_ended");
+}, 250);
 
 /**
  * Where the proxy resolves allowlisted names: the system resolver on Linux;
@@ -43,7 +68,7 @@ function summarizeTarget(method: string, target: string): string {
   if (m) return `${nameSummary(m[1], known, canaries).name}:${m[2]}`;
   try {
     const u = new URL(target);
-    return `${u.protocol}//${nameSummary(u.hostname, known, canaries).name}${u.port ? `:${u.port}` : ""}`;
+    return `${u.protocol === "http:" || u.protocol === "https:" ? u.protocol : plainOrHash(u.protocol, new Set())}//${nameSummary(u.hostname, known, canaries).name}${u.port ? `:${u.port}` : ""}`;
   } catch {
     return boundText(`${method} <${target.length} chars>`, 40);
   }
@@ -51,8 +76,10 @@ function summarizeTarget(method: string, target: string): string {
 
 const server = createServer((client: Socket) => {
   const started = Date.now();
-  if (open >= 256) {
+  if (open >= MAX_OPEN) {
     client.destroy();
+    // Evidence the proxy could not record: the first, and then every hundredth, so the log cannot be flooded.
+    if (turnedAway++ % 100 === 0) log.write({ type: "loss", at: started, observer: "proxy", reason: `the proxy's connection limit (${MAX_OPEN} open) turned connections away (${turnedAway} so far)`, scope: "run" });
     return;
   }
   open++;
@@ -60,8 +87,9 @@ const server = createServer((client: Socket) => {
   let up = 0;
   let down = 0;
   let record: Record<string, unknown> | null = null;
+  let cap: string | null = null;
   const finish = () => {
-    if (record?.decision === "allowed") log.write({ ...record, type: "proxy_end", bytesUp: up, bytesDown: down, durationMs: Date.now() - started });
+    if (record?.decision === "allowed") log.write({ ...record, type: "proxy_end", bytesUp: up, bytesDown: down, durationMs: Date.now() - started, ...(cap ? { cap } : {}) });
     else if (record) log.write({ ...record, bytesUp: up, bytesDown: down, durationMs: Date.now() - started });
     record = null;
   };
@@ -80,15 +108,21 @@ const server = createServer((client: Socket) => {
     client.pause();
     const text = head.subarray(0, end < 0 ? head.length : end).toString("latin1");
     const [method = "", target = ""] = (text.split("\r\n")[0] ?? "").split(" ");
-    const base = { type: "proxy", at: started, method: boundText(method, 12), target: summarizeTarget(method, target), matched: matchCanaries(head, canaries) };
+    const base = { type: "proxy", at: started, method: boundText(method, 12), target: summarizeTarget(method, target), targetSha256: sha256(target), matched: matchCanaries(head, canaries) };
     const decision = proxyDecision(method, target, cfg.allowlist);
     const refuse = (reason: string) => {
       record = { ...base, decision: "refused", reason, model: false };
       client.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     };
     if (!decision.allow) return refuse(decision.reason);
+    const isModel = cfg.modelHosts.includes(decision.host);
+    const phase = readPhase();
+    if (isModel && ledger) {
+      const verdict = ledger.admit(phase);
+      if (verdict !== "allow") return refuse(verdict);
+    }
     // Logged now, so a tunnel that never closes (or a container removed mid-run) still leaves its line.
-    record = { ...base, decision: "allowed", reason: "allowlisted", model: cfg.modelHosts.includes(decision.host) };
+    record = { ...base, decision: "allowed", reason: "allowlisted", model: isModel };
     log.write({ ...record, bytesUp: 0, bytesDown: 0, durationMs: 0, stage: "decision" });
     const fail = (reason: string) => {
       log.write({ ...base, type: "proxy_upstream", decision: "failed", reason, durationMs: Date.now() - started });
@@ -118,6 +152,8 @@ const server = createServer((client: Socket) => {
       });
       upstream.once("connect", () => {
         connected = true;
+        // Which address the tunnel really reached, so the uplink capture's flows can be matched to the proxy's own connections.
+        log.write({ type: "proxy_connect", at: Date.now(), host: decision.host, address: usable[i], port: decision.port });
         upstream.setTimeout(0);
         client.setTimeout(600_000, () => client.destroy());
         client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -126,8 +162,33 @@ const server = createServer((client: Socket) => {
           up += rest.length;
           upstream.write(rest);
         }
-        client.on("data", (d: Buffer) => (up += d.length));
-        upstream.on("data", (d: Buffer) => (down += d.length));
+        const tunnel = {
+          phase,
+          model: isModel,
+          close: (why: string) => {
+            cap ??= why;
+            client.destroy();
+            upstream.destroy();
+          },
+        };
+        tunnels.add(tunnel);
+        const lifetime = setTimeout(() => tunnel.close("lifetime"), LIFETIME_MS);
+        client.on("close", () => {
+          clearTimeout(lifetime);
+          tunnels.delete(tunnel);
+        });
+        // Bytes count against the phase the tunnel was opened in; at the phase's byte ceiling every one of its tunnels is cut.
+        const carried = (n: number) => {
+          if (isModel && ledger?.carried(phase, n)) for (const t of [...tunnels]) if (t.phase === phase && t.model) t.close("bytes");
+        };
+        client.on("data", (d: Buffer) => {
+          up += d.length;
+          carried(d.length);
+        });
+        upstream.on("data", (d: Buffer) => {
+          down += d.length;
+          carried(d.length);
+        });
         client.pipe(upstream);
         upstream.pipe(client);
         client.resume();
@@ -146,5 +207,6 @@ server.listen(cfg.proxyPort, cfg.addresses.egress, () => {
 const hb = heartbeat(log, { proxy: () => server.listening });
 onStop(() => {
   clearInterval(hb);
+  clearInterval(phaseWatch);
   server.close();
 });

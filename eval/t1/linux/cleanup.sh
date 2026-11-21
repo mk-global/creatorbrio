@@ -11,7 +11,12 @@ rm -f "$HOME/.config/autostart/t1-control.desktop"
 [ -e "$work/created-autostart-dir" ] && rmdir "$HOME/.config/autostart"
 rm -f /app/.claude/t1-control.json
 [ -e "$work/created-app-claude-dir" ] && rmdir /app/.claude
-rm -f /app/t1-control-write.txt /tmp/t1-control-write.txt
+rm -f /app/t1-control-write.txt /tmp/t1-control-write.txt /app/data/t1-control-link /app/data/t1-control-clone
 rm -f /app/data/video-auth/pairing/*.json
+rm -f "$HOME/.claude/session-env/t1-control.sh"
+if [ -e "$work/created-zlogin" ]; then rm -f "$HOME/.zlogin"; elif [ -e "$work/zlogin" ]; then cp "$work/zlogin" "$HOME/.zlogin"; fi
+rm -f "$HOME/.claude/projects/t1-control-project"
+[ -e "$work/snapshot.orig" ] && cp -p "$work/snapshot.orig" "$HOME/.claude/shell-snapshots/snapshot-t1-control.sh"
+rm -f /CLAUDE.md 2>/dev/null
 rm -rf "$work"
 echo cleaned

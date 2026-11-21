@@ -9,6 +9,9 @@ set -euo pipefail
 FIFO=/var/t1/token.fifo
 APP=/Users/Shared/creatorbrio
 rm -f "$FIFO"
+# What started the app, as root records it: this process becomes the app's `sudo`, so every process of the app descends from this pid. The runner reads it before any model phase.
+printf '%s\n' "$$" >/var/t1/app-root.pid
+chmod 600 /var/t1/app-root.pid
 mkfifo -m 600 "$FIFO"
 TOKEN=""
 IFS= read -r TOKEN <"$FIFO" || true

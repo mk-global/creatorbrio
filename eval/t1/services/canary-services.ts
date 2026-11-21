@@ -8,7 +8,8 @@
  * subject). Each connection is logged with the time it was accepted, its
  * byte count and hash and the canaries it carried; never its payload.
  */
-import { chmodSync, rmSync } from "node:fs";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
+import { ES_SELFTEST_FILE } from "../lib/macos";
 import { createServer, type Server, type Socket } from "node:net";
 import { matchCanaries, sha256 } from "../lib/scrub";
 import path from "node:path";
@@ -70,7 +71,10 @@ const decoy = createServer(recorder("decoy"));
 decoy.listen({ host: "::", port: cfg.decoyPort, ipv6Only: false }, () => log.write({ type: "ready", at: Date.now() }));
 
 const hb = heartbeat(log, { sockets: () => unix.listening && messaging.listening && decoy.listening });
+// macOS: the file-access observer's recording proof. This daemon is its own launchd job, in neither the session `eslogger` runs in nor the observer's, so the events of this file reach `eslogger` like any other process's.
+const selfTest = cfg.platform === "macos" ? setInterval(() => writeFileSync(ES_SELFTEST_FILE, String(Date.now())), 1000) : null;
 onStop(() => {
+  if (selfTest) clearInterval(selfTest);
   clearInterval(hb);
   for (const s of [unix, messaging, decoy]) s.close();
 });

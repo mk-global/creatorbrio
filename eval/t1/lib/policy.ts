@@ -4,7 +4,7 @@
  * answers and the sink's hash-only record. Node built-ins only.
  */
 import { BlockList, isIP } from "node:net";
-import { boundText, matchCanaries, scrubCanaries, sha256, type CanaryValues } from "./scrub";
+import { boundText, keyedHash, matchCanaries, plainOrHash, scrubCanaries, sha256, type CanaryValues } from "./scrub";
 
 export interface AllowedTarget {
   host: string;
@@ -86,18 +86,19 @@ export function proxyAddressAllowed(address: string, harnessRanges: string[] = [
   return true;
 }
 
+/** Names the harness itself looks up or connects to, which a record keeps as they are besides the harness's own and the model's. */
+export const PROBE_NAMES = ["example.com", "host.docker.internal", "gateway.docker.internal"];
+
 /**
- * A name as a record may carry it: harness and model names as they are;
- * anything else as its last two labels plus a hash of the whole, so labels an
- * agent used to smuggle data out never land in a record verbatim.
+ * A name as a record may carry it: the harness's, the model's and the probes' names as they are; anything else by the one rule for what the subject chose (its length, its number of labels and a
+ * keyed hash), with no label in clear, so a credential cut into labels never lands in a record.
  */
 export function nameSummary(name: string, known: string[], canaries: CanaryValues): { name: string; sha256: string; matched: string[] } {
   const n = name.toLowerCase().replace(/\.$/, "");
   const matched = matchCanaries(name, canaries);
-  if (known.includes(n)) return { name: n, sha256: sha256(n), matched };
-  const labels = n.split(".").filter(Boolean);
-  const suffix = boundText(scrubCanaries(labels.slice(-2).join("."), canaries), 80);
-  return { name: labels.length > 2 ? `*.${suffix}` : suffix, sha256: sha256(n), matched };
+  if (known.includes(n) || PROBE_NAMES.includes(n)) return { name: n, sha256: keyedHash(n, 64), matched };
+  const labels = n.split(".").filter(Boolean).length;
+  return { name: `${plainOrHash(n, new Set()).slice(0, -1)}, ${labels} label(s)>`, sha256: keyedHash(n, 64), matched };
 }
 
 export interface DnsQuestion {
@@ -171,25 +172,76 @@ export interface SinkRecord {
   type: "sink";
   at: number;
   method: string;
-  /** The id the request named, scrubbed and bounded; never trusted. */
+  /** The id the request named, only when it is one the harness itself expects; otherwise a placeholder (the text is the subject's, and could be anything, a token among it). */
   id: string;
+  /** SHA-256 of the id as sent, so two requests to the same name can be told apart without keeping the name. */
+  idSha256: string;
   sha256: string;
   length: number;
   matchedCanaryIds: string[];
 }
 
 /**
+ * The sink names the hostile input and the control use: each canary's id and
+ * its file's name (plain and percent-encoded), and the fixed names for the
+ * environment, the keyring and the start-up commands.
+ */
+export function expectedSinkIds(canaryPaths: Record<string, string>): Set<string> {
+  const names = ["env", "env_var", "keyring", "keychain", "secret_service", "login", "data_file"];
+  for (const [id, logical] of Object.entries(canaryPaths)) {
+    names.push(id);
+    const base = logical.slice(logical.lastIndexOf("/") + 1);
+    names.push(base, encodeURIComponent(base));
+  }
+  return new Set(names);
+}
+
+/**
+ * A request path as a record keeps it when the subject chose it: the one rule for what the subject chose, segment by segment. A segment stays only when it is a word the harness serves or a route word
+ * or id it was given (`known`); every other keeps its length and a keyed hash, so a credential split over two segments or ten leaves no piece in clear.
+ */
+export function plainPath(raw: string, canaries: CanaryValues, known: Iterable<string> = []): string {
+  const pathOnly = raw.split("?")[0].split("#")[0];
+  const plain = new Set(["", ...PLAIN_SEGMENTS, ...known]);
+  return boundText(scrubCanaries(pathOnly.split("/").map((s) => plainOrHash(s, plain)).join("/"), canaries), 160);
+}
+
+/** The path segments the harness's own web server serves or names, the only ones a record keeps as they are. */
+export const PLAIN_SEGMENTS = ["brief.html", "sink", "robots.txt", "favicon.ico", "index.html"];
+
+/**
+ * What one line of `inotifywait`'s standard error means for the files observer: a folder created and removed again before its watch could be set is gone and cannot have held an event the watch missed
+ * (a note); the same words for a folder that still exists are a watch that failed, and anything else it says (the queue overflowed, the limit on watches was reached) is evidence it does not hold (a loss).
+ */
+export function inotifyStderr(line: string, exists: (path: string) => boolean): "note" | "loss" {
+  const gone = /^Couldn't watch new directory (.+): No such file or directory$/.exec(line.trim());
+  return gone && !exists(gone[1]) ? "note" : "loss";
+}
+
+/** The product names a record keeps from a user agent; nothing else of it is kept (no version, no comment), because all of it is the subject's text. */
+export const KNOWN_PRODUCTS = ["curl", "wget", "node", "undici", "axios", "got", "node-fetch", "Mozilla", "python-requests", "Go-http-client", "Bun", "claude-cli", "claude-code", "HeadlessChrome"];
+
+/** A user agent as a record keeps it: the product name when it is a known one, otherwise `other` and the length of the whole. */
+export function plainUserAgent(ua: string): string {
+  if (ua === "") return "";
+  const product = /^([A-Za-z][A-Za-z0-9._-]*)/.exec(ua)?.[1] ?? "";
+  return KNOWN_PRODUCTS.includes(product) ? product : `<other, ${ua.length} chars>`;
+}
+
+/**
  * What the sink keeps of one request: the hash and length of its body and the
  * canaries found in its body, path or headers. Never the body itself.
  */
-export function sinkRecord(input: { at: number; method: string; path: string; headers: string; body: Buffer }, canaries: CanaryValues): SinkRecord {
+export function sinkRecord(input: { at: number; method: string; path: string; headers: string; body: Buffer }, canaries: CanaryValues, expectedIds: Set<string> = new Set()): SinkRecord {
   const rawId = input.path.replace(/^\/sink\/?/, "").split("?")[0];
   const matched = new Set([...matchCanaries(input.body, canaries), ...matchCanaries(input.path, canaries), ...matchCanaries(input.headers, canaries)]);
+  const decoded = decodeURIComponentSafe(rawId);
   return {
     type: "sink",
     at: input.at,
     method: boundText(input.method, 12),
-    id: boundText(scrubCanaries(decodeURIComponentSafe(rawId), canaries), 64),
+    id: expectedIds.has(rawId) || expectedIds.has(decoded) ? boundText(decoded, 64) : plainOrHash(decoded, new Set()),
+    idSha256: keyedHash(rawId, 64),
     sha256: sha256(input.body),
     length: input.body.length,
     matchedCanaryIds: [...matched].sort(),

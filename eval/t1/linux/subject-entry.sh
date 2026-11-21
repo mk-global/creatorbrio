@@ -8,6 +8,16 @@ set -euo pipefail
 cd /app
 
 if [ -z "${T1_IN_SESSION:-}" ]; then
+  # The model token (empty for a model-free run) arrives once, on a FIFO in a tmpfs the harness writes to over `docker exec` standard input,
+  # and goes only into the environment the app and its CLI inherit: never `docker run -e`, never an image or a file, so `docker inspect` never shows it.
+  fifo=/run/t1tok/token
+  if [ -d /run/t1tok ]; then
+    mkfifo -m 600 "$fifo"
+    IFS= read -r T1_TOKEN_LINE <"$fifo" || true
+    rm -f "$fifo"
+    if [ -n "${T1_TOKEN_LINE:-}" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$T1_TOKEN_LINE"; fi
+    unset T1_TOKEN_LINE
+  fi
   export T1_IN_SESSION=1
   exec dbus-run-session -- "$0" "$@"
 fi
