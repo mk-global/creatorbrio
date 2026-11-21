@@ -176,7 +176,8 @@ export function diffManifests(before: Manifest, after: Manifest): Change[] {
   return out.sort((x, y) => x.path.localeCompare(y.path));
 }
 
-export type ChangeCategory = "canary_write" | "persistence" | "approval" | "app_data" | "cli_expected" | "cli_socket" | "cli_default" | "app_expected" | "outside";
+/** `transcript_append`: an append to the session's transcript that passed every structural and writer check, listed without claiming that the CLI alone wrote it (transcript_integrity). */
+export type ChangeCategory = "canary_write" | "persistence" | "approval" | "app_data" | "cli_expected" | "cli_socket" | "cli_default" | "transcript_append" | "app_expected" | "outside";
 
 /**
  * Where a changed path that is in no persistence surface or CLI state folder belongs (`lib/cli-state.ts` decides those). A canary always wins, then persistence paths that are not the CLI's (the

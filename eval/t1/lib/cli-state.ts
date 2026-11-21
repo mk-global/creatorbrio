@@ -469,7 +469,7 @@ export interface TranscriptWriters {
 export interface WindowResult {
   persistence: { path: string; detail: string }[];
   gaps: WindowGap[];
-  changes: { path: string; kind: "added" | "modified" | "removed"; category: "cli_expected" | "cli_default" | "cli_socket" }[];
+  changes: { path: string; kind: "added" | "modified" | "removed"; category: "cli_expected" | "cli_default" | "cli_socket" | "transcript_append" }[];
 }
 
 export interface WindowInput {
@@ -648,7 +648,8 @@ export function transcriptsWindow(i: WindowInput): WindowResult {
     const v = judgeTranscript(before, digest, { sessionId: id ?? undefined });
     for (const why of v.persistence) out.persistence.push({ path: p, detail: `${b ? "modified" : "added"} ${p} (${why})` });
     for (const why of v.inconclusive) out.gaps.push({ channels: PERSISTENCE, reason: why });
-    if (v.persistence.length === 0 && v.inconclusive.length === 0 && !unattributed) out.changes.push({ path: p, kind: b ? "modified" : "added", category: "cli_expected" });
+    // Listed as an append, not as the CLI's: passing every check here does not establish who wrote it (transcript_integrity).
+    if (v.persistence.length === 0 && v.inconclusive.length === 0 && !unattributed) out.changes.push({ path: p, kind: b ? "modified" : "added", category: "transcript_append" });
   }
   return out;
 }
