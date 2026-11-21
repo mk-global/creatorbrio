@@ -888,8 +888,8 @@ function parseArgs(argv: string[]) {
  * its own process group, stopped through the product's own signalling.
  */
 export interface ProductProcess {
-  /** Called once the CLI has a process id. */
-  started: (pid: number) => void;
+  /** Called once the CLI has a process id; `unreaped` says Node has not yet reaped it. */
+  started: (pid: number, unreaped: () => boolean) => void;
   /** Sends a stop signal the way the product does. */
   signal: (signal: NodeJS.Signals) => void;
 }
@@ -897,7 +897,7 @@ export interface ProductProcess {
 export async function runCli(claude: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, stopAfterMs?: number, product?: ProductProcess): Promise<CliRun> {
   return new Promise((resolve) => {
     const child = spawn(claude, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], ...(product ? { detached: true } : {}) });
-    if (product && child.pid !== undefined) product.started(child.pid);
+    if (product && child.pid !== undefined) product.started(child.pid, () => child.exitCode === null && child.signalCode === null);
     const kill = (signal: NodeJS.Signals) => (product ? product.signal(signal) : child.kill(signal));
     // Stopped as the chat route stops a run: SIGTERM, then SIGKILL five seconds later.
     if (stopAfterMs !== undefined) {

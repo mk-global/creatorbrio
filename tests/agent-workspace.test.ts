@@ -249,6 +249,7 @@ describe("the sweep at server start", () => {
     await writeFile(path.join(quarantined, "deep", "locked", "f"), "x");
     await chmod(path.join(quarantined, "deep", "locked"), 0o000);
     await chmod(path.join(quarantined, "deep"), 0o000);
+    await chmod(path.join(root, ".removed"), 0o700);
 
     const { purged } = await sweepLeftoverFolders({ tempRoot, workspaceRoot: root });
     await purged;
@@ -267,9 +268,34 @@ describe("the sweep at server start", () => {
     await writeFile(path.join(bin, "d", "f"), "x");
     execFileSync("chflags", ["uchg", path.join(bin, "d", "f")]);
     execFileSync("chflags", ["uchg", path.join(bin, "d")]);
+    await chmod(path.join(root, ".removed"), 0o700);
     const { purged } = await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root });
     await purged;
     expect(await readdir(path.join(root, ".removed"))).toEqual([]);
+  });
+
+  it("never purges a quarantine folder open to the group or others, or owned by another user", async () => {
+    const bin = path.join(root, ".removed");
+    await mkdir(path.join(bin, "entry"), { recursive: true });
+    await chmod(bin, 0o770);
+    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root })).purged;
+    expect(await readdir(bin)).toEqual(["entry"]);
+    expect(vi.mocked(console.error).mock.calls.some(([message]) => String(message).includes("not purged"))).toBe(true);
+    // Private, but not this user's: the sweep runs as another user id.
+    await chmod(bin, 0o700);
+    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root, uid: uid + 1 })).purged;
+    expect(await readdir(bin)).toEqual(["entry"]);
+    // The same folder as this user's own private folder is purged.
+    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root })).purged;
+    expect(await readdir(bin)).toEqual([]);
+  });
+
+  it("never moves anything into a quarantine folder open to the group or others", async () => {
+    const dir = await startConversation(ID, repo, root);
+    await mkdir(path.join(root, ".removed"));
+    await chmod(path.join(root, ".removed"), 0o755);
+    await expect(removeAgentWritable(dir, root)).rejects.toThrow(/not a private folder/);
+    expect((await stat(dir)).isDirectory()).toBe(true);
   });
 
   it("creates nothing where nothing was left, and leaves a parent that is not this user's private folder alone", async () => {

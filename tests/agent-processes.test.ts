@@ -210,7 +210,7 @@ describe.skipIf(!posix)("the shutdown hook", () => {
 
 describe("what belongs to a run", () => {
   const UID = 501;
-  const p = (pid: number, ppid: number, pgid: number, uid = UID): ProcessEntry => ({ pid, ppid, pgid, uid });
+  const p = (pid: number, ppid: number, pgid: number, uid = UID, extra: Partial<ProcessEntry> = {}): ProcessEntry => ({ pid, ppid, pgid, uid, tty: false, start: `t${pid}`, ...extra });
   // The server 100 (its group 90, under a shell 90), the CLI 200 with a
   // command 210 in its own group and that command's child 211, an orphan 300
   // working in the run's folder in the dead command group 250, an unrelated
@@ -222,30 +222,66 @@ describe("what belongs to a run", () => {
     [100, "/agents/c/conv"],
     [500, "/agents/c/conv"],
   ]);
-  const run = { leaderPid: 200, folders: ["/agents/c/conv"], groups: new Set<number>(), known: new Set<number>() };
+  const run = { leaderPid: 200, leaderStart: "t200", folders: ["/agents/c/conv"], groups: new Set<number>(), known: new Set<number>() };
   const self = { pid: 100, pgid: 90 };
 
   it("is the CLI's group, its descendants and their groups, and what works in its folders, never the server or its ancestors", () => {
-    expect(runTargets({ run, procs, cwds, uid: UID, self })).toEqual({ groups: [200, 210, 250], pids: [210, 211, 300] });
+    // The orphan is signalled by itself: its group was not recorded and it does not lead it.
+    expect(runTargets({ run, procs, cwds, uid: UID, self })).toEqual({ groups: [200, 210], pids: [210, 211, 300] });
   });
 
-  it("signals a recorded group only while a member is known to be the run's", () => {
+  it("brings a folder-matched process's group only when the run recorded it or the process leads it", () => {
+    // 300 works in the folder but shares the foreign group 400 that it does not lead: the group is left alone.
+    const shared = [...procs.filter((q) => q.pid !== 300), p(300, 1, 400)];
+    expect(runTargets({ run, procs: shared, cwds, uid: UID, self })).toEqual({ groups: [200, 210], pids: [210, 211, 300] });
+    // A process in a new session of its own, working in the folder, leads its group.
+    const leader = [...procs.filter((q) => q.pid !== 300), p(300, 1, 300)];
+    expect(runTargets({ run, procs: leader, cwds, uid: UID, self }).groups).toEqual([200, 210, 300]);
+    // A group the run recorded while the CLI lived is signalled again.
+    const recorded = { ...run, groups: new Set([250]) };
+    expect(runTargets({ run: recorded, procs, cwds, uid: UID, self }).groups).toEqual([200, 210, 250]);
+  });
+
+  it("never takes a process with a controlling terminal for the run's by its folder, nor its group", () => {
+    // A person's shell that changed into the conversation's folder, leading its own group, with a child.
+    const shell = [...procs, p(600, 1, 600, UID, { tty: true }), p(601, 600, 600, UID, { tty: true })];
+    const inFolder = new Map([...cwds, [600, "/agents/c/conv"]]);
+    expect(runTargets({ run, procs: shell, cwds: inFolder, uid: UID, self })).toEqual({ groups: [200, 210], pids: [210, 211, 300] });
+  });
+
+  it("signals a recorded group only while one of its members is known to be the run's", () => {
     const recorded = { ...run, groups: new Set([250, 400]), known: new Set<number>() };
     expect(runTargets({ run: recorded, procs, cwds: new Map(), uid: UID, self }).groups).toEqual([200, 210]);
     const known = { ...recorded, known: new Set([400]) };
     expect(runTargets({ run: known, procs, cwds: new Map(), uid: UID, self }).groups).toEqual([200, 210, 400]);
   });
 
-  it("still signals the CLI's group when the process table could not be read", () => {
-    expect(runTargets({ run, procs: [], cwds: new Map(), uid: UID, self })).toEqual({ groups: [200], pids: [] });
+  it("never signals a reused CLI process id, its group or its descendants", () => {
+    // The CLI exited and another process of the same user now has its id and group.
+    const reused = procs.map((q) => (q.pid === 200 ? { ...q, start: "later" } : q));
+    expect(runTargets({ run, procs: reused, cwds: new Map(), uid: UID, self })).toEqual({ groups: [], pids: [] });
+    // Without a recorded start time, only the server's own child is the CLI.
+    const noStart = { ...run, leaderStart: null };
+    expect(runTargets({ run: noStart, procs, cwds: new Map(), uid: UID, self }).groups).toEqual([200, 210]);
+    const adopted = procs.map((q) => (q.pid === 200 ? { ...q, ppid: 1 } : q));
+    expect(runTargets({ run: noStart, procs: adopted, cwds: new Map(), uid: UID, self })).toEqual({ groups: [], pids: [] });
+  });
+
+  it("still signals the CLI's group without a process table only while the server has not reaped the CLI", () => {
+    expect(runTargets({ run, procs: [], cwds: new Map(), uid: UID, self, leaderUnreaped: true })).toEqual({ groups: [200], pids: [] });
+    expect(runTargets({ run, procs: [], cwds: new Map(), uid: UID, self, leaderUnreaped: false })).toEqual({ groups: [], pids: [] });
   });
 
   it("parses the process table and working folders as ps, lsof and /proc print them", () => {
-    expect(parsePsTable("  1     0     1     0\n 812   1 812  501\nbad line\n")).toEqual([p(1, 0, 1, 0), p(812, 1, 812)]);
+    expect(parsePsTable("  1     0     1     0 ??       Sat Nov 21 23:42:31 2026\n 812   1 812  501 ttys001  Sun Nov 22 01:02:03 2026\nbad line\n")).toEqual([
+      p(1, 0, 1, 0, { start: "Sat Nov 21 23:42:31 2026" }),
+      p(812, 1, 812, UID, { tty: true, start: "Sun Nov 22 01:02:03 2026" }),
+    ]);
     expect([...parseLsofCwds("p812\nfcwd\nn/agents/c/conv\np900\nfcwd\nn/\n")]).toEqual([
       [812, "/agents/c/conv"],
       [900, "/"],
     ]);
-    expect(parseProcStat("812 (node (x) y) S 1 812 812 0 -1")).toEqual({ ppid: 1, pgid: 812 });
+    expect(parseProcStat("812 (node (x) y) S 1 812 812 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 98765 0")).toEqual({ ppid: 1, pgid: 812, tty: false, start: "98765" });
+    expect(parseProcStat("812 (bash) S 1 812 812 34816 812 4194304 1 0 0 0 0 0 0 0 20 0 1 0 98765 0")).toMatchObject({ tty: true });
   });
 });

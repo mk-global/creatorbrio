@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { serverTempRoot } from "@/lib/agent-workspace";
+import { serverTempRoot, systemServerTempRoot } from "@/lib/agent-workspace";
 import sharp from "sharp";
 
 import type { BrandConfig } from "@/types/brand";
@@ -300,12 +300,15 @@ describe("runDirector", () => {
     await expect(stat(cwd)).rejects.toThrow();
   });
 
-  it("keeps the legacy location, and with the contained Design Agent works under the server-owned parent that agent cannot read (#241)", async () => {
+  it("keeps the legacy location, and with the contained Design Agent works under the per-user parent that agent cannot read (#241)", async () => {
     await play("plan");
     await runDirector(await request());
     const legacy = await recorded("cwd");
+    // Directly in the system temporary folder, as before #241, and not under the per-user parent.
+    expect(path.dirname(legacy)).toBe(await realpath(tmpdir()));
     expect(path.basename(legacy)).toMatch(/^creatorbrio-director-[A-Za-z0-9]{6}$/);
-    expect(legacy.split(path.sep).includes("cb")).toBe(false);
+    expect(legacy.startsWith(serverTempRoot() + path.sep)).toBe(false);
+    expect(legacy.startsWith(systemServerTempRoot() + path.sep)).toBe(false);
 
     process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "contained";
     try {

@@ -76,7 +76,7 @@ async function main() {
       // Started as the chat route starts it: the leader of its own process group.
       const child = spawn(claude, launch.args, { cwd: launch.cwd, env: launch.env as NodeJS.ProcessEnv, detached: true, stdio: ["pipe", "ignore", "ignore"] });
       const timer = setTimeout(() => launch.signal("SIGKILL"), 120_000);
-      if (child.pid !== undefined) launch.track(child.pid, () => launch.signal("SIGTERM"));
+      if (child.pid !== undefined) launch.track(child.pid, () => launch.signal("SIGTERM"), () => child.exitCode === null && child.signalCode === null);
       child.on("error", () => resolve(1));
       child.on("exit", (code) => {
         clearTimeout(timer);

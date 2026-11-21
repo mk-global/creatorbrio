@@ -11,9 +11,16 @@
  * - the CLI's own group;
  * - every group it saw among the CLI's descendants when it signalled the CLI;
  * - every process still descended from the CLI;
- * - every process whose working folder is inside one of the run's folders,
- *   with its descendants, which is how a command's orphaned background
- *   process is found once the CLI has exited.
+ * - every process whose working folder is inside one of the run's folders and
+ *   that has no controlling terminal, with its descendants, which is how a
+ *   command's orphaned background process is found once the CLI has exited.
+ *   Such a process's group is signalled only when the run recorded it, or
+ *   when the process leads it; a person's own shell, which has a terminal,
+ *   is never taken for the run's, nor is a group it merely shares.
+ *
+ * The CLI's process id is the run's only while it is the same process: its
+ * start time is recorded when it is spawned, so an id the system has since
+ * reused is never signalled.
  *
  * It sends SIGTERM, waits a bounded time, then sends SIGKILL to what is left.
  * At server shutdown it sends SIGKILL at once, because the development
@@ -38,14 +45,18 @@ export interface ProcessEntry {
   ppid: number;
   pgid: number;
   uid: number;
+  /** Whether it has a controlling terminal: then it is a person's, never taken for a run's by its folder. */
+  tty: boolean;
+  /** When it started, as the system prints it: with the id, which process this is. */
+  start: string;
 }
 
-/** Reads `ps -A -o pid=,ppid=,pgid=,uid=` output. */
+/** Reads `ps -A -o pid=,ppid=,pgid=,uid=,tty=,lstart=` output; a tty of `??` or `?` is none. */
 export function parsePsTable(output: string): ProcessEntry[] {
   const out: ProcessEntry[] = [];
   for (const line of output.split("\n")) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
-    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), uid: Number(m[4]) });
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line);
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), uid: Number(m[4]), tty: m[5] !== "??" && m[5] !== "?", start: m[6] });
   }
   return out;
 }
@@ -62,11 +73,13 @@ export function parseLsofCwds(output: string): Map<number, string> {
 }
 
 /** Reads one `/proc/<pid>/stat` line; the command name may hold spaces and parentheses. */
-export function parseProcStat(text: string): { ppid: number; pgid: number } | null {
+export function parseProcStat(text: string): { ppid: number; pgid: number; tty: boolean; start: string } | null {
   const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
   const ppid = Number(fields[1]);
   const pgid = Number(fields[2]);
-  return Number.isInteger(ppid) && Number.isInteger(pgid) ? { ppid, pgid } : null;
+  const ttyNr = Number(fields[4]);
+  const start = fields[19];
+  return Number.isInteger(ppid) && Number.isInteger(pgid) && Number.isInteger(ttyNr) && start !== undefined ? { ppid, pgid, tty: ttyNr !== 0, start } : null;
 }
 
 /** How the server sees processes: the process table, and working folders of this user's processes. */
@@ -95,7 +108,7 @@ function runSync(command: string, args: string[], timeout: number): string {
   }
 }
 
-const PS_ARGS = ["-A", "-o", "pid=,ppid=,pgid=,uid="];
+const PS_ARGS = ["-A", "-o", "pid=,ppid=,pgid=,uid=,tty=,lstart="];
 const lsofArgs = (uid: number) => ["-w", "-a", "-d", "cwd", "-u", String(uid), "-Fpn"];
 
 /** macOS (and other systems with ps and lsof). */
@@ -158,6 +171,8 @@ export function defaultProbe(platform: NodeJS.Platform = process.platform): Proc
 /** What a run's processes are known by. */
 export interface RunIdentity {
   leaderPid: number;
+  /** The CLI's start time, recorded when it was spawned; null when it could not be read. */
+  leaderStart: string | null;
   /** The run's folders: a process working inside one of them belongs to the run. */
   folders: readonly string[];
   /** Groups seen among the CLI's descendants while it was alive. */
@@ -176,7 +191,9 @@ const inside = (dir: string, folders: readonly string[]) => folders.some((f) => 
 /**
  * The groups and processes that belong to a run, from one look at the system.
  * Pure, so every case is testable. `self` is the server: neither it, its own
- * group, nor anything it descends from is ever a target.
+ * group, nor anything it descends from is ever a target. `leaderUnreaped`
+ * says the server has not yet reaped the CLI, so its id is still the CLI's
+ * whatever the table shows.
  */
 export function runTargets(input: {
   run: RunIdentity;
@@ -184,7 +201,9 @@ export function runTargets(input: {
   cwds: ReadonlyMap<number, string>;
   uid: number;
   self: { pid: number; pgid: number };
+  leaderUnreaped?: boolean;
 }): Targets {
+  const { run } = input;
   const own = input.procs.filter((p) => p.uid === input.uid);
   const byPid = new Map(own.map((p) => [p.pid, p]));
   const children = new Map<number, ProcessEntry[]>();
@@ -193,38 +212,62 @@ export function runTargets(input: {
   for (let p: ProcessEntry | undefined = byPid.get(input.self.pid), guard = 0; p && guard < 4096; p = byPid.get(p.ppid), guard++) protectedPids.add(p.pid);
   protectedPids.add(input.self.pid);
 
-  const roots = [input.run.leaderPid];
-  for (const [pid, cwd] of input.cwds) if (inside(cwd, input.run.folders) && byPid.has(pid)) roots.push(pid);
-  const pids = new Set<number>();
-  const queue = [...roots];
-  while (queue.length > 0) {
-    const pid = queue.shift()!;
-    if (pids.has(pid) || protectedPids.has(pid)) continue;
-    if (pid !== input.run.leaderPid && !byPid.has(pid)) continue;
-    pids.add(pid);
-    for (const child of children.get(pid) ?? []) queue.push(child.pid);
+  // The leader is the run's only while it is the same process.
+  const leaderEntry = byPid.get(run.leaderPid);
+  const leaderOk =
+    input.leaderUnreaped === true ||
+    (leaderEntry !== undefined && (run.leaderStart !== null ? leaderEntry.start === run.leaderStart : leaderEntry.ppid === input.self.pid));
+
+  const walk = (roots: number[], into: Set<number>, skip: (p: ProcessEntry) => boolean, isTree = false) => {
+    const queue = [...roots];
+    while (queue.length > 0) {
+      const pid = queue.shift()!;
+      if (into.has(pid) || protectedPids.has(pid)) continue;
+      const entry = byPid.get(pid);
+      // Only the verified CLI may be missing from the table (it was not readable).
+      if (entry ? skip(entry) : !(isTree && pid === run.leaderPid)) continue;
+      into.add(pid);
+      for (const child of children.get(pid) ?? []) queue.push(child.pid);
+    }
+  };
+  // The CLI and everything descended from it.
+  const tree = new Set<number>();
+  if (leaderOk) walk([run.leaderPid], tree, () => false, true);
+  // What works in the run's folders, and its descendants: never a process with a terminal.
+  const byFolder = new Set<number>();
+  const folderRoots = [...input.cwds].filter(([pid, cwd]) => inside(cwd, run.folders) && byPid.has(pid) && !tree.has(pid)).map(([pid]) => pid);
+  walk(folderRoots, byFolder, (p) => p.tty || tree.has(p.pid));
+
+  const candidates = new Set<number>(run.groups);
+  if (leaderOk) candidates.add(run.leaderPid);
+  for (const pid of tree) {
+    const pgid = byPid.get(pid)?.pgid;
+    if (pgid !== undefined) candidates.add(pgid);
+  }
+  // A process found by its folder alone brings its group only when the run
+  // recorded that group, or when it leads the group itself.
+  for (const pid of byFolder) {
+    const p = byPid.get(pid)!;
+    if (run.groups.has(p.pgid) || (p.pid === p.pgid && !p.tty)) candidates.add(p.pgid);
   }
   // A group is signalled only while one of its members is known to be the
   // run's, so a group number the system has since given to another process
   // group is never signalled. Without a process table (the probe failed),
-  // the CLI's own group is still signalled.
-  const known = new Set<number>([input.run.leaderPid, ...input.run.known, ...pids]);
+  // the CLI's own group is still signalled while the CLI is unreaped.
+  const known = new Set<number>([...run.known, ...tree, ...byFolder]);
+  if (leaderOk) known.add(run.leaderPid);
   const members = new Map<number, number[]>();
   for (const p of own) members.set(p.pgid, [...(members.get(p.pgid) ?? []), p.pid]);
-  const candidates = new Set<number>([input.run.leaderPid, ...input.run.groups]);
-  for (const pid of pids) {
-    const pgid = byPid.get(pid)?.pgid;
-    if (pgid !== undefined) candidates.add(pgid);
-  }
   const groups = [...candidates].filter(
     (g) =>
       g > 1 &&
       g !== input.self.pgid &&
       !protectedPids.has(g) &&
-      ((members.get(g) ?? []).some((m) => known.has(m)) || (input.procs.length === 0 && g === input.run.leaderPid))
+      ((members.get(g) ?? []).some((m) => known.has(m)) || (input.procs.length === 0 && leaderOk && g === run.leaderPid))
   );
-  // The leader is signalled through its group; a pid listed here is one that may have left it.
-  pids.delete(input.run.leaderPid);
+  const pids = new Set([...tree, ...byFolder]);
+  // The verified leader is signalled through its group; a pid listed here is one that may have left it.
+  if (leaderOk) pids.delete(run.leaderPid);
   return { groups: groups.sort((a, b) => a - b), pids: [...pids].sort((a, b) => a - b) };
 }
 
@@ -273,13 +316,13 @@ export interface StopReport {
  */
 export async function stopRunProcesses(
   run: RunIdentity,
-  options: { graceMs?: number; killWaitMs?: number; probe?: ProcessProbe; uid?: number } = {}
+  options: { graceMs?: number; killWaitMs?: number; probe?: ProcessProbe; uid?: number; leaderUnreaped?: () => boolean } = {}
 ): Promise<StopReport> {
   const probe = options.probe ?? defaultProbe();
   const uid = options.uid ?? process.getuid?.() ?? 0;
   const look = async () => {
     const [procs, cwds] = await Promise.all([probe.list().catch(() => []), probe.cwds(uid).catch(() => new Map<number, string>())]);
-    return remaining(runTargets({ run, procs, cwds, uid, self: selfIdentity(procs) }));
+    return remaining(runTargets({ run, procs, cwds, uid, self: selfIdentity(procs), leaderUnreaped: options.leaderUnreaped?.() }));
   };
   let targets = await look();
   if (isEmpty(targets)) return { found: 0, left: 0 };
@@ -305,8 +348,9 @@ export async function stopRunProcesses(
 }
 
 interface LiveRun {
-  run: { leaderPid: number; folders: readonly string[]; groups: Set<number>; known: Set<number> };
+  run: { leaderPid: number; leaderStart: string | null; folders: readonly string[]; groups: Set<number>; known: Set<number> };
   abort: () => void;
+  leaderUnreaped: () => boolean;
 }
 
 const REGISTRY_KEY = Symbol.for("creatorbrio.agent-processes");
@@ -335,11 +379,24 @@ export interface TrackedRun {
 /**
  * Tracks one contained run's processes from the moment its CLI is spawned,
  * so the run's stop, its end and the server's shutdown all reach them.
- * `abort` ends the run as a stop does.
+ * `abort` ends the run as a stop does. `leaderUnreaped` (from the spawned
+ * child: no exit code and no signal yet) says its id is still the CLI's; the
+ * CLI's start time is recorded here as well, while it is certainly the CLI.
  */
-export function trackRun(input: { leaderPid: number; folders: readonly string[]; abort: () => void; probe?: ProcessProbe }): TrackedRun {
+export function trackRun(input: { leaderPid: number; folders: readonly string[]; abort: () => void; probe?: ProcessProbe; leaderUnreaped?: () => boolean }): TrackedRun {
   const probe = input.probe ?? defaultProbe();
-  const live: LiveRun = { run: { leaderPid: input.leaderPid, folders: [...input.folders], groups: new Set(), known: new Set() }, abort: input.abort };
+  let leaderStart: string | null = null;
+  try {
+    leaderStart = probe.listSync().find((p) => p.pid === input.leaderPid)?.start ?? null;
+  } catch {
+    // Without it the CLI is recognised as the server's child.
+  }
+  const leaderUnreaped = input.leaderUnreaped ?? (() => false);
+  const live: LiveRun = {
+    run: { leaderPid: input.leaderPid, leaderStart, folders: [...input.folders], groups: new Set(), known: new Set() },
+    abort: input.abort,
+    leaderUnreaped,
+  };
   registry().set(input.leaderPid, live);
   installShutdownHook();
   let stopped: Promise<StopReport> | null = null;
@@ -352,13 +409,13 @@ export function trackRun(input: { leaderPid: number; folders: readonly string[];
         // The CLI's own group is still signalled.
       }
       const uid = process.getuid?.() ?? 0;
-      const t = runTargets({ run: live.run, procs, cwds: new Map(), uid, self: selfIdentity(procs) });
+      const t = runTargets({ run: live.run, procs, cwds: new Map(), uid, self: selfIdentity(procs), leaderUnreaped: leaderUnreaped() });
       for (const g of t.groups) live.run.groups.add(g);
       for (const p of t.pids) live.run.known.add(p);
       signalTargets(t, signal);
     },
     stop() {
-      stopped ??= stopRunProcesses(live.run, { probe }).finally(() => {
+      stopped ??= stopRunProcesses(live.run, { probe, leaderUnreaped }).finally(() => {
         if (registry().get(input.leaderPid) === live) registry().delete(input.leaderPid);
       });
       return stopped;
@@ -388,13 +445,13 @@ export function shutdownLiveRuns(probe: ProcessProbe = defaultProbe()): number {
     } catch {
       // The processes are stopped below whatever the run does.
     }
-    signalTargets(runTargets({ run: live.run, procs, cwds: new Map(), uid, self: selfIdentity(procs) }), "SIGKILL");
+    signalTargets(runTargets({ run: live.run, procs, cwds: new Map(), uid, self: selfIdentity(procs), leaderUnreaped: live.leaderUnreaped() }), "SIGKILL");
   }
   // Then what works in the runs' folders, which outlived their commands.
   try {
     const after = probe.listSync();
     const cwds = probe.cwdsSync(uid);
-    for (const live of lives) signalTargets(runTargets({ run: live.run, procs: after, cwds, uid, self: selfIdentity(after) }), "SIGKILL");
+    for (const live of lives) signalTargets(runTargets({ run: live.run, procs: after, cwds, uid, self: selfIdentity(after), leaderUnreaped: live.leaderUnreaped() }), "SIGKILL");
   } catch {
     // Best effort within the shutdown.
   }
@@ -437,8 +494,8 @@ export function installShutdownHook(proc: HookedProcess = process as unknown as 
   }
   proc.on("exit", () => {
     for (const live of registry().values()) {
-      // No process table here: only the CLI's own group, which exists while it or a member lives.
-      if (live.run.leaderPid > 1) send(-live.run.leaderPid, "SIGKILL");
+      // No process table here: only the CLI's own group, and only while the CLI is unreaped, so its id is still its own.
+      if (live.run.leaderPid > 1 && live.leaderUnreaped()) send(-live.run.leaderPid, "SIGKILL");
     }
   });
 }

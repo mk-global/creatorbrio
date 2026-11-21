@@ -318,7 +318,7 @@ async function main() {
       const holder: { run?: TrackedRun } = {};
       const product: ProductProcess | undefined = lifecycle
         ? {
-            started: (pid) => (holder.run = trackRun({ leaderPid: pid, folders: [workDir, layout.stagingDir, tempDir], abort: () => {} })),
+            started: (pid, unreaped) => (holder.run = trackRun({ leaderPid: pid, folders: [workDir, layout.stagingDir, tempDir], abort: () => {}, leaderUnreaped: unreaped })),
             signal: (signal) => holder.run?.signal(signal),
           }
         : undefined;

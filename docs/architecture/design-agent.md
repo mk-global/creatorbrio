@@ -53,7 +53,10 @@ The contained profile (#156, #186, #226, #227, #228, #241) gives the agent one c
   A retry reads the pages again.
 - **Sandbox.** Every shell command runs inside Claude Code's sandbox, which must be available (`failIfUnavailable`) and cannot be bypassed (`allowUnsandboxedCommands: false`).
   The shell can reach only the run's listener, through the sandbox's proxy with a strict allowlist; on macOS the evidence's positive control for an external address used HTTP only.
-  It may write only the conversation's own folder and the run's temporary folder.
+  On macOS it may write only the conversation's own folder and the run's temporary folder.
+  On Linux the shell can also write the shared, world-writable temporary folders: the CLI's sandbox (2.1.328) leaves them writable, and denying writes there also hides the run's own temporary folder beneath them, which breaks the run (measured: writes to its own temporary folder and session resume then fail), so the profile cannot close it.
+  So on Linux the property that the shell writes only its own folders does not hold.
+  Closing it needs a change in the CLI's sandbox or a stronger boundary, a separate operating system account or a container per run, and Linux is not qualified for that property until then (#237).
   It cannot read the home folder, the repository, the data folder, the CLI's shared temporary folder, the folder that holds every carousel's folder (other than its own conversation's folder and its staged images), the per-user temporary parent (other than the run's own temporary folder) or, on macOS, the per-user temporary folder.
   On macOS a bare `mktemp` ignores the run's temporary folder and tries the per-user temporary folder, so it fails; naming the run's folder (`mktemp "$TMPDIR/name.XXXXXX"`) works.
   A CLI configuration folder kept outside home is denied too, by configuration only: no check has probed it yet.
@@ -78,14 +81,18 @@ The contained profile (#156, #186, #226, #227, #228, #241) gives the agent one c
   The contained shell is denied reading the parent, and only its own run's folder is re-allowed, so a run never reads another run's files or the Director's copies.
   With the legacy profile the Director keeps using the system's temporary folder.
 - **Process lifecycle.** The CLI starts as the leader of its own process group.
-  Because the CLI runs each shell command in a process group of its own, the server also stops what those commands started: when a run ends, is stopped or times out, it signals the CLI's group, every group it saw among the CLI's descendants, those descendants, and every process of the same user working in the run's folders, with SIGTERM and then SIGKILL after a bounded wait (`src/lib/agent-processes.ts`).
+  Because the CLI runs each shell command in a process group of its own, the server also stops what those commands started: when a run ends, is stopped or times out, it signals the CLI's group, every group it saw among the CLI's descendants, those descendants, and every process of the same user without a controlling terminal working in the run's folders, with SIGTERM and then SIGKILL after a bounded wait (`src/lib/agent-processes.ts`).
+  A process found only by its working folder brings its process group only when the run recorded that group or the process leads it; a process with a controlling terminal, such as a person's own shell opened in a conversation folder, is never taken for the run's.
+  The CLI's process id is the run's only while it is the same process, checked by the start time recorded when it was spawned, or by the server not having reaped it yet.
   The server, its own process group and its ancestors are never signalled, and a recorded group is signalled only while one of its members is known to be the run's, so a reused process id is not hit.
   The run keeps its carousel's slot until this stop has finished.
   The legacy profile's process handling is unchanged.
-- **Server shutdown and start.** When the server receives SIGTERM or SIGINT (including Ctrl-C), it aborts every live contained run and sends SIGKILL to everything those runs own at once, because the development server's supervisor ends its worker shortly after forwarding the signal (`src/instrumentation.ts`).
-  The `/stop` command (`scripts/stop-server.mjs`) also stops processes the server started that outlive it, identified by process id and start time.
+- **Server shutdown and start.** With the contained profile only, when the server receives SIGTERM or SIGINT (including Ctrl-C), it aborts every live contained run and sends SIGKILL to everything those runs own at once, because the development server's supervisor ends its worker shortly after forwarding the signal (`src/instrumentation.ts`).
+  The `/stop` command (`scripts/stop-server.mjs`) also stops processes the server started that outlive it, but only those working in the contained profile's folders (the agent workspace root and the per-user temporary parent) without a controlling terminal, each identified by process id and start time; anything else the server started, such as the legacy Design Agent, the Visual Director or the export browser, is left as before.
   At start, before serving requests, the server moves the run folders and server folders of servers that are no longer running, run folders no server owns, and its own leftovers no live run owns, into a removal folder in the parent, then deletes that and the agent folders' removal folder in the background.
   Permissions the agent removed are restored first and, on macOS, user immutable flags are cleared; anything that still cannot be removed is logged by folder name and retried at the next start.
+  A removal folder, or the temporary parent, that is not a real folder of the person running the server with no group or other access is never moved into or deleted from; it is logged by name and left alone.
+  With the legacy profile the server installs no shutdown handler and sweeps nothing at start.
 - **Removing what the agent could write.** The server never deletes inside a folder the agent can still change, since a process changing a folder while it is deleted could redirect the delete outside it.
   It first moves the folder whole into a removal folder (`.removed`) beside the carousels' folders, or inside the per-user temporary parent for a run's temporary folder, which the agent cannot write, and deletes it there without following links.
   On macOS the sandbox's write rules follow paths, so the move ends a leftover process's writes to the folder, which the stand-in qualification's cleanup check measures (`eval/sandbox-route/qualify.ts`).

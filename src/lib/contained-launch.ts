@@ -33,8 +33,11 @@ export interface ContainedLaunch {
   conversationId: string;
   /** Removes the run's token from text the app relays or logs. */
   redact: (text: string) => string;
-  /** Starts tracking the spawned CLI's processes; `abort` ends the run as a stop does. */
-  track: (pid: number, abort: () => void) => void;
+  /**
+   * Starts tracking the spawned CLI's processes; `abort` ends the run as a
+   * stop does, and `unreaped` says the server has not yet reaped the CLI.
+   */
+  track: (pid: number, abort: () => void, unreaped: () => boolean) => void;
   /** Signals the CLI's process group and every group among its descendants. */
   signal: (signal: NodeJS.Signals) => void;
   finish: () => Promise<void>;
@@ -113,8 +116,8 @@ export async function prepareContainedLaunch(options: {
       cwd: workDir,
       conversationId: path.basename(workDir),
       redact: (text) => (text.includes(token) ? text.split(token).join("[redacted]") : text),
-      track: (pid, abort) => {
-        tracked ??= trackRun({ leaderPid: pid, folders: [workDir, stagingDir, tempDir], abort });
+      track: (pid, abort, unreaped) => {
+        tracked ??= trackRun({ leaderPid: pid, folders: [workDir, stagingDir, tempDir], abort, leaderUnreaped: unreaped });
       },
       signal: (signal) => tracked?.signal(signal),
       finish: async () => {

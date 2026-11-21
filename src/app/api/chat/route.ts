@@ -420,10 +420,16 @@ export async function POST(request: NextRequest) {
           kill("SIGTERM");
           abortKill ??= setTimeout(() => kill("SIGKILL"), FORCE_KILL_AFTER_MS);
         };
-        containedRun.track(childProcess.pid, () => {
-          cancelled = true;
-          abortController.abort();
-        });
+        const cli = childProcess;
+        containedRun.track(
+          childProcess.pid,
+          () => {
+            cancelled = true;
+            abortController.abort();
+          },
+          // Until Node reaps the CLI, its process id cannot belong to another process.
+          () => cli.exitCode === null && cli.signalCode === null
+        );
         if (abortController.signal.aborted) onAbort();
         else abortController.signal.addEventListener("abort", onAbort, { once: true });
         childProcess.once("exit", () => {

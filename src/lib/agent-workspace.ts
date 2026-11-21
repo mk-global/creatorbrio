@@ -190,6 +190,8 @@ async function quarantine(target: string, root: string, platform: NodeJS.Platfor
   }
   const bin = path.join(root, QUARANTINE);
   await mkdir(bin, { recursive: true, mode: 0o700 });
+  // Never into a folder another user, or the group, could reach.
+  if (!isPrivateDir(await lstat(bin).catch(() => null), currentUid())) throw new AgentWorkspaceError("The quarantine folder is not a private folder of this user.");
   const moved = path.join(bin, randomUUID());
   try {
     await rename(target, moved);
@@ -461,7 +463,7 @@ export async function sweepLeftoverFolders(options: {
 
   const tempInfo = await lstat(tempRoot).catch(() => null);
   if (tempInfo) {
-    if (!tempInfo.isDirectory() || tempInfo.isSymbolicLink() || tempInfo.uid !== uid || (tempInfo.mode & 0o077) !== 0) {
+    if (!isPrivateDir(tempInfo, uid)) {
       console.error("[design-agent] the server temporary folder is not a private folder of this user; it was not swept", { folder: path.basename(tempRoot) });
     } else {
       bins.push(path.join(tempRoot, QUARANTINE));
@@ -514,14 +516,28 @@ export async function sweepLeftoverFolders(options: {
     }
   }
   const purged = (async () => {
-    for (const bin of bins) await purgeChildren(bin, platform);
+    for (const bin of bins) await purgeChildren(bin, uid, platform);
   })().catch((err) => logLeftBehind(QUARANTINE, "the quarantine")(err));
   return { purged };
 }
 
-async function purgeChildren(bin: string, platform: NodeJS.Platform): Promise<void> {
+/** A real folder (never a link) owned by `uid` with no group or other access. */
+function isPrivateDir(info: Awaited<ReturnType<typeof lstat>> | null, uid: number): boolean {
+  return info !== null && info.isDirectory() && !info.isSymbolicLink() && info.uid === uid && (Number(info.mode) & 0o077) === 0;
+}
+
+/**
+ * Deletes everything in one quarantine folder, only if it is this user's own
+ * private folder: one that is a link, another user's, or open to the group or
+ * others is reported by name and left alone.
+ */
+async function purgeChildren(bin: string, uid: number, platform: NodeJS.Platform): Promise<void> {
   const info = await lstat(bin).catch(() => null);
-  if (!info || !info.isDirectory() || info.isSymbolicLink()) return;
+  if (!info) return;
+  if (!isPrivateDir(info, uid)) {
+    console.error("[design-agent] a quarantine folder is not a private folder of this user; it was not purged", { folder: path.basename(bin), parent: path.basename(path.dirname(bin)) });
+    return;
+  }
   for (const name of await readdir(bin).catch(() => [] as string[])) await purgeQuarantined(path.join(bin, name), platform);
 }
 
