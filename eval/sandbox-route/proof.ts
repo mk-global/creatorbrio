@@ -62,6 +62,7 @@ import { createServer as createNetServer, isIPv6, type Server as NetServer } fro
 import { homedir, hostname, networkInterfaces, platform, release, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { stagingDirFor } from "../../src/lib/agent-workspace";
 import { agentTempDirFits, containedArgs, containedEnv, containedSettings, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
 import { standInEnv, startStandIn, type ScriptedCall, type StandIn, type StandInRequest } from "./stand-in";
 
@@ -112,7 +113,7 @@ export const isProductArm = (arm: string) => arm === "product" || arm === "produ
 /** The product profile's layout for one arm: its folder is the arm's work folder, its listener the stand-in listener. */
 export function productLayout(workDir: string, tempDir: string, agentPort: number, layout: ProofLayout, home: string, hostPlatform: NodeJS.Platform = platform(), uid: number = process.getuid?.() ?? 0): ContainedLayout {
   const privateDirs = privateReadDirs({ env: {}, platform: hostPlatform, workspaceRoot: path.dirname(workDir), userTempDir: realpathSync(tmpdir()) });
-  return { workDir, tempDir, homeDir: home, repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs };
+  return { workDir, stagingDir: stagingDirFor(workDir), tempDir, homeDir: home, repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs };
 }
 
 /** The extra paths the product's Read tool is aimed at: a link to the data canary in its own folder, and a `..` path out of it. */
@@ -882,9 +883,16 @@ function parseArgs(argv: string[]) {
   };
 }
 
-export async function runCli(claude: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<CliRun> {
+export async function runCli(claude: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, stopAfterMs?: number): Promise<CliRun> {
   return new Promise((resolve) => {
     const child = spawn(claude, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    // Stopped as the chat route stops a run: SIGTERM, then SIGKILL five seconds later.
+    if (stopAfterMs !== undefined) {
+      setTimeout(() => {
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+      }, stopAfterMs).unref();
+    }
     let raw = "";
     let stderr = "";
     child.stdout.on("data", (d) => (raw += d));
