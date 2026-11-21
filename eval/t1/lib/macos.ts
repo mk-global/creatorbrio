@@ -10,7 +10,7 @@ import { coalescible, normalizeState, scopeOf } from "./cli-state";
 import { ROOT_PATHS } from "./readers";
 import { ACCESS_EVENTS, type DnsLine, type FsEvent } from "./observations";
 import type { CliIdentity } from "./procs";
-import { isCliBinary } from "./procs";
+import { cliRoleOf, isCliBinary, type CliRole } from "./procs";
 
 /** Where each logical root lives in the macOS VM. */
 export const MACOS_ROOTS: Record<string, string> = { ...ROOT_PATHS.macos };
@@ -41,7 +41,7 @@ export interface EsEvent {
   /** Absolute paths with the access each one had, in inotify's vocabulary; `dev` and `ino` identify the file whatever name it was reached by. */
   paths: { path: string; events: string[]; dev?: number; ino?: number }[];
   /** Set for exec and fork: a new process, its uid and its parent; for exec also what was run. */
-  process?: { pid: number; euid: number; ppid?: number; exe?: string; size?: number; cdhash?: string };
+  process?: { pid: number; euid: number; ppid?: number; exe?: string; size?: number; cdhash?: string; role?: CliRole };
   /** Set for exit: the process that ended. */
   exited?: boolean;
   /** Set for mount: the file system type and mount point. A subject mount is a channel the harness refuses (the VM's VirtioFS device). */
@@ -119,6 +119,8 @@ export function parseEsloggerLine(line: string, uid: number): EsEvent | null {
         // The parent at the process's creation (`original_ppid`), never one it was later reparented to.
         ppid: Number.isFinite(Number(child.original_ppid)) ? Number(child.original_ppid) : Number.isFinite(Number(child.ppid)) ? Number(child.ppid) : type === "fork" ? pid : undefined,
         ...(type === "exec" ? { exe: pathOf(child.executable) ?? undefined, size: typeof stat.st_size === "number" ? stat.st_size : undefined, cdhash: typeof child.cdhash === "string" ? child.cdhash.toLowerCase() : undefined } : {}),
+        // What the exec ran as (#237), from its arguments: only the role is kept, never the arguments, which hold the person's task.
+        ...(type === "exec" ? { role: cliRoleOf(Array.isArray(e.args) && e.args.every((a) => typeof a === "string") ? (e.args as string[]) : null) } : {}),
       },
     };
   }
@@ -240,11 +242,11 @@ export function fsEventsFrom(events: EsEvent[], canaryLogical: Set<string>, root
 }
 
 /** What the observer knows of one process start: the record the judge reads, with whether it ran the CLI binary. */
-export function processRecord(e: EsEvent, cli: CliIdentity | null): { pid: number; ppid?: number; exe?: string; cli?: true } | null {
+export function processRecord(e: EsEvent, cli: CliIdentity | null): { pid: number; ppid?: number; exe?: string; cli?: true; role?: CliRole } | null {
   const p = e.process;
   if (!p) return null;
   const isCli = Boolean(cli && p.exe && isCliBinary({ path: p.exe, size: p.size, cdhash: p.cdhash }, cli));
-  return { pid: p.pid, ...(p.ppid !== undefined ? { ppid: p.ppid } : {}), ...(p.exe ? { exe: p.exe } : {}), ...(isCli ? { cli: true as const } : {}) };
+  return { pid: p.pid, ...(p.ppid !== undefined ? { ppid: p.ppid } : {}), ...(p.exe ? { exe: p.exe } : {}), ...(isCli ? { cli: true as const, role: p.role ?? "unknown" } : {}) };
 }
 
 /** What `mDNSResponder`'s log says about one query: a client request, a request's question, or a question sent upstream with its DNS id. */

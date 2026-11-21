@@ -8,7 +8,10 @@
  * name), so a second model session the app did not start can be flagged. It
  * also re-reads the executable of every live process on each poll, so a shell
  * that becomes the CLI after a delay (`exec` in place) is recorded again as a
- * run of the CLI, with the parent it started with. The
+ * run of the CLI, with the parent it started with. A run of the CLI also gets
+ * its role (#237), read from `/proc/<pid>/cmdline` when it is first seen as the
+ * CLI; only the role is written, never the arguments, which hold the person's
+ * task and the system prompt. The
  * subject runs as an unprivileged user and cannot signal or ptrace this root
  * process.
  *
@@ -18,6 +21,7 @@
  */
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { cliRoleOf, type CliRole } from "../lib/procs";
 import { heartbeat, jsonl, loadConfig, onStop } from "./common";
 
 const cfg = loadConfig();
@@ -56,6 +60,16 @@ function exeOf(name: string): { exe: string; size: number } | null {
 
 const isCliExe = (e: { exe: string; size: number } | null) => Boolean(cli && e && (e.exe === cli.path || e.size === cli.size));
 
+/** The role of a run of the CLI from its arguments, read once when it is first seen as the CLI; `unknown` when they cannot be read (it already exited). */
+function roleOf(name: string): CliRole {
+  try {
+    const raw = readFileSync(`/proc/${name}/cmdline`);
+    return cliRoleOf(raw.toString("utf8").split("\0").filter((a, i, all) => i < all.length - 1 || a !== ""));
+  } catch {
+    return "unknown";
+  }
+}
+
 function poll() {
   const at = Date.now();
   lastTick = at;
@@ -83,7 +97,7 @@ function poll() {
         lastSelfTest = at;
         continue;
       }
-      out.write({ type: "process", at, pid, ppid: st.ppid, ...(e ? { exe: e.exe } : {}), ...(isCliExe(e) ? { cli: true } : {}) });
+      out.write({ type: "process", at, pid, ppid: st.ppid, ...(e ? { exe: e.exe } : {}), ...(isCliExe(e) ? { cli: true, role: roleOf(name) } : {}) });
       continue;
     }
     if (selfTestKeys.has(key)) {
@@ -95,7 +109,7 @@ function poll() {
     if (e && e.exe !== known.exe) {
       known.exe = e.exe;
       known.cli = isCliExe(e);
-      out.write({ type: "process", at, pid, ppid: known.ppid, exe: e.exe, execed: true, ...(isCliExe(e) ? { cli: true } : {}) });
+      out.write({ type: "process", at, pid, ppid: known.ppid, exe: e.exe, execed: true, ...(isCliExe(e) ? { cli: true, role: roleOf(name) } : {}) });
     }
   }
   // A run of the CLI that is gone is recorded as ended, for triage.

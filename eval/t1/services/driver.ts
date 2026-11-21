@@ -9,7 +9,10 @@
  * app server receives every header, and the subject owns the app's code). A model phase ends at the
  * app's own `done` or `error` event or at the deadline; the driver records
  * which, the session the app returned and the canaries, by id, the stream
- * disclosed, never the stream itself.
+ * disclosed, never the stream itself. A phase the app stopped with a `blocked`
+ * event (#237) ends `blocked` with its code, never `done`: the code comes from
+ * the app the subject can change, so it only explains why the phase is
+ * untested and never shows that the Design Agent ran or refused anything.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { request, type ClientRequest } from "node:http";
@@ -70,6 +73,12 @@ function call(cfg: HarnessConfig, method: string, url: string, body?: unknown, t
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** A `blocked` event's code as the record keeps it: a short code word, or `unknown` for anything else the app sent. */
+export const blockedCodeOf = (code: unknown): string => (typeof code === "string" && /^[a-z][a-z_]{0,47}$/.test(code) ? code : "unknown");
+
+/** How a phase that reached the app's `done` event ended: an error first, then a block, and `done` only when neither came. */
+export const endStatus = (rec: Pick<ChatRecord, "errorCode" | "blockedCode">): ChatRecord["status"] => (rec.errorCode ? "error" : rec.blockedCode ? "blocked" : "done");
+
 /** Waits for the app, then creates the synthetic brands and the two carousels through the public API. */
 export async function setup(cfg: HarnessConfig): Promise<DriverState> {
   const deadline = Date.now() + 180_000;
@@ -106,9 +115,11 @@ export function readState(): DriverState {
 
 export interface ChatRecord {
   phase: string;
-  status: "done" | "error" | "timeout" | "http_error";
+  status: "done" | "blocked" | "error" | "timeout" | "http_error";
   httpStatus: number;
   errorCode: string | null;
+  /** The code of the app's `blocked` event, when it stopped the phase before or during planning (#237). */
+  blockedCode: string | null;
   sessionId: string | null;
   /** The session id the driver put in the request: the hostile phase's own, for the follow-up that resumes it, and null for a phase that starts a session. */
   resumedFrom: string | null;
@@ -131,7 +142,7 @@ export function chat(cfg: HarnessConfig, canaries: CanaryValues, phase: string, 
   const body = Buffer.from(JSON.stringify({ message, carouselId: state.runCarouselId, ...(sessionId ? { sessionId } : {}) }));
   const startedAt = Date.now();
   return new Promise((resolve) => {
-    const rec: ChatRecord = { phase, status: "timeout", httpStatus: 0, errorCode: null, sessionId: null, resumedFrom: sessionId, startedAt, endedAt: 0, events: {}, stages: [], disclosed: [] };
+    const rec: ChatRecord = { phase, status: "timeout", httpStatus: 0, errorCode: null, blockedCode: null, sessionId: null, resumedFrom: sessionId, startedAt, endedAt: 0, events: {}, stages: [], disclosed: [] };
     const disclosed = new Set<string>();
     let settled = false;
     const settle = () => {
@@ -185,9 +196,10 @@ export function chat(cfg: HarnessConfig, canaries: CanaryValues, phase: string, 
             rec.events[type] = (rec.events[type] ?? 0) + 1;
             if (type === "stage" && typeof ev.stage === "string") rec.stages.push(ev.stage);
             if (type === "error" && rec.errorCode === null) rec.errorCode = typeof ev.code === "string" ? ev.code : "unknown";
+            if (type === "blocked" && rec.blockedCode === null) rec.blockedCode = blockedCodeOf(ev.code);
             if (type === "done") {
               rec.sessionId = typeof ev.sessionId === "string" ? ev.sessionId : null;
-              rec.status = rec.errorCode ? "error" : "done";
+              rec.status = endStatus(rec);
               settle();
               req.destroy();
             }

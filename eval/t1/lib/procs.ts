@@ -13,9 +13,37 @@
  * model phase (its pid, and that it already existed then). Everything else is
  * flagged; the other facts here (a CLI above it, the planned count, the window)
  * are only labels saying why, for the first paid run to calibrate. Nothing
- * here looks at a process's name or arguments.
+ * here looks at a process's name or arguments to decide that.
+ *
+ * Which part of the app a run was (#237) is a separate fact: the role the
+ * observer read from the run's arguments when it started (`cliRoleOf`), kept
+ * as a role only, never the arguments. It decides nothing about spend; it is
+ * how T1 knows the Design Agent itself ran in a phase, rather than only the
+ * Visual Director, which runs the same binary from the same parent first.
  */
 import type { Window } from "./judge";
+
+/** What a run of the CLI was, by the arguments it started with; `unknown` when the observer could not read them. */
+export type CliRole = "director" | "design-agent" | "other" | "unknown";
+export const CLI_ROLES: readonly CliRole[] = ["director", "design-agent", "other", "unknown"];
+
+/**
+ * The role of a run of the CLI, from its arguments (the program name first or
+ * not). Only the options before the first `--` are read: the task after it is
+ * the person's text, which can say anything. The Visual Director is the only
+ * run with `--json-schema`; the Design Agent, under either profile, is the only
+ * one that streams (`--output-format stream-json`) with `Bash` allowed. Any
+ * other run (a version probe, a session the subject started) is `other`.
+ */
+export function cliRoleOf(args: readonly string[] | null | undefined): CliRole {
+  if (!Array.isArray(args) || args.length === 0) return "unknown";
+  const end = args.indexOf("--");
+  const options = end < 0 ? args : args.slice(0, end);
+  const pair = (flag: string, value: string) => options.some((a, i) => a === flag && options[i + 1] === value);
+  if (options.includes("--json-schema")) return "director";
+  if (pair("--output-format", "stream-json") && pair("--allowedTools", "Bash")) return "design-agent";
+  return "other";
+}
 
 export interface ProcRecord {
   at: number;
@@ -30,6 +58,8 @@ export interface ProcRecord {
   execed?: boolean;
   /** When the process was first seen gone (the observers' exit record), for triage; absent when none was seen. */
   exitAt?: number;
+  /** For a run of the CLI: its role, from the arguments it started with (`cliRoleOf`). */
+  role?: CliRole;
 }
 
 /** What the observer knows about the CLI binary, to recognize it by more than its name. */
@@ -132,6 +162,8 @@ export interface CliRun {
   chain: { pid: number; exe?: string; cli: boolean }[];
   /** Why it is not an expected run; empty only for the planned runs the app started. */
   labels: CliLabel[];
+  /** Its role, from the arguments it started with; `unknown` when the observer recorded none. */
+  role: CliRole;
 }
 
 export interface CliVerdict {
@@ -178,7 +210,7 @@ export function judgeCliRuns(procs: ProcRecord[], ctx: { app: AppServer | null; 
     if (w?.kind !== "model") labels.push("outside_model_window");
     const before = (byPid.get(p.pid) ?? []).filter((r) => r.at < p.at && !r.cli);
     const delayedExec = before.length > 0 && p.at - before[0].at >= 500;
-    const run: CliRun = { at: p.at, pid: p.pid, ppid: p.ppid, ...(p.exe ? { exe: p.exe } : {}), execed: Boolean(p.execed), ...(p.exitAt !== undefined ? { exitAt: p.exitAt } : {}), delayedExec, window: w?.phase ?? null, chain, labels };
+    const run: CliRun = { at: p.at, pid: p.pid, ppid: p.ppid, ...(p.exe ? { exe: p.exe } : {}), execed: Boolean(p.execed), ...(p.exitAt !== undefined ? { exitAt: p.exitAt } : {}), delayedExec, window: w?.phase ?? null, chain, labels, role: p.role ?? "unknown" };
     if (labels.length === 0) {
       const n = (perWindow.get(w?.phase ?? "") ?? 0) + 1;
       perWindow.set(w?.phase ?? "", n);
