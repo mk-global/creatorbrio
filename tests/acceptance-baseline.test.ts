@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { execFileSync } from "node:child_process";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +10,23 @@ import { format } from "node:util";
 
 import { serverCosts, type ChatResult } from "../eval/acceptance/app";
 import { archived, archiveDir, archiveRun } from "../eval/acceptance/archive";
+import { designAgentOnlyCliPath, notJudgedReason, runArmProcess } from "../eval/acceptance/baseline";
+import {
+  checkCliPin,
+  cliFileFacts,
+  cliVersion,
+  directorProof,
+  END_OF_RUN,
+  forgetPinnedCli,
+  judgeProof,
+  pinnedCli,
+  pinCli,
+  recheckCli,
+  recordRecheck,
+  resolveServerCli,
+  versionNumber,
+  type CliPin,
+} from "../eval/acceptance/cli";
 import {
   callBoundUsd,
   callsFor,
@@ -28,27 +46,73 @@ import {
 } from "../eval/acceptance/budget";
 import {
   assertLinkedWorktree,
-  checkCliPin,
-  cliVersion,
   configFingerprint,
   harnessHashes,
   inheritedConfiguration,
   mcpServerNames,
+  MODEL_ENV_NAME,
   memoryRoots,
   memoryTrees,
   modelEnvironment,
   redactPath,
   redactText,
-  resolveServerCli,
-  serverSetting,
   sessionVersions,
+  TRANSCRIPT_UNREADABLE,
   transcriptModels,
   transcriptVersions,
   treeFingerprint,
-  versionNumber,
+  worktreeRefusal,
+  type EnvironmentRecord,
   type InheritedConfiguration,
 } from "../eval/acceptance/environment";
-import { JUDGE_BUDGET_USD, MIN_READ_TURNS, OUTCOME_DIMENSIONS, type JudgeCall, type OutcomeScores, type OutcomeVerdict } from "../eval/acceptance/judge";
+import {
+  classifyLoaderFailure,
+  envFileNames,
+  isAllowedServerVariable,
+  loadedFileVariables,
+  loadServerEnv,
+  NEXT_ADDED_TO_SERVER,
+  printableMessage,
+  recheckEnvFiles,
+  recordEnvRecheck,
+  SERVER_ENV_ALLOWLIST,
+  serverSetting,
+  splitAddedNames,
+  unaccountedLines,
+  type EnvMode,
+  type LoadedServerEnv,
+} from "../eval/acceptance/server-env";
+import {
+  countNamesByClass,
+  describeNameClasses,
+  ENDPOINT_LIKE_NAME,
+  harnessEnvironmentRefusal,
+  HARMLESS_HARNESS_NAMES,
+  isHarmlessHarnessName,
+  MODEL_PRICE_NOTE,
+  modelPricing,
+  receivedNames,
+  REFUSED_HARNESS_NAMES,
+  refusedHarnessNames,
+  unreviewedHarnessNames,
+} from "../eval/acceptance/harness-env";
+import { accountHome, homeDiffersFromAccount, homeFolders, redactPath as redactPathFromModule } from "../eval/acceptance/redact";
+import {
+  describeSettingsFile,
+  describeSettingsFiles,
+  isNoteworthyKey,
+  managedSettingsDir,
+  presentSources,
+  readSettingsFile,
+  recordSettingsKeys,
+  SETTINGS_KEYS_OF_NOTE,
+  SETTINGS_LISTED_FOR_CLI,
+  settingsBannerLines,
+  settingsSources,
+  type SettingsKeysRecord,
+} from "../eval/acceptance/settings-keys";
+import { classifyItemFailure, skippedComparisonReason, StartGate, startChanges } from "../eval/acceptance/start-gate";
+import { JUDGE_BUDGET_USD, judgeCliPath, MIN_READ_TURNS, OUTCOME_DIMENSIONS, type JudgeCall, type OutcomeScores, type OutcomeVerdict } from "../eval/acceptance/judge";
 import {
   appendLedger,
   ensurePrivateDir,
@@ -61,13 +125,22 @@ import {
   withLedgerLock,
   type LedgerEntry,
 } from "../eval/acceptance/ledger";
+import { chatTimeoutMs, DEV_MODE_REFUSAL, designAgentLimits, designAgentOnlyRun, formatDuration, itemWorstCase, largestStageMs, refusalBeforeSpend, stageLimits } from "../eval/acceptance/limits";
 import { completeness, excludedVerdicts, scenarioStatistics } from "../eval/acceptance/report-baseline";
-import { renderSummary, serializeResults, type ChatRecord, type ComparisonRecord, type RunResults, type ScenarioRecord } from "../eval/acceptance/report";
+import { comparabilityFlags, environmentBannerLines, renderSummary, serializeResults, type ChatRecord, type ComparisonRecord, type RunResults, type ScenarioRecord } from "../eval/acceptance/report";
 import { SCENARIOS, SYNTHETIC_BRAND, type ScenarioId } from "../eval/acceptance/scenarios";
 import { getClaudePath } from "@/lib/claude-path";
-import { cleanEnv, ROOT, serverEnvironment } from "../eval/acceptance/server";
+import { DESIGN_AGENT_BUDGET_ENV, DESIGN_AGENT_INACTIVITY_ENV, DESIGN_AGENT_TIMEOUT_ENV } from "@/lib/design-agent";
+import { DIRECTOR_BUDGET_ENV } from "@/lib/visual-director";
+import { cleanEnv, nextBin, ROOT, ServerStartRefused, serverEnvironment, serverLaunch, startServer } from "../eval/acceptance/server";
 import { requestMs, spread } from "../eval/acceptance/stats";
 import { addUsage, modelsFromResult, usageFromCli } from "../eval/acceptance/usage";
+
+// startServer's spawn is observed, not run: every other spawn passes through.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 // The M1 baseline additions to the acceptance harness (#224), exercised with
 // synthetic data in a temporary folder: no model, no network, no server.
@@ -83,6 +156,8 @@ afterEach(async () => {
 });
 
 const mode = async (p: string) => (await stat(p)).mode & 0o777;
+/** What Next.js's own loader leaves a server in `workdir`, given `env` as the server's own environment. */
+const loadedEnv = (env: Record<string, string | undefined> = {}, mode: EnvMode = "prod", root?: string): LoadedServerEnv => loadServerEnv({ root: root ?? workdir, mode, env });
 const scenario = (id: string) => SCENARIOS.find((s) => s.id === id)!;
 /** No overshoot allowance, so the arithmetic below is a plain sum of caps; it is not obtainable from `parseCaps`, which refuses 0. */
 const caps: Caps = { directorUsd: 0.5, designUsd: 3, judgeUsd: JUDGE_BUDGET_USD, overshootFraction: 0 };
@@ -384,7 +459,7 @@ describe("acceptance baseline: environment record", () => {
   it("hashes every harness file and reads a server setting from the environment, then the .env files in Next.js's order", async () => {
     await writeFile(path.join(workdir, "a.ts"), "a");
     expect(harnessHashes(workdir).find((h) => h.file === "a.ts")?.sha256).toBe(createHash("sha256").update("a").digest("hex"));
-    const read = (mode: "prod" | "dev", env: Record<string, string> = {}) => serverSetting("CLAUDE_CLI_PATH", { root: workdir, mode, env });
+    const read = (mode: EnvMode, env: Record<string, string> = {}) => serverSetting(loadedEnv(env, mode), "CLAUDE_CLI_PATH");
     expect(read("prod")).toBeNull();
     await writeFile(path.join(workdir, ".env"), "CLAUDE_CLI_PATH=/opt/base/claude\n");
     expect(read("prod")).toEqual({ value: "/opt/base/claude", source: "<project>/.env" });
@@ -394,17 +469,43 @@ describe("acceptance baseline: environment record", () => {
     expect(read("prod")?.value).toBe("/opt/tools/claude");
     expect(read("dev")).toEqual({ value: "/opt/dev/claude", source: "<project>/.env.development.local" });
     expect(read("prod", { CLAUDE_CLI_PATH: "/opt/shell/claude" })).toEqual({ value: "/opt/shell/claude", source: "the harness's environment" });
-    expect(read("prod", { CLAUDE_CLI_PATH: " " })?.value).toBe("/opt/tools/claude");
   });
 
-  it("gives the servers the harness's CLI, else the .env files', else the app's discovery", async () => {
-    const discover = () => "/opt/discovered/claude";
-    const resolve = (env: Record<string, string>) => resolveServerCli({ root: workdir, mode: "prod", env, discover });
-    expect(resolve({})).toEqual({ path: "/opt/discovered/claude", source: "the app's discovery (no CLAUDE_CLI_PATH is set)" });
-    await writeFile(path.join(workdir, ".env.local"), "CLAUDE_CLI_PATH=/opt/pinned/claude\n");
-    expect(resolve({})).toEqual({ path: "/opt/pinned/claude", source: "CLAUDE_CLI_PATH from <project>/.env.local" });
-    // The harness's own setting, which the judge and the Design-Agent-only arm follow, comes first, as in the app's launch.
-    expect(resolve({ CLAUDE_CLI_PATH: "/opt/shell/claude" })).toEqual({ path: "/opt/shell/claude", source: "CLAUDE_CLI_PATH from the harness's environment" });
+  it("ends the search at a defined name even when its value is empty, as Next.js does", async () => {
+    await writeFile(path.join(workdir, ".env.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=900\n");
+    const read = (env: Record<string, string>) => serverSetting(loadedEnv(env), "DESIGN_AGENT_TIMEOUT_SECONDS");
+    // An empty or blank value in the environment is the product's default, not the file's 900.
+    expect(read({ DESIGN_AGENT_TIMEOUT_SECONDS: "" })).toEqual({ value: "", source: "the harness's environment" });
+    expect(read({ DESIGN_AGENT_TIMEOUT_SECONDS: " " })).toEqual({ value: " ", source: "the harness's environment" });
+    // So is an empty assignment in a file with higher precedence than another file's value.
+    await writeFile(path.join(workdir, ".env.production.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=\n");
+    expect(read({})).toEqual({ value: "", source: "<project>/.env.production.local" });
+  });
+
+  it("resolves the one CLI to its real path: the harness's, else the .env files', else the app's discovery, which is never explicit", async () => {
+    const real = path.join(workdir, "claude-real");
+    await writeFile(real, "#!/bin/sh\n");
+    const link = path.join(workdir, "claude-link");
+    symlinkSync(real, link);
+    const other = path.join(workdir, "claude-other");
+    await writeFile(other, "#!/bin/sh\n");
+    const discovered = path.join(workdir, "claude-discovered");
+    await writeFile(discovered, "#!/bin/sh\n");
+    const resolve = (env: Record<string, string>) => resolveServerCli({ root: workdir, loaded: loadedEnv(env), discover: () => discovered });
+
+    // Nothing names a CLI: whatever discovery finds, which is not a pin.
+    expect(resolve({})).toEqual({ path: realpathSync(discovered), source: "the app's discovery (no CLAUDE_CLI_PATH is set)", explicit: false });
+    // A .env file names one; a link is resolved, so a re-pointed install cannot change it mid-run.
+    await writeFile(path.join(workdir, ".env.local"), `CLAUDE_CLI_PATH=${link}\n`);
+    expect(resolve({})).toEqual({ path: realpathSync(real), source: "CLAUDE_CLI_PATH from <project>/.env.local", explicit: true });
+    // The harness's own setting comes first.
+    expect(resolve({ CLAUDE_CLI_PATH: other })).toEqual({ path: realpathSync(other), source: "CLAUDE_CLI_PATH from the harness's environment", explicit: true });
+    // A relative path is the checkout's, as for the app's servers.
+    expect(resolve({ CLAUDE_CLI_PATH: "claude-other" }).path).toBe(realpathSync(other));
+    // A blank value names nothing, as in the app, so discovery decides and the run is not pinned.
+    expect(resolve({ CLAUDE_CLI_PATH: "  " })).toMatchObject({ path: realpathSync(discovered), explicit: false });
+    // A configured path that does not exist stays as configured, so the pin check refuses it instead of falling back to discovery.
+    expect(resolve({ CLAUDE_CLI_PATH: "/opt/absent/claude" })).toEqual({ path: "/opt/absent/claude", source: "CLAUDE_CLI_PATH from the harness's environment", explicit: true });
   });
 
   it("reads only model names from a session transcript", async () => {
@@ -424,7 +525,8 @@ describe("acceptance baseline: environment record", () => {
   });
 });
 
-describe("acceptance baseline: the servers' environment (#232)", () => {
+// Each load runs Next.js's own loader in a child process, and some tests make a dozen: far more than the default 5 s would leave a loaded runner.
+describe("acceptance baseline: the servers' environment (#232)", { timeout: 60_000 }, () => {
   /** What Next.js's own loader leaves in a server's environment, in a child process so this one is untouched. */
   const loaded = (env: NodeJS.ProcessEnv, mode: "prod" | "dev") =>
     JSON.parse(
@@ -458,13 +560,78 @@ describe("acceptance baseline: the servers' environment (#232)", () => {
     }
   });
 
+  it("leaves out CLAUDE_CLI_PATH when no CLI is given, for the environment the CLI is resolved from before it is pinned", () => {
+    const env = serverEnvironment({ mode: "prod", extra: { IMAGE_SERVICE_URL: "http://127.0.0.1:8791" }, base: runner() });
+    expect(env.CLAUDE_CLI_PATH).toBeUndefined();
+    expect("CLAUDE_CLI_PATH" in env).toBe(false);
+    expect(env).toMatchObject({ NODE_ENV: "production", IMAGE_SERVICE_URL: "http://127.0.0.1:8791" });
+  });
+
   it("was what skipped .env.local: the runner's NODE_ENV test without an explicit CLI path loads neither", () => {
     const before = runner();
     delete before.CLAUDE_CLI_PATH; // what cleanEnv removed
     expect(loaded(before, "prod")).toEqual({ nodeEnv: "test", setting: null, cli: null });
   });
 
-  it("makes the server's Director and Design Agent spawn that CLI", async () => {
+  it("starts a server with the server environment, not the clean one, and with Node.js and Next.js's own script, not npx", async () => {
+    // The server is never run: the fake process exits at once, and its spawn call is what is read.
+    const process_ = Object.assign(new EventEmitter(), { stdout: null, stderr: null, pid: undefined });
+    vi.mocked(spawn).mockImplementationOnce((() => {
+      setImmediate(() => process_.emit("exit", 1, null));
+      return process_;
+    }) as unknown as typeof spawn);
+    await expect(
+      // A port of the harness's own that its scenarios do not use. `NODE_ENV: "test"` here is what cleanEnv would have passed on.
+      startServer({ mode: "dev", port: 3420, cliPath: "/opt/pinned/claude", env: { IMAGE_SERVICE_URL: "http://127.0.0.1:8791", NODE_ENV: "test" }, logPath: path.join(workdir, "server.log") })
+    ).rejects.toThrow(/exited before it was ready/);
+    const [command, args, options] = vi.mocked(spawn).mock.calls.at(-1) as unknown as [string, string[], { cwd: string; env: NodeJS.ProcessEnv }];
+    // The Node.js that runs the harness runs Next.js's own script from the checkout: no npx, no npm, so no npm setting reaches the server.
+    expect(command).toBe(process.execPath);
+    expect(args).toEqual([path.join(ROOT, "node_modules", "next", "dist", "bin", "next"), "dev", "-H", "127.0.0.1", "-p", "3420"]);
+    expect(args[0]).toBe(nextBin());
+    expect(command).not.toMatch(/npx|npm/);
+    expect(options.cwd).toBe(ROOT);
+    // What a revert to cleanEnv(env) would change: the mode's NODE_ENV and the explicit CLI path.
+    expect(options.env).toMatchObject({ NODE_ENV: "development", CLAUDE_CLI_PATH: "/opt/pinned/claude", IMAGE_SERVICE_URL: "http://127.0.0.1:8791" });
+    expect(options.env.CLAUDE_CODE_SYNTHETIC).toBeUndefined();
+    // The loader is given this same function's result, so the loader's input and the server's spawn environment are one.
+    expect(options.env).toEqual(serverEnvironment({ mode: "dev", cliPath: "/opt/pinned/claude", extra: { IMAGE_SERVICE_URL: "http://127.0.0.1:8791", NODE_ENV: "test" } }));
+  });
+
+  it("launches a server as Node.js running Next.js's own script from the checkout, so an .npmrc node-options reaches nothing", async () => {
+    // A scratch checkout whose .npmrc sets node-options and whose Next.js script only reports what it was started with.
+    const root = path.join(workdir, "checkout");
+    const bin = path.join(root, "node_modules", "next", "dist", "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(path.join(root, ".npmrc"), "node-options=--require /nonexistent/preload.js\nloglevel=silent\n");
+    await writeFile(
+      path.join(bin, "next"),
+      `require("node:fs").writeFileSync(process.env.REPORT_TO, JSON.stringify({
+         argv: process.argv.slice(1),
+         nodeOptions: process.env.NODE_OPTIONS ?? null,
+         npm: Object.keys(process.env).filter((n) => /^npm_/i.test(n) || n === "INIT_CWD"),
+         cwd: process.cwd(),
+       }));`
+    );
+    const report = path.join(workdir, "report.json");
+    const env = serverEnvironment({ mode: "prod", cliPath: "/opt/pinned/claude", extra: { REPORT_TO: report }, base: { PATH: process.env.PATH } as unknown as NodeJS.ProcessEnv });
+    const launch = serverLaunch({ mode: "prod", port: 3417, env, root });
+    expect(launch.command).toBe(process.execPath);
+    expect(launch.args).toEqual([path.join(root, "node_modules", "next", "dist", "bin", "next"), "start", "-H", "127.0.0.1", "-p", "3417"]);
+    expect(serverLaunch({ mode: "dev", port: 3418, env, root }).args.slice(1)).toEqual(["dev", "-H", "127.0.0.1", "-p", "3418"]);
+    // Run as startServer runs it: the server's own environment, in the checkout. The checkout's .npmrc changes nothing it sees.
+    const run = spawnSync(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
+    const seen = JSON.parse(await readFile(report, "utf8")) as { argv: string[]; nodeOptions: string | null; npm: string[]; cwd: string };
+    expect(seen.argv[0]).toBe(launch.args[0]);
+    expect(seen.nodeOptions).toBeNull();
+    expect(seen.npm).toEqual([]);
+    expect(realpathSync(seen.cwd)).toBe(realpathSync(root));
+    // A checkout without Next.js is refused with a plain instruction, not a spawn error.
+    expect(() => nextBin(path.join(workdir, "empty"))).toThrow("Next.js is not installed in this checkout: run `npm ci` first");
+  });
+
+  it("gives getClaudePath, which the server's Director and Design Agent spawn, the CLI in the server's environment", async () => {
     const cli = path.join(workdir, "claude");
     await writeFile(cli, "#!/bin/sh\n");
     const saved = process.env.CLAUDE_CLI_PATH;
@@ -477,24 +644,500 @@ describe("acceptance baseline: the servers' environment (#232)", () => {
       else process.env.CLAUDE_CLI_PATH = saved;
     }
   });
+
+  /** What Next.js's own loader leaves in a process given `env`, run directly in a child: the oracle the harness's loaded environment must equal. */
+  const oracle = (env: Record<string, string | undefined>, mode: EnvMode, names: string[]): (string | null)[] =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        ["-e", `const { loadEnvConfig } = require("@next/env"); loadEnvConfig(process.argv[1], process.argv[2] === "dev", { info() {}, error() {} }); console.log(JSON.stringify(process.argv.slice(3).map((n) => process.env[n] ?? null)));`, workdir, mode, ...names],
+        { cwd: ROOT, env: env as NodeJS.ProcessEnv }
+      ).toString()
+    );
+
+  it("takes names and values from Next.js's own loader in both modes, with expansion and with the environment winning even when empty", async () => {
+    await writeFile(
+      path.join(workdir, ".env"),
+      ["# a comment", "export A=1", "B: two", 'C="three # kept"', "D='four'", "E=five # dropped", "F=", "G.H=six", "I = seven", 'J="multi', 'line"', "A=again", "P=${Q}-x", "R=$Q", "S=\\$Q"].join("\n")
+    );
+    await writeFile(path.join(workdir, ".env.local"), "B=from-local\nK=\nM=from-file\n");
+    await writeFile(path.join(workdir, ".env.production"), "L=prod\n");
+    await writeFile(path.join(workdir, ".env.development"), "L=dev\n");
+    const names = ["A", "B", "C", "D", "E", "F", "G.H", "I", "J", "K", "L", "M", "P", "R", "S", "not"];
+    const own: Record<string, string | undefined> = { PATH: process.env.PATH, M: "", Q: "q-value" };
+    for (const mode of ["prod", "dev"] as const) {
+      const env = { ...own, NODE_ENV: mode === "prod" ? "production" : "development" };
+      const mine = loadedEnv(env, mode).env;
+      // Every name and value is what Next.js leaves, so a parser of the harness's own cannot differ from it.
+      expect(names.map((n) => mine[n] ?? null), mode).toEqual(oracle(env, mode, names));
+    }
+    // M is defined but empty in the environment: its value, not the file's, stays. Expansion reads the environment.
+    expect(names.map((n) => loadedEnv({ ...own, NODE_ENV: "production" }).env[n] ?? null)).toEqual(["again", "from-local", "three # kept", "four", "five", "", "six", "seven", "multi\nline", "", "prod", "", "q-value-x", "q-value", "$Q", null]);
+    expect(loadedEnv({ ...own, NODE_ENV: "development" }, "dev").env.L).toBe("dev");
+  });
+
+  it("gives the Design-Agent-only arm exactly the values the servers see, in both modes, and the deadline and cap they imply", async () => {
+    await writeFile(path.join(workdir, ".env.local"), ["DESIGN_AGENT_TIMEOUT_SECONDS=${BASE_SECONDS}", "DESIGN_AGENT_INACTIVITY_SECONDS=120", "DESIGN_AGENT_MAX_BUDGET_USD=9", "ANTHROPIC_MODEL=synthetic-model"].join("\n"));
+    for (const mode of ["prod", "dev"] as const) {
+      const env = serverEnvironment({ mode, cliPath: "/opt/pinned/claude", extra: { DESIGN_AGENT_MAX_BUDGET_USD: "4", DIRECTOR_MAX_BUDGET_USD: "1", BASE_SECONDS: "900" }, base: { PATH: process.env.PATH } as unknown as NodeJS.ProcessEnv });
+      const servers = loadedEnv(env, mode);
+      const arm = designAgentOnlyRun(servers);
+      // The arm's environment is the server's, value for value: what a fresh Next.js loader leaves, minus its private markers.
+      expect(arm.env).toEqual(servers.env);
+      expect(Object.keys(arm.env).filter((n) => n.startsWith("__NEXT_"))).toEqual([]);
+      const names = Object.keys(servers.env).sort();
+      expect(names.map((n) => arm.env[n] ?? null)).toEqual(oracle(env, mode, names));
+      expect(arm.env).toMatchObject({ ANTHROPIC_MODEL: "synthetic-model", CLAUDE_CLI_PATH: "/opt/pinned/claude", NODE_ENV: mode === "prod" ? "production" : "development", DESIGN_AGENT_TIMEOUT_SECONDS: "900" });
+      // The harness's cap wins over the file's, for the arm as for the servers.
+      expect(arm.settings).toEqual({ ok: true, budgetUsd: 4, timeoutMs: 900_000, inactivityMs: 120_000 });
+      expect(designAgentLimits(servers)).toEqual({
+        ok: true,
+        problem: null,
+        timeoutMs: 900_000,
+        timeoutSource: "DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env.local",
+        inactivityMs: 120_000,
+        inactivitySource: "DESIGN_AGENT_INACTIVITY_SECONDS from <project>/.env.local",
+      });
+      expect(arm.limits).toEqual({ timeoutMs: 900_000, timeoutSource: "DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env.local", inactivityMs: 120_000, inactivitySource: "DESIGN_AGENT_INACTIVITY_SECONDS from <project>/.env.local" });
+    }
+    // With no file the arm and the servers share the product's defaults.
+    await rm(path.join(workdir, ".env.local"));
+    const env = serverEnvironment({ mode: "prod", cliPath: "/opt/pinned/claude", extra: { DESIGN_AGENT_MAX_BUDGET_USD: "4" }, base: { PATH: process.env.PATH } as unknown as NodeJS.ProcessEnv });
+    const none = loadedEnv(env);
+    expect(designAgentLimits(none)).toMatchObject({ ok: true, timeoutMs: 1_800_000, timeoutSource: "the product's default", inactivityMs: 300_000, inactivitySource: "the product's default" });
+    expect(designAgentOnlyRun(none).limits).toMatchObject({ timeoutMs: 1_800_000, inactivityMs: 300_000 });
+  });
+
+  it("allows only an exact list of names, each documented, and accepts every one of them", async () => {
+    const VALUE = "synthetic-secret-value";
+    expect(SERVER_ENV_ALLOWLIST.map((a) => a.name)).toEqual([
+      "CLAUDE_CLI_PATH",
+      "DISABLE_AUTOUPDATER",
+      "DESIGN_AGENT_MAX_BUDGET_USD",
+      "DESIGN_AGENT_TIMEOUT_SECONDS",
+      "DESIGN_AGENT_INACTIVITY_SECONDS",
+      "DIRECTOR_MAX_BUDGET_USD",
+      "IMAGE_SERVICE_URL",
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL",
+    ]);
+    for (const entry of SERVER_ENV_ALLOWLIST) expect(entry.why.length, entry.name).toBeGreaterThan(20);
+    // The DESIGN_AGENT_* and DIRECTOR_* names are the ones src/ reads, not a prefix.
+    const names = new Set(SERVER_ENV_ALLOWLIST.map((a) => a.name));
+    for (const fromSrc of [DESIGN_AGENT_BUDGET_ENV, DESIGN_AGENT_TIMEOUT_ENV, DESIGN_AGENT_INACTIVITY_ENV, DIRECTOR_BUDGET_ENV]) expect(names.has(fromSrc), fromSrc).toBe(true);
+    expect([...names].filter((n) => /^(DESIGN_AGENT|DIRECTOR)_/.test(n))).toHaveLength(4);
+    // The record fingerprints every allowed model name too.
+    for (const name of names) if (/MODEL/.test(name)) expect(MODEL_ENV_NAME.test(name), name).toBe(true);
+    // The effort level is not allowed: src/ never reads it and it can raise a turn's thinking past the overshoot allowance.
+    expect(names.has("CLAUDE_CODE_EFFORT_LEVEL")).toBe(false);
+    // A file's CLAUDE_CLI_PATH is resolved and pinned by the harness; the servers never read its value directly.
+    expect(SERVER_ENV_ALLOWLIST.find((a) => a.name === "CLAUDE_CLI_PATH")!.why).toContain("a file's value is resolved to a real path and pinned by the harness");
+    expect(SERVER_ENV_ALLOWLIST.find((a) => a.name === "CLAUDE_CLI_PATH")!.why).toContain("they never read the file's value directly");
+
+    await writeFile(path.join(workdir, ".env.local"), [...names].map((name) => `${name}=${VALUE}`).join("\n"));
+    const ok = loadedEnv().record;
+    expect(ok.ok).toBe(true);
+    expect(ok.refused).toEqual([]);
+    expect(ok.unaccounted).toEqual([]);
+    expect(ok.added.map((v) => v.name)).toEqual([...names].sort());
+    expect(ok.added.every((v) => v.file === "<project>/.env.local")).toBe(true);
+    expect(ok.allowlist).toEqual(SERVER_ENV_ALLOWLIST.map((a) => a.name));
+    expect(JSON.stringify(ok)).not.toContain(VALUE);
+    for (const name of names) expect(isAllowedServerVariable(name), name).toBe(true);
+  });
+
+  it("refuses every other name, by name and never by pattern, including URL, socket, gateway, catalogue, session and token-limit variables", async () => {
+    const VALUE = "synthetic-secret-value";
+    // Each could change what a model call is, where it goes, or how far one call can run past what the run reserved.
+    const refused = [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_BEDROCK_BASE_URL",
+      "ANTHROPIC_UNIX_SOCKET",
+      "ANTHROPIC_GATEWAY_URL",
+      "CLAUDE_CODE_MODEL_CATALOG_URL",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_SKIP_AUTH",
+      "CLAUDE_CODE_SESSION_ID",
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+      "CLAUDE_CODE_EFFORT_LEVEL",
+      "MAX_THINKING_TOKENS",
+      "CLAUDE_EFFORT",
+      "CLAUDE_CONFIG_DIR",
+      "HTTPS_PROXY",
+      "HTTP_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "NODE_OPTIONS",
+      "AWS_ACCESS_KEY_ID",
+      // What the old pattern rules allowed: a prefix or a word in the name.
+      "ANTHROPIC_CUSTOM_MODEL_OPTION",
+      "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+      "CLAUDE_CODE_EXTRA_THINK_BUDGET",
+      "DESIGN_AGENT_EXTRA",
+      "DESIGN_AGENT_MAX_BUDGET_USD_2",
+      "DIRECTOR_ENDPOINT",
+      "SOMETHING_NOBODY_LISTED",
+      "lowercase_name",
+    ];
+    for (const name of refused) expect(isAllowedServerVariable(name), name).toBe(false);
+    // One file with all of them: each is named, and the record never holds a value.
+    await writeFile(path.join(workdir, ".env.local"), refused.map((name) => `${name}=${VALUE}`).join("\n"));
+    const all = loadedEnv().record;
+    expect(all.ok).toBe(false);
+    expect(all.refused).toEqual([...refused].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    expect(all.message).toMatch(/^Refusing a paid run before any spend: .*variables the harness does not allow/);
+    expect(JSON.stringify(all)).not.toContain(VALUE);
+    // Alone, a few of them: the refusal names exactly that one.
+    for (const name of ["ANTHROPIC_UNIX_SOCKET", "CLAUDE_CODE_MODEL_CATALOG_URL", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "CLAUDE_CODE_EFFORT_LEVEL", "MAX_THINKING_TOKENS", "NODE_OPTIONS"]) {
+      await writeFile(path.join(workdir, ".env.local"), `${name}=${VALUE}\n`);
+      const check = loadedEnv().record;
+      expect(check.ok, name).toBe(false);
+      expect(check.refused, name).toEqual([name]);
+      expect(check.message, name).toMatch(new RegExp(`^Refusing a paid run before any spend: .*${name}`));
+      expect(JSON.stringify(check), name).not.toContain(VALUE);
+    }
+  });
+
+  it("says only what is true about the harness's own environment in the refusal", async () => {
+    await writeFile(path.join(workdir, ".env.local"), "HTTPS_PROXY=http://proxy.example\n");
+    const { message } = loadedEnv().record;
+    // Nothing there claims a variable of the harness's environment is recorded unless it is.
+    expect(message).not.toMatch(/where it is recorded/);
+    expect(message).not.toContain("only proxy, endpoint, credential");
+    expect(message).toContain(
+      "that environment is recorded separately, in results.json under harnessEnvironment: by name only, every variable it passes on that is not reviewed as harmless (HARMLESS_HARNESS_NAMES in eval/acceptance/harness-env.ts), and the model variables by name and value hash. summary.md shows only counts of those names by class."
+    );
+    expect(message).toContain("or add the name to SERVER_ENV_ALLOWLIST in eval/acceptance/server-env.ts after review");
+  });
+
+  it("records by name, never by value, every variable the harness passes on that is not reviewed as harmless, whatever its name", () => {
+    const VALUE = "synthetic-secret-value";
+    // Names the CLI or a library reads that no deny pattern lists, and the names it did list.
+    const recorded = [
+      "ANTHROPIC_UNIX_SOCKET",
+      "ANTHROPIC_CUSTOM_HEADERS",
+      "ANTHROPIC_CONFIG_DIR",
+      "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+      "AGENT_PROXY_URL",
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "GH_TOKEN",
+      "GITHUB_TOKEN",
+      "CLAUDE_TRUSTED_DEVICE_TOKEN",
+      "USE_LOCAL_OAUTH",
+      "AN_ARBITRARY_UNKNOWN_NAME",
+      "HTTPS_PROXY",
+      "https_proxy",
+      "NODE_OPTIONS",
+      "CLAUDE_CONFIG_DIR",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "AWS_PROFILE",
+      "MY_SERVICE_API_KEY",
+      "npm_config_node_options",
+      "npm_config_user_agent",
+      "npm_execpath",
+      "INIT_CWD",
+      "SSH_AUTH_SOCK",
+      "AI_AGENT",
+    ];
+    const harmless = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "PWD", "SHLVL", "EVAL_ONLY", "EVAL_MODE", "DESIGN_AGENT_MAX_BUDGET_USD", "DIRECTOR_MAX_BUDGET_USD", "CI", "GITHUB_ACTIONS", "RUNNER_OS", "VITEST", "VITEST_WORKER_ID"];
+    const models = ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "MAX_THINKING_TOKENS"];
+    const env: Record<string, string | undefined> = Object.fromEntries([...recorded, ...harmless, ...models].map((n) => [n, VALUE]));
+    const names = unreviewedHarnessNames(env, (name) => MODEL_ENV_NAME.test(name));
+    expect(names).toEqual([...recorded].sort());
+    expect(JSON.stringify(names)).not.toContain(VALUE);
+    for (const name of harmless) expect(names, name).not.toContain(name);
+    // The model, effort and thinking variables are fingerprinted by name and value hash instead.
+    for (const name of models) expect(names, name).not.toContain(name);
+    expect(modelEnvironment(env as NodeJS.ProcessEnv).map((v) => v.name)).toEqual(["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_MODEL", "MAX_THINKING_TOKENS"]);
+    // An undefined variable is not set; an empty one is.
+    expect(unreviewedHarnessNames({ HTTPS_PROXY: undefined, ALL_PROXY: "", PATH: "/usr/bin" }, () => false)).toEqual(["ALL_PROXY"]);
+    // The family LC_* is the one pattern; a name that merely contains it is not covered.
+    expect(isHarmlessHarnessName("LC_MESSAGES")).toBe(true);
+    expect(isHarmlessHarnessName("MY_LC_MESSAGES")).toBe(false);
+    expect(isHarmlessHarnessName("lc_all")).toBe(false);
+  });
+
+  it("reviews each harmless group with a reason, and lists every EVAL_ variable the harness reads", async () => {
+    for (const group of HARMLESS_HARNESS_NAMES) expect(group.why.length, group.names.join()).toBeGreaterThan(20);
+    // No name that could carry a credential, endpoint or configuration is harmless.
+    // (The harness's own EVAL_ settings are its own, including the loopback address of the image service it asks.)
+    for (const name of HARMLESS_HARNESS_NAMES.flatMap((g) => g.names).filter((n) => !n.startsWith("EVAL_"))) {
+      expect(name, name).not.toMatch(/PROXY|TOKEN|KEY|SECRET|SOCKET|URL|ENDPOINT|HEADERS|CONFIG_DIR|NODE_OPTIONS|^npm_|^ANTHROPIC_|^CLAUDE_|^OTEL_|^AWS_/);
+    }
+    // Every name the harness's own source reads with an EVAL_ prefix is reviewed, so a new setting cannot be recorded as unknown by accident or pass as harmless unreviewed.
+    const sources = readdirSync(path.join(ROOT, "eval", "acceptance")).filter((f) => f.endsWith(".ts"));
+    const read = new Set(sources.flatMap((f) => [...readFileSync(path.join(ROOT, "eval", "acceptance", f), "utf8").matchAll(/\bEVAL_[A-Z0-9_]+\b/g)].map((m) => m[0])));
+    expect(read.size).toBeGreaterThan(10);
+    for (const name of read) expect(isHarmlessHarnessName(name), name).toBe(true);
+    // The tokens a CI runner adds are not reviewed as harmless.
+    for (const name of ["GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]) expect(isHarmlessHarnessName(name), name).toBe(false);
+  });
+
+  it("refuses a paid run for a token or effort limit in the harness's own environment, whether the harness strips the name or passes it on", () => {
+    expect([...REFUSED_HARNESS_NAMES]).toEqual(["MAX_THINKING_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "CLAUDE_CODE_EFFORT_LEVEL"]);
+    expect(refusedHarnessNames({ PATH: "/usr/bin", ANTHROPIC_MODEL: "x", CLAUDE_EFFORT: "high" })).toEqual([]);
+    expect(refusedHarnessNames({ MAX_THINKING_TOKENS: "1", CLAUDE_CODE_EFFORT_LEVEL: "high", CLAUDE_CODE_MAX_OUTPUT_TOKENS: "9", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "9", PATH: "/usr/bin" })).toEqual([
+      "CLAUDE_CODE_EFFORT_LEVEL",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+      "MAX_THINKING_TOKENS",
+    ]);
+    // An empty value is set, and undefined is not.
+    expect(refusedHarnessNames({ MAX_THINKING_TOKENS: "", CLAUDE_CODE_EFFORT_LEVEL: undefined })).toEqual(["MAX_THINKING_TOKENS"]);
+    expect(harnessEnvironmentRefusal([])).toBeNull();
+    const text = harnessEnvironmentRefusal(["CLAUDE_CODE_EFFORT_LEVEL", "MAX_THINKING_TOKENS"])!;
+    expect(text).toMatch(/^Refusing a paid run before any spend: the harness's own environment sets CLAUDE_CODE_EFFORT_LEVEL, MAX_THINKING_TOKENS,/);
+    expect(text).toContain("Unset them and run the harness again");
+    // The harness strips the CLAUDE_CODE_* ones from what it gives the servers, so the refusal is not about a value they would see.
+    expect(cleanEnv().CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
+  it("flags a run whose model was chosen by a variable, by name only, because the CLI costs a model its table lacks at another model's rate", () => {
+    expect(modelPricing([])).toEqual({ selectionVariables: [], unverified: false, note: MODEL_PRICE_NOTE });
+    // Effort, thinking and token variables are fingerprinted, but choose no model.
+    expect(modelPricing(["MAX_THINKING_TOKENS", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"])).toMatchObject({ selectionVariables: [], unverified: false });
+    const flagged = modelPricing(["ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"]);
+    expect(flagged).toMatchObject({ selectionVariables: ["ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"], unverified: true });
+    expect(MODEL_PRICE_NOTE).toContain("costs a model its price table lacks at the rate of its main model");
+    expect(MODEL_PRICE_NOTE).toContain("cannot see the CLI's table");
+  });
+
+  it("reads the forms Next.js reads, takes the highest-precedence file for each name, and counts only what the harness's environment lacks", async () => {
+    await rm(path.join(workdir, ".env.local")); // the one the describe's other tests share
+    await writeFile(path.join(workdir, ".env"), ["export HTTPS_PROXY=http://proxy.example", "ANTHROPIC_API_KEY: synthetic", 'CLAUDE_CONFIG_DIR = "/elsewhere"', "DESIGN_AGENT_TIMEOUT_SECONDS=900"].join("\n"));
+    await writeFile(path.join(workdir, ".env.production.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=1200\n");
+    await writeFile(path.join(workdir, ".env.development.local"), "NODE_OPTIONS=--require ./x.js\n");
+    const prod = loadedEnv().record;
+    expect(prod.added).toEqual([
+      { name: "ANTHROPIC_API_KEY", file: "<project>/.env" },
+      { name: "CLAUDE_CONFIG_DIR", file: "<project>/.env" },
+      { name: "DESIGN_AGENT_TIMEOUT_SECONDS", file: "<project>/.env.production.local" },
+      { name: "HTTPS_PROXY", file: "<project>/.env" },
+    ]);
+    expect(prod.refused).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "HTTPS_PROXY"]);
+    expect(prod.files.map((f) => [f.file, f.state])).toEqual([
+      ["<project>/.env.production.local", "file"],
+      ["<project>/.env.local", "absent"],
+      ["<project>/.env.production", "absent"],
+      ["<project>/.env", "file"],
+    ]);
+    // A server in dev mode reads another file set.
+    expect(loadedEnv({}, "dev").record.refused).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "HTTPS_PROXY", "NODE_OPTIONS"]);
+    // What the harness's own environment defines is not added by a file: Next.js leaves the environment's value, and an empty one counts.
+    const inherited = loadedEnv({ HTTPS_PROXY: "", ANTHROPIC_API_KEY: "x", CLAUDE_CONFIG_DIR: "/mine" });
+    expect(inherited.record.ok).toBe(true);
+    expect(inherited.record.added.map((v) => v.name)).toEqual(["DESIGN_AGENT_TIMEOUT_SECONDS"]);
+    expect(inherited.env).toMatchObject({ HTTPS_PROXY: "", ANTHROPIC_API_KEY: "x", CLAUDE_CONFIG_DIR: "/mine", DESIGN_AGENT_TIMEOUT_SECONDS: "1200" });
+    expect(loadedEnv({}, "prod", path.join(workdir, "none")).record).toMatchObject({ ok: true, added: [], unaccounted: [], message: "The servers' .env files add these variables beyond the harness's environment, all allowed: none." });
+  });
+
+  it("reads the files the loader reads: the test set and no .env.local under NODE_ENV test, and the names it lists match what it loaded", async () => {
+    for (const name of [".env.local", ".env.test", ".env.test.local", ".env.production", ".env.development"]) await writeFile(path.join(workdir, name), `DESIGN_AGENT_TIMEOUT_SECONDS=${name.length}\nFROM_${name.replace(/\W/g, "_").toUpperCase()}=1\n`);
+    expect(envFileNames("prod", "production")).toEqual([".env.production.local", ".env.local", ".env.production", ".env"]);
+    expect(envFileNames("dev", "development")).toEqual([".env.development.local", ".env.local", ".env.development", ".env"]);
+    expect(envFileNames("prod", "test")).toEqual([".env.test.local", ".env.test", ".env"]);
+    for (const [mode, nodeEnv] of [["prod", "production"], ["dev", "development"], ["prod", "test"]] as const) {
+      const record = loadedEnv({ NODE_ENV: nodeEnv }, mode).record;
+      expect(record.files.map((f) => f.file), `${mode} ${nodeEnv}`).toEqual(envFileNames(mode, nodeEnv).map((n) => `<project>/${n}`));
+      // The files Next.js loaded are the files that exist among them: here every one of the set but `.env`.
+      expect(record.added.map((v) => v.name).filter((n) => n.startsWith("FROM_")).length, `${mode} ${nodeEnv}`).toBe(record.files.filter((f) => f.state === "file").length);
+    }
+    expect(loadedEnv({ NODE_ENV: "test" }).record.added.some((v) => v.name === "FROM__ENV_LOCAL")).toBe(false);
+  });
+
+  it("refuses a file it cannot account for line by line: a byte-order mark, split name and =, the NAME: form, a swallowing quote and an expansion are each loaded and checked by name, or refused", async () => {
+    const BOM = "\uFEFF";
+    const load = async (body: string, env: Record<string, string> = {}) => {
+      await writeFile(path.join(workdir, ".env.local"), body);
+      return loadedEnv(env);
+    };
+    // A byte-order mark is whitespace to the loader: the first line is loaded, so its name is checked and refused.
+    const bom = await load(`${BOM}HTTPS_PROXY=http://proxy.example\nDESIGN_AGENT_TIMEOUT_SECONDS=900\n`);
+    expect(bom.record.added.map((v) => v.name)).toEqual(["DESIGN_AGENT_TIMEOUT_SECONDS", "HTTPS_PROXY"]);
+    expect(bom.record.refused).toEqual(["HTTPS_PROXY"]);
+    expect(bom.record.unaccounted).toEqual([]);
+    expect(bom.record.ok).toBe(false);
+    // The same mark before an allowed first line loads and is accepted, and before a comment it is nothing.
+    const allowed = await load(`${BOM}DESIGN_AGENT_TIMEOUT_SECONDS=900\n`);
+    expect(allowed.record).toMatchObject({ ok: true, refused: [], unaccounted: [] });
+    expect(allowed.env.DESIGN_AGENT_TIMEOUT_SECONDS).toBe("900");
+    expect((await load(`${BOM}# only a comment\n`)).record).toMatchObject({ ok: true, added: [], unaccounted: [] });
+
+    // A name and its = on separate lines is one assignment to the loader: loaded by name, and refused when the name is not allowed.
+    const split = await load("DISABLE_AUTOUPDATER\n=1\n");
+    expect(split.record).toMatchObject({ ok: true, refused: [], unaccounted: [] });
+    expect(split.env.DISABLE_AUTOUPDATER).toBe("1");
+    const splitProxy = await load("HTTPS_PROXY\n= http://proxy.example\n");
+    expect(splitProxy.record.refused).toEqual(["HTTPS_PROXY"]);
+
+    // NAME: value is read; NAME:value (no space) is not, so its line is not accounted for and the run is refused.
+    const colon = await load("DESIGN_AGENT_TIMEOUT_SECONDS: 600\n");
+    expect(colon.record).toMatchObject({ ok: true, refused: [] });
+    expect(colon.env.DESIGN_AGENT_TIMEOUT_SECONDS).toBe("600");
+    const tight = await load("DESIGN_AGENT_TIMEOUT_SECONDS: 600\nNODE_OPTIONS:--require ./x.js\n");
+    expect(tight.record.unaccounted).toEqual([{ file: "<project>/.env.local", line: 2, reason: "not an assignment the loader reads" }]);
+    expect(tight.record.ok).toBe(false);
+    expect(tight.env.NODE_OPTIONS).toBeUndefined();
+    expect(tight.record.message).toContain("<project>/.env.local line 2");
+    expect(JSON.stringify(tight.record)).not.toContain("--require");
+
+    // A quoted value that ends in a backslash swallows the next lines up to a closing quote: a NODE_OPTIONS line inside it sets nothing, and is reported.
+    const swallowed = await load('DESIGN_AGENT_TIMEOUT_SECONDS="600\\"\nNODE_OPTIONS=--require ./x.js\n"\n');
+    expect(swallowed.record.added.map((v) => v.name)).toEqual(["DESIGN_AGENT_TIMEOUT_SECONDS"]);
+    expect(swallowed.record.unaccounted).toEqual([{ file: "<project>/.env.local", line: 2, reason: "inside a multi-line value, but reads like an assignment that was not made" }]);
+    expect(swallowed.record.ok).toBe(false);
+    expect(swallowed.env.NODE_OPTIONS).toBeUndefined();
+    // A multi-line value whose lines read as no assignment is fine.
+    expect((await load('DESIGN_AGENT_TIMEOUT_SECONDS="6\n0\n0"\n')).record).toMatchObject({ ok: true, unaccounted: [] });
+
+    // An expansion is the loader's: the harness's environment fills it in, and the arm sees the same value.
+    const expanded = await load("DESIGN_AGENT_TIMEOUT_SECONDS=$BASE_SECONDS\nDESIGN_AGENT_INACTIVITY_SECONDS=${BASE_SECONDS}\n", { BASE_SECONDS: "700" });
+    expect(expanded.record).toMatchObject({ ok: true, unaccounted: [] });
+    expect(expanded.env).toMatchObject({ DESIGN_AGENT_TIMEOUT_SECONDS: "700", DESIGN_AGENT_INACTIVITY_SECONDS: "700" });
+    expect(designAgentOnlyRun(expanded).env).toEqual(expanded.env);
+    // An expansion cannot smuggle a refused name in: the name is what the file sets.
+    const smuggle = await load("HTTPS_PROXY=$BASE_SECONDS\n", { BASE_SECONDS: "700" });
+    expect(smuggle.record.refused).toEqual(["HTTPS_PROXY"]);
+
+    // Lines of no meaning are refused, blank lines, comments, CRLF endings and `export` are not.
+    const junk = await load("# comment\n\nthis is not an assignment\nexport\nDIRECTOR_MAX_BUDGET_USD=1\n");
+    expect(junk.record.unaccounted.map((u) => u.line)).toEqual([3, 4]);
+    expect(junk.record.ok).toBe(false);
+    const tidy = await load("# comment\r\n\r\nexport DIRECTOR_MAX_BUDGET_USD=1\r\n  DESIGN_AGENT_TIMEOUT_SECONDS = 900 # why\r\n");
+    expect(tidy.record).toMatchObject({ ok: true, refused: [], unaccounted: [] });
+    expect(tidy.env).toMatchObject({ DIRECTOR_MAX_BUDGET_USD: "1", DESIGN_AGENT_TIMEOUT_SECONDS: "900" });
+  });
+
+  it("fails closed: lines the loader did not report stay unaccounted, and files that cannot be loaded as Next.js loads them are not ok", async () => {
+    // The loader reported nothing for this file, so nothing in it is accounted for, whatever the assignment pattern finds.
+    expect(unaccountedLines("A=1\n# c\n\nB: 2\n", new Set())).toEqual([
+      { line: 1, reason: "not an assignment the loader reads" },
+      { line: 4, reason: "not an assignment the loader reads" },
+    ]);
+    // It reported only A: B's line is not accounted for.
+    expect(unaccountedLines("A=1\nB=2\n", new Set(["A"]))).toEqual([{ line: 2, reason: "not an assignment the loader reads" }]);
+    expect(unaccountedLines("A=1\nB=2\n", new Set(["A", "B"]))).toEqual([]);
+    await rm(path.join(workdir, ".env.local")); // the one the describe's other tests share
+    // A folder where a file should be is skipped, as Next.js skips it.
+    await mkdir(path.join(workdir, ".env.local"));
+    expect(loadedEnv().record).toMatchObject({ ok: true, files: expect.arrayContaining([{ file: "<project>/.env.local", state: "directory", sha256: null }]) });
+    await rm(path.join(workdir, ".env.local"), { recursive: true });
+    // A pipe where a file should be is refused without being read, so it cannot hang the check.
+    execFileSync("mkfifo", [path.join(workdir, ".env.local")]);
+    const pipe = loadedEnv().record;
+    expect(pipe).toMatchObject({ ok: false, loaderError: "<project>/.env.local is not a readable plain file", added: [] });
+    expect(pipe.message).toContain("could not be loaded as Next.js loads them");
+  });
+
+  it("reports a loader failure as a fixed class, never any text of the failure", async () => {
+    const LEAK = "/home/synthetic/secret-folder: stderr text with a name";
+    const fail = (fields: Record<string, unknown>) => Object.assign(new Error(LEAK), fields);
+    expect(classifyLoaderFailure(fail({ code: "ETIMEDOUT", signal: "SIGTERM" }))).toBe("the loader timed out");
+    expect(classifyLoaderFailure(fail({ status: 3, stderr: Buffer.from(LEAK) }))).toBe("the loader exited with code 3");
+    expect(classifyLoaderFailure(fail({ code: "MODULE_NOT_FOUND" }))).toBe("the loader's module (@next/env) was not found");
+    expect(classifyLoaderFailure(new SyntaxError(LEAK))).toBe("the loader's output was not valid");
+    expect(classifyLoaderFailure(fail({ code: "ENOBUFS" }))).toBe("the loader did not run");
+    expect(classifyLoaderFailure(LEAK)).toBe("the loader did not run");
+    expect(classifyLoaderFailure(undefined)).toBe("the loader did not run");
+    for (const err of [fail({ code: "ETIMEDOUT" }), fail({ status: 1 }), fail({ code: "MODULE_NOT_FOUND" }), new SyntaxError(LEAK), fail({})]) expect(classifyLoaderFailure(err)).not.toContain("synthetic");
+
+    // A real failure: a child that cannot start under the given NODE_OPTIONS exits with a code, and its text goes nowhere.
+    const broken = loadedEnv({ PATH: process.env.PATH, NODE_OPTIONS: `--require ${path.join(workdir, "absent-preload.js")}` }).record;
+    expect(broken.ok).toBe(false);
+    expect(broken.loaderError).toBe("the loader exited with code 1");
+    expect(broken.message).toContain("(the loader exited with code 1)");
+    expect(JSON.stringify(broken)).not.toContain(workdir);
+    expect(JSON.stringify(broken)).not.toContain("absent-preload");
+  });
+
+  it("hashes the loaded files at check time, and flags a file that changed, appeared or was removed at a re-check, as the CLI pin does", async () => {
+    const VALUE = "synthetic-secret-value";
+    await writeFile(path.join(workdir, ".env.local"), `DIRECTOR_MAX_BUDGET_USD=${VALUE}\n`);
+    const checked = loadedEnv();
+    const local = checked.record.files.find((f) => f.file === "<project>/.env.local")!;
+    expect(local).toEqual({ file: "<project>/.env.local", state: "file", sha256: createHash("sha256").update(`DIRECTOR_MAX_BUDGET_USD=${VALUE}\n`).digest("hex") });
+    expect(checked.record).toMatchObject({ rechecks: [], changed: false });
+
+    const same = recheckEnvFiles(checked, workdir, "server start on port 3417");
+    expect(same).toEqual({ at: "server start on port 3417", ok: true, changes: [] });
+    expect(recordEnvRecheck(checked.record, same)).toBe(same);
+    expect(checked.record).toMatchObject({ changed: false, rechecks: [same] });
+
+    await writeFile(path.join(workdir, ".env.local"), `DIRECTOR_MAX_BUDGET_USD=${VALUE}-2\n`);
+    const changed = recheckEnvFiles(checked, workdir, "server start on port 3418");
+    expect(changed).toEqual({ at: "server start on port 3418", ok: false, changes: ["<project>/.env.local changed"] });
+    await writeFile(path.join(workdir, ".env"), "DIRECTOR_MAX_BUDGET_USD=1\n");
+    await rm(path.join(workdir, ".env.local"));
+    expect(recheckEnvFiles(checked, workdir, END_OF_RUN).changes).toEqual(["<project>/.env.local was removed", "<project>/.env appeared"]);
+    // A change marks the run as not comparable, and a later clean re-check does not clear it.
+    recordEnvRecheck(checked.record, changed);
+    recordEnvRecheck(checked.record, same);
+    expect(checked.record.changed).toBe(true);
+    expect(checked.record.rechecks).toHaveLength(3);
+    // Only names and states are recorded, never a value.
+    expect(JSON.stringify(checked.record)).not.toContain(VALUE);
+  });
+
+  it("records the model variables the files add by name and value hash, from the loader's values", async () => {
+    await writeFile(path.join(workdir, ".env.local"), "ANTHROPIC_MODEL=model-a\nCLAUDE_CODE_MAX_OUTPUT_TOKENS=8000\nDESIGN_AGENT_TIMEOUT_SECONDS=900\n");
+    const vars = loadedFileVariables(loadedEnv(), (name) => MODEL_ENV_NAME.test(name));
+    expect(vars).toEqual([
+      { name: "ANTHROPIC_MODEL", sha256: createHash("sha256").update("model-a").digest("hex"), file: "<project>/.env.local" },
+      { name: "CLAUDE_CODE_MAX_OUTPUT_TOKENS", sha256: createHash("sha256").update("8000").digest("hex"), file: "<project>/.env.local" },
+    ]);
+    expect(JSON.stringify(vars)).not.toContain("model-a");
+  });
+
+  it("reads an empty setting in the environment as the product's default, with a source that says so, and refuses what the product refuses", async () => {
+    await writeFile(path.join(workdir, ".env.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=900\nDESIGN_AGENT_INACTIVITY_SECONDS=120\n");
+    const base = { DESIGN_AGENT_MAX_BUDGET_USD: "4" };
+    const emptied = designAgentLimits(loadedEnv({ ...base, DESIGN_AGENT_TIMEOUT_SECONDS: "", DESIGN_AGENT_INACTIVITY_SECONDS: " " }));
+    expect(emptied).toMatchObject({ ok: true, timeoutMs: 1_800_000, inactivityMs: 300_000 });
+    expect(emptied.timeoutSource).toBe("the product's default (DESIGN_AGENT_TIMEOUT_SECONDS is empty in the harness's environment)");
+    expect(designAgentOnlyRun(loadedEnv({ ...base, DESIGN_AGENT_TIMEOUT_SECONDS: "" })).limits.timeoutMs).toBe(1_800_000);
+    // An empty assignment in a file with higher precedence ends the search too.
+    await writeFile(path.join(workdir, ".env.production.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=\n");
+    expect(designAgentLimits(loadedEnv(base)).timeoutSource).toBe("the product's default (DESIGN_AGENT_TIMEOUT_SECONDS is empty in <project>/.env.production.local)");
+    await rm(path.join(workdir, ".env.production.local"));
+
+    const soon = designAgentLimits(loadedEnv({ ...base, DESIGN_AGENT_TIMEOUT_SECONDS: "soon" }));
+    expect(soon).toMatchObject({ ok: false, problem: "timeout_setting_invalid", timeoutMs: 3_600_000, inactivityMs: null });
+    expect(designAgentOnlyRun(loadedEnv({ ...base, DESIGN_AGENT_TIMEOUT_SECONDS: "soon" })).settings).toEqual({ ok: false, code: "timeout_setting_invalid" });
+    // An inactivity limit that does not undercut the deadline is refused by the product too.
+    expect(designAgentLimits(loadedEnv({ ...base, DESIGN_AGENT_TIMEOUT_SECONDS: "600", DESIGN_AGENT_INACTIVITY_SECONDS: "600" }))).toMatchObject({ ok: false, problem: "inactivity_setting_invalid" });
+    expect(designAgentLimits(loadedEnv({ DESIGN_AGENT_MAX_BUDGET_USD: "free" }))).toMatchObject({ ok: false, problem: "budget_setting_invalid" });
+  });
 });
 
 describe("acceptance baseline: CLI pin (#232)", () => {
-  async function fakeCli(name: string, version: string | null) {
+  async function fakeCli(name: string, version: string | null, comment = "") {
     const file = path.join(workdir, name);
-    await writeFile(file, version ? `#!/bin/sh\necho "${version} (Claude Code)"\n` : "#!/bin/sh\nexit 1\n");
+    await writeFile(file, version ? `#!/bin/sh\n${comment}echo "${version} (Claude Code)"\n` : "#!/bin/sh\nexit 1\n");
     chmodSync(file, 0o755);
     return file;
   }
   const use = (role: string, cli: string | null) => ({ role, path: cli, version: cliVersion(cli, process.env) });
+  const FILE = { size: 12, sha256: "a".repeat(64) };
+  const named = () => ({ explicit: true, source: "CLAUDE_CLI_PATH from the harness's environment", file: FILE, home: workdir });
+  const REFUSED = /^Refusing a paid run before any spend: the CLI is not pinned/;
 
-  it("passes only when the servers, the Design-Agent-only arm and the judge run one CLI at one version", async () => {
+  it("passes only when the servers, the Design-Agent-only arm and the judge run one CLI at one version, named by CLAUDE_CLI_PATH", async () => {
     const pinned = await fakeCli("claude-pinned", "2.0.1");
     const link = path.join(workdir, "claude-link");
     symlinkSync(pinned, link);
-    const pin = checkCliPin([use("servers", pinned), use("Design-Agent-only arm", link), use("judge", pinned)], workdir);
-    expect(pin.ok).toBe(true);
-    expect(pin.message).toBe("CLI pinned: every model call uses ~/claude-pinned (2.0.1 (Claude Code)).");
+    const pin = checkCliPin([use("servers", pinned), use("Design-Agent-only arm", link), use("judge", pinned)], named());
+    expect(pin).toMatchObject({ ok: true, explicit: true, file: FILE, rechecks: [], changed: false });
+    expect(pin.message).toBe("CLI pinned: every model call uses ~/claude-pinned (2.0.1 (Claude Code)), named by CLAUDE_CLI_PATH from the harness's environment.");
     expect(JSON.stringify(pin)).not.toContain(workdir);
   });
 
@@ -504,21 +1147,136 @@ describe("acceptance baseline: CLI pin (#232)", () => {
     const copy = await fakeCli("claude-copy", "2.0.1");
     const broken = await fakeCli("claude-broken", null);
     for (const servers of [newer, copy, null, broken, path.join(workdir, "absent")]) {
-      const pin = checkCliPin([use("servers (Director and Design Agent)", servers), use("Design-Agent-only arm", pinned), use("judge", pinned)], workdir);
+      const pin = checkCliPin([use("servers (Director and Design Agent)", servers), use("Design-Agent-only arm", pinned), use("judge", pinned)], named());
       expect(pin.ok, String(servers)).toBe(false);
-      expect(pin.message).toMatch(/^Refusing a paid run before any spend: the CLI is not pinned/);
+      expect(pin.message).toMatch(REFUSED);
       expect(pin.message).toContain("Design-Agent-only arm ~/claude-pinned (2.0.1 (Claude Code)); judge ~/claude-pinned (2.0.1 (Claude Code))");
+      // The way out: one CLI, set in the harness's own environment.
+      expect(pin.message).toContain("Run the harness with CLAUDE_CLI_PATH=<one installed CLI> in its environment.");
       expect(pin.message).not.toContain(workdir);
     }
-    const judgeDiffers = checkCliPin([use("servers", pinned), use("Design-Agent-only arm", pinned), use("judge", newer)], workdir);
+    const judgeDiffers = checkCliPin([use("servers", pinned), use("Design-Agent-only arm", pinned), use("judge", newer)], named());
     expect(judgeDiffers.ok).toBe(false);
     expect(judgeDiffers.message).toContain("judge ~/claude-newer (2.0.9 (Claude Code))");
+  });
+
+  it("refuses a CLI that only discovery found, however well the uses agree, and never calls it pinned", async () => {
+    const found = await fakeCli("claude-found", "2.0.1");
+    const pin = checkCliPin([use("servers", found), use("Design-Agent-only arm", found), use("judge", found)], { ...named(), explicit: false, source: "the app's discovery (no CLAUDE_CLI_PATH is set)" });
+    expect(pin).toMatchObject({ ok: false, explicit: false, source: "the app's discovery (no CLAUDE_CLI_PATH is set)" });
+    expect(pin.message).toMatch(REFUSED);
+    expect(pin.message).toContain("a discovered CLI is not pinned");
+    expect(pin.message).not.toMatch(/CLI pinned:/);
+    expect(pin.message).toContain("Run the harness with CLAUDE_CLI_PATH=<one installed CLI> in its environment.");
+  });
+
+  it("refuses a CLI file that could not be read for its size and SHA-256", async () => {
+    const pinned = await fakeCli("claude-pinned", "2.0.1");
+    const pin = checkCliPin([use("servers", pinned), use("judge", pinned)], { ...named(), file: null });
+    expect(pin.ok).toBe(false);
+    expect(pin.message).toContain("could not be read for its size and SHA-256");
+  });
+
+  it("reads a CLI file's size and SHA-256 in chunks, and nothing for a folder or a missing file", async () => {
+    const file = path.join(workdir, "big");
+    const bytes = Buffer.alloc(9 * 1024 * 1024, 7); // more than two read chunks
+    await writeFile(file, bytes);
+    expect(cliFileFacts(file)).toEqual({ size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    expect(cliFileFacts(workdir)).toBeNull();
+    expect(cliFileFacts(path.join(workdir, "absent"))).toBeNull();
+  });
+
+  it("re-checks the pinned file's existence, size, SHA-256 and --version, and flags any change on the pin", async () => {
+    const cli = await fakeCli("claude-pinned", "2.0.1", "# a\n");
+    const file = cliFileFacts(cli)!;
+    const version = cliVersion(cli, process.env)!;
+    const pin = () => ({ path: cli, file, version });
+    const pinRecord = checkCliPin([use("servers", cli)], { ...named(), file });
+
+    const same = recheckCli(pin(), "server start on port 3417", process.env);
+    expect(same).toEqual({ at: "server start on port 3417", ok: true, changes: [] });
+    expect(recordRecheck(pinRecord, same)).toBe(same);
+    expect(pinRecord).toMatchObject({ changed: false, rechecks: [same] });
+
+    // The same bytes in length and version output, but not the same file: only the hash differs.
+    await fakeCli("claude-pinned", "2.0.1", "# b\n");
+    expect(recheckCli(pin(), "server start on port 3418", process.env)).toEqual({ at: "server start on port 3418", ok: false, changes: ["SHA-256 changed"] });
+    // An update: another size, another hash, another version.
+    await fakeCli("claude-pinned", "2.0.99", "# longer comment\n");
+    const updated = recheckCli(pin(), END_OF_RUN, process.env);
+    expect(updated.ok).toBe(false);
+    expect(updated.changes).toEqual([`size changed from ${file.size} to ${cliFileFacts(cli)!.size} bytes`, "SHA-256 changed", '--version changed from "2.0.1 (Claude Code)" to "2.0.99 (Claude Code)"']);
+    // Gone.
+    await rm(cli);
+    const gone = recheckCli(pin(), END_OF_RUN, process.env);
+    expect(gone.changes).toEqual(["the file no longer exists or cannot be read", '--version changed from "2.0.1 (Claude Code)" to unknown']);
+
+    // A change marks the run as not comparable, and a later clean re-check does not clear it.
+    recordRecheck(pinRecord, updated);
+    recordRecheck(pinRecord, same);
+    expect(pinRecord.changed).toBe(true);
+    expect(pinRecord.rechecks).toHaveLength(3);
+    expect(JSON.stringify(pinRecord)).not.toContain(workdir);
+  });
+
+  it("pins one real path for the servers, the judge and the Design-Agent-only arm, and never falls back to discovery", async () => {
+    const cli = path.join(workdir, "claude-pinned");
+    await writeFile(cli, "#!/bin/sh\n");
+    const saved = process.env.CLAUDE_CLI_PATH;
+    process.env.CLAUDE_CLI_PATH = "/opt/shell/claude";
+    try {
+      expect(judgeCliPath()).toBeNull();
+      expect(designAgentOnlyCliPath()).toBeNull();
+      expect(() => pinnedCli()).toThrow(/No CLI is pinned/);
+      expect(() => pinCli("relative/claude")).toThrow(/absolute/);
+      pinCli(cli);
+      // The same checked value for every spawn, and the harness's own CLAUDE_CLI_PATH follows it.
+      expect([judgeCliPath(), designAgentOnlyCliPath(), pinnedCli()]).toEqual([cli, cli, cli]);
+      expect(process.env.CLAUDE_CLI_PATH).toBe(cli);
+      expect(getClaudePath()).toBe(cli);
+      forgetPinnedCli();
+      expect(judgeCliPath()).toBeNull();
+      expect(process.env.CLAUDE_CLI_PATH).toBe("/opt/shell/claude");
+    } finally {
+      forgetPinnedCli();
+      if (saved === undefined) delete process.env.CLAUDE_CLI_PATH;
+      else process.env.CLAUDE_CLI_PATH = saved;
+    }
+  });
+
+  it("refuses a paid run before any spend for the first of: dev mode, an unpinned CLI, a variable that is not allowed, a token limit in the harness's environment, a setting the product refuses", async () => {
+    const cli = await fakeCli("claude-pinned", "2.0.1");
+    const good = checkCliPin([use("servers", cli), use("judge", cli)], named());
+    const envFiles = (body: string) => {
+      writeFileSync(path.join(workdir, ".env.local"), body);
+      return loadedEnv().record;
+    };
+    const settings = (timeout: string) => {
+      const env = loadedEnv({ DESIGN_AGENT_MAX_BUDGET_USD: "4", DESIGN_AGENT_TIMEOUT_SECONDS: timeout });
+      return { limits: designAgentLimits(env), armSettings: designAgentOnlyRun(env).settings };
+    };
+    const fine = { mode: "prod", harnessRefusal: null } as const;
+    expect(refusalBeforeSpend({ ...fine, pin: good, envFiles: envFiles("DISABLE_AUTOUPDATER=1\n"), ...settings("900") })).toBeNull();
+    const unpinned = checkCliPin([use("servers", cli), use("judge", cli)], { ...named(), explicit: false });
+    expect(refusalBeforeSpend({ ...fine, pin: unpinned, envFiles: envFiles("HTTPS_PROXY=x\n"), ...settings("soon") })).toBe(unpinned.message);
+    const bad = envFiles("HTTPS_PROXY=x\n");
+    expect(refusalBeforeSpend({ ...fine, pin: good, envFiles: bad, ...settings("soon") })).toBe(bad.message);
+    const tokens = harnessEnvironmentRefusal(["MAX_THINKING_TOKENS"]);
+    expect(refusalBeforeSpend({ ...fine, pin: good, envFiles: envFiles("\n"), harnessRefusal: tokens, ...settings("soon") })).toBe(tokens);
+    const refused = refusalBeforeSpend({ ...fine, pin: good, envFiles: envFiles("\n"), ...settings("soon") });
+    expect(refused).toMatch(/^Refusing a paid run before any spend: the product does not accept the Design Agent settings the servers would load \(timeout_setting_invalid\)/);
+    // A paid dev run comes first: next dev reloads the .env files into a running server, so a mid-run edit would reach later calls unchecked.
+    expect(refusalBeforeSpend({ mode: "dev", harnessRefusal: tokens, pin: unpinned, envFiles: bad, ...settings("soon") })).toBe(DEV_MODE_REFUSAL);
+    expect(refusalBeforeSpend({ mode: "dev", harnessRefusal: null, pin: good, envFiles: envFiles("\n"), ...settings("900") })).toBe(DEV_MODE_REFUSAL);
+    expect(DEV_MODE_REFUSAL).toMatch(/^Refusing a paid run before any spend: EVAL_MODE=dev runs the servers under `next dev`, which reloads the checkout's \.env files into a server that is already running/);
+    expect(DEV_MODE_REFUSAL).toContain("A dry run in dev mode prints the plan.");
   });
 });
 
 describe("acceptance baseline: CLI version per session (#232)", () => {
   const ids = ["123e4567-e89b-42d3-a456-426614174001", "123e4567-e89b-42d3-a456-426614174002", "123e4567-e89b-42d3-a456-426614174003", "123e4567-e89b-42d3-a456-426614174004"];
   const SECRET = "synthetic-transcript-content";
+  const LINE = "2.0.1 (Claude Code)";
 
   async function transcript(id: string, versions: string[]) {
     await mkdir(path.join(workdir, "projects", "-synthetic-project"), { recursive: true });
@@ -529,36 +1287,257 @@ describe("acceptance baseline: CLI version per session (#232)", () => {
     lines.push(JSON.stringify({ type: "summary", version: `not a version ${SECRET}` }), '{"version":"2.0.1', "");
     await writeFile(path.join(workdir, "projects", "-synthetic-project", `${id}.jsonl`), lines.join("\n"));
   }
+  const pinWith = (rechecks: { at: string; ok: boolean }[], over: Partial<CliPin> = {}): CliPin => ({
+    ok: true,
+    explicit: true,
+    source: "CLAUDE_CLI_PATH from the harness's environment",
+    uses: [],
+    file: { size: 1, sha256: "a".repeat(64) },
+    message: "CLI pinned",
+    rechecks: rechecks.map((r) => ({ at: r.at, ok: r.ok, changes: r.ok ? [] : ["SHA-256 changed"] })),
+    changed: rechecks.some((r) => !r.ok),
+    ...over,
+  });
+  const held = pinWith([{ at: "server start on port 3417", ok: true }, { at: END_OF_RUN, ok: true }]);
+  const proof = directorProof(held, LINE);
+  const record = (sessions: { id: string; role: "design-agent" | "design-agent-only" }[], withoutSession = 0) =>
+    sessionVersions({ sessions, withoutSession, configDir: workdir, configured: versionNumber(LINE), director: proof, judge: judgeProof(held, LINE) });
 
   it("reads only the version field from each session's transcript", async () => {
     await transcript(ids[0], ["2.0.1"]);
     await transcript(ids[1], ["2.0.1", "2.0.9"]); // a resumed session
-    expect(transcriptVersions([ids[0], ids[1], ids[2], "not-a-session", ids[0]], workdir)).toEqual([
-      { sessionId: ids[0], found: true, versions: ["2.0.1"] },
-      { sessionId: ids[1], found: true, versions: ["2.0.1", "2.0.9"] },
-      { sessionId: ids[2], found: false, versions: [] },
+    const read = transcriptVersions([ids[0], ids[1], ids[2], "not-a-session", ids[0]], workdir);
+    expect(read).toEqual([
+      { sessionId: ids[0], found: true, versions: ["2.0.1"], error: null },
+      { sessionId: ids[1], found: true, versions: ["2.0.1", "2.0.9"], error: null },
+      { sessionId: ids[2], found: false, versions: [], error: null },
     ]);
+    expect(JSON.stringify(read)).not.toContain(SECRET);
     expect(versionNumber("2.0.1 (Claude Code)")).toBe("2.0.1");
     expect(versionNumber(null)).toBeNull();
   });
 
-  it("records each Design Agent session's version and flags a run when one differs from the configured CLI", async () => {
+  it("records an unreadable transcript as a fixed string, for that file only, with no folder name or path", async () => {
+    await transcript(ids[0], ["2.0.1"]);
+    // A folder where the transcript file should be: it exists, and reading it fails, whoever runs the test.
+    await mkdir(path.join(workdir, "projects", "-synthetic-project", `${ids[1]}.jsonl`));
+    expect(() => transcriptModels([ids[1], ids[0]], workdir)).not.toThrow();
+    expect(transcriptModels([ids[1], ids[0]], workdir)).toEqual(["model-x"]);
+    const read = transcriptVersions([ids[1], ids[0]], workdir);
+    expect(read).toEqual([
+      { sessionId: ids[1], found: true, versions: [], error: TRANSCRIPT_UNREADABLE },
+      { sessionId: ids[0], found: true, versions: ["2.0.1"], error: null },
+    ]);
+    expect(TRANSCRIPT_UNREADABLE).toBe("transcript unreadable");
+    const recorded = record([{ id: ids[1], role: "design-agent" }, { id: ids[0], role: "design-agent" }]);
+    expect(recorded.sessions).toEqual([
+      { sessionId: ids[1], role: "design-agent", versions: [], status: "unknown", error: "transcript unreadable" },
+      { sessionId: ids[0], role: "design-agent", versions: ["2.0.1"], status: "matches", error: null },
+    ]);
+    expect(recorded.unverified).toBe(true);
+    const text = JSON.stringify(recorded);
+    expect(text).not.toContain("synthetic-project");
+    expect(text).not.toContain(workdir);
+  });
+
+  it("records each session's version and role, flags a run when one differs from the configured CLI, and does not read a mismatch-free run as verified when a version is unknown", async () => {
     await transcript(ids[0], ["2.0.1"]);
     await transcript(ids[1], ["2.0.9"]);
     await transcript(ids[3], ["2.0.1", "2.0.9"]);
-    const record = sessionVersions({ sessionIds: [ids[0], ids[1], ids[2], ids[3]], withoutSession: 1, configDir: workdir, configuredLine: "2.0.1 (Claude Code)" });
-    expect(record).toMatchObject({ configured: "2.0.1", withoutSession: 1, mismatch: true });
-    expect(record.sessions).toEqual([
-      { sessionId: ids[0], versions: ["2.0.1"], status: "matches" },
-      { sessionId: ids[1], versions: ["2.0.9"], status: "differs" },
-      { sessionId: ids[2], versions: [], status: "unknown" },
-      { sessionId: ids[3], versions: ["2.0.1", "2.0.9"], status: "differs" },
+    const mixed = record(
+      [
+        { id: ids[0], role: "design-agent" },
+        { id: ids[1], role: "design-agent-only" },
+        { id: ids[2], role: "design-agent" },
+        { id: ids[3], role: "design-agent" },
+      ],
+      1
+    );
+    expect(mixed).toMatchObject({ configured: "2.0.1", withoutSession: 1, mismatch: true, unverified: true });
+    expect(mixed.sessions).toEqual([
+      { sessionId: ids[0], role: "design-agent", versions: ["2.0.1"], status: "matches", error: null },
+      { sessionId: ids[1], role: "design-agent-only", versions: ["2.0.9"], status: "differs", error: null },
+      { sessionId: ids[2], role: "design-agent", versions: [], status: "unknown", error: null },
+      { sessionId: ids[3], role: "design-agent", versions: ["2.0.1", "2.0.9"], status: "differs", error: null },
     ]);
-    expect(record.director).toMatch(/^not recordable: the Director runs with --no-session-persistence/);
-    expect(JSON.stringify(record)).not.toContain(SECRET);
+    expect(JSON.stringify(mixed)).not.toContain(SECRET);
 
-    const pinned = sessionVersions({ sessionIds: [ids[0], ids[2]], withoutSession: 0, configDir: workdir, configuredLine: "2.0.1 (Claude Code)" });
-    expect(pinned.mismatch).toBe(false);
+    // Verified: every session matches and none is missing.
+    expect(record([{ id: ids[0], role: "design-agent" }])).toMatchObject({ mismatch: false, unverified: false, withoutSession: 0 });
+    // Unverified without a mismatch: an unknown version, or a run with no session id, each on its own.
+    expect(record([{ id: ids[0], role: "design-agent" }, { id: ids[2], role: "design-agent-only" }])).toMatchObject({ mismatch: false, unverified: true });
+    expect(record([{ id: ids[0], role: "design-agent" }], 1)).toMatchObject({ mismatch: false, unverified: true, withoutSession: 1 });
+    // An id that names no transcript counts as a run without a session id.
+    expect(record([{ id: "not-a-session", role: "design-agent-only" }])).toMatchObject({ unverified: true, withoutSession: 1, sessions: [] });
+  });
+
+  it("shows the Director's version by the resolved pin and the end-of-run file check, not by a transcript", () => {
+    expect(proof).toMatchObject({ version: "2.0.1", proven: true });
+    expect(proof.method).toMatch(/^not read from a transcript: the Director runs with --no-session-persistence/);
+    expect(proof.method).toContain("re-checked by size, SHA-256 and --version at every server start and at the end of the run");
+    const at = (rechecks: { at: string; ok: boolean }[], over: Partial<CliPin> = {}) => directorProof(pinWith(rechecks, over), LINE).proven;
+    const start = { at: "server start on port 3417", ok: true };
+    expect(at([start, { at: END_OF_RUN, ok: true }])).toBe(true);
+    // No check at the end of the run (a killed run), a change at any check, a discovered CLI or a failed pin proves nothing.
+    expect(at([start])).toBe(false);
+    expect(at([{ at: "server start on port 3417", ok: false }, { at: END_OF_RUN, ok: true }])).toBe(false);
+    expect(at([start, { at: END_OF_RUN, ok: true }], { explicit: false })).toBe(false);
+    expect(at([start, { at: END_OF_RUN, ok: true }], { ok: false })).toBe(false);
+    expect(directorProof(pinWith([{ at: END_OF_RUN, ok: true }]), null).version).toBeNull();
+  });
+
+  it("shows the judge's version the same way: it keeps no transcript either, so only the pin shows it, and results.json says so", () => {
+    const judge = judgeProof(held, LINE);
+    expect(judge).toMatchObject({ version: "2.0.1", proven: true });
+    expect(judge.method).toMatch(/^not read from a transcript: the judge runs with --no-session-persistence, so its CLI keeps none; its version is shown by the resolved pin/);
+    expect(judgeProof(pinWith([{ at: "server start on port 3417", ok: true }]), LINE).proven).toBe(false);
+    expect(judgeProof(pinWith([{ at: END_OF_RUN, ok: false }]), LINE).proven).toBe(false);
+    expect(record([{ id: ids[0], role: "design-agent" }]).judge).toEqual(judge);
+    expect(JSON.stringify(record([]))).toContain("the judge runs with --no-session-persistence");
+  });
+});
+
+describe("acceptance baseline: the Design-Agent-only arm's process (#232)", () => {
+  async function fakeCli(body: string) {
+    const file = path.join(workdir, `fake-claude-${Math.random().toString(36).slice(2)}`);
+    await writeFile(file, `#!/bin/sh\n${body}\n`);
+    chmodSync(file, 0o755);
+    return file;
+  }
+  const run = (cliPath: string, settings: { timeoutMs: number; inactivityMs: number | null }, env: Record<string, string | undefined> = { PATH: process.env.PATH }) =>
+    runArmProcess({ cliPath, args: [], env: env as NodeJS.ProcessEnv, cwd: workdir, settings, forceKillAfterMs: 200 });
+  const RESULT = '{"type":"result","subtype":"success","is_error":false,"session_id":"123e4567-e89b-42d3-a456-426614174000","total_cost_usd":0.5,"num_turns":3,"result":"%s"}';
+
+  it("spawns the CLI it is given with the environment it is given, and records the session id from its result", async () => {
+    const cli = await fakeCli(`printf '${RESULT}\\n' "$ANTHROPIC_MODEL"`);
+    const result = await run(cli, { timeoutMs: 20_000, inactivityMs: 10_000 }, { PATH: process.env.PATH, ANTHROPIC_MODEL: "synthetic-model" });
+    expect(result).toMatchObject({ ok: true, error: null, costUsd: 0.5, turns: 3, subtype: "success", sessionId: "123e4567-e89b-42d3-a456-426614174000", resultText: "synthetic-model" });
+  });
+
+  it("records no session id when the CLI reported none", async () => {
+    const cli = await fakeCli(`echo '{"type":"result","subtype":"success","is_error":false}'`);
+    expect(await run(cli, { timeoutMs: 20_000, inactivityMs: null })).toMatchObject({ ok: true, sessionId: null });
+  });
+
+  it("takes the session id from the system init event too, so a run that was stopped before its result is still version-checked", { timeout: 60_000 }, async () => {
+    const INIT = '{"type":"system","subtype":"init","session_id":"123e4567-e89b-42d3-a456-426614174111","model":"model-x"}';
+    // Stopped by the inactivity limit after the init event and before any result.
+    const stalled = await fakeCli(`echo '${INIT}'; exec sleep 30`);
+    expect(await run(stalled, { timeoutMs: 60_000, inactivityMs: 2_000 })).toMatchObject({ ok: false, error: "stalled", sessionId: "123e4567-e89b-42d3-a456-426614174111" });
+    // The result event's id wins when both are there, and an init event that is not a session's names none.
+    const both = await fakeCli(`echo '${INIT}'; printf '${RESULT}\\n' x`);
+    expect(await run(both, { timeoutMs: 20_000, inactivityMs: null })).toMatchObject({ ok: true, sessionId: "123e4567-e89b-42d3-a456-426614174000" });
+    const other = await fakeCli(`echo '{"type":"system","subtype":"hook_started","session_id":"123e4567-e89b-42d3-a456-426614174222"}'; echo '{"type":"result","is_error":false}'`);
+    expect(await run(other, { timeoutMs: 20_000, inactivityMs: null })).toMatchObject({ ok: true, sessionId: null });
+  });
+
+  // The limits below are real time, so they are far wider than the output and scheduling gaps a loaded runner can produce.
+  it("stops a CLI that writes nothing for the inactivity limit, as stalled, though the deadline is far off", { timeout: 60_000 }, async () => {
+    const cli = await fakeCli("exec sleep 60");
+    const started = Date.now();
+    const result = await run(cli, { timeoutMs: 120_000, inactivityMs: 1_500 });
+    expect(result).toMatchObject({ ok: false, error: "stalled", sessionId: null });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_400);
+    expect(Date.now() - started).toBeLessThan(30_000);
+  });
+
+  it("lets output reset the inactivity limit, and never lets it move the deadline", { timeout: 60_000 }, async () => {
+    // Writes every 100 ms for about 1 s, then finishes: never quiet for the 3 s limit, however loaded the runner.
+    const talkative = await fakeCli(`i=0; while [ $i -lt 10 ]; do echo '{"type":"system"}'; sleep 0.1; i=$((i+1)); done; printf '${RESULT}\\n' x`);
+    expect(await run(talkative, { timeoutMs: 60_000, inactivityMs: 3_000 })).toMatchObject({ ok: true, error: null });
+    // Writes for ever: the inactivity limit never fires, and the deadline still stops it.
+    const endless = await fakeCli(`while true; do echo '{"type":"system"}'; sleep 0.1; done`);
+    expect(await run(endless, { timeoutMs: 4_000, inactivityMs: 3_000 })).toMatchObject({ ok: false, error: "timed out" });
+  });
+
+  it("kills a CLI that ignores the stop", { timeout: 60_000 }, async () => {
+    const stubborn = await fakeCli(`trap '' TERM; while true; do sleep 0.1; done`);
+    const started = Date.now();
+    // The limit leaves the shell time to install its trap before the stop arrives.
+    expect(await run(stubborn, { timeoutMs: 120_000, inactivityMs: 2_000 })).toMatchObject({ ok: false, error: "stalled" });
+    expect(Date.now() - started).toBeLessThan(30_000);
+  });
+});
+
+describe("acceptance baseline: time limits (#232)", () => {
+  const STAGES = stageLimits({ designMs: 1_800_000, designArmMs: 1_800_000, admissionWaitMs: 600_000 });
+  const plan = () => planRun({ scenarios: SCENARIOS, repeat: 1, compare: true, caps: capsDefault });
+  const shape = (item: ReturnType<typeof plan>["items"][number]) => ({ kind: scenario(item.id).kind, needsImages: !!scenario(item.id).needsImages, calls: item.calls, comparison: item.comparison });
+
+  it("takes each stage's limit from the product, the judge and the effective settings", () => {
+    expect(STAGES).toEqual({
+      serverReadyMs: 190_000,
+      admissionWaitMs: 600_000,
+      observeMs: 60_000,
+      directorMs: 120_000,
+      sourcesMs: 30_000,
+      imageStageMs: 12 * 60 * 1000,
+      designMs: 1_800_000,
+      designArmMs: 1_800_000,
+      judgeMs: 360_000,
+      stopMs: 10_000,
+      marginMs: 600_000,
+    });
+  });
+
+  it("gives an item the sum of its stage limits plus a margin as its test timeout, far above the 60 minutes it had", () => {
+    // S1 in the default plan: the Design Agent and the arm alone are an hour.
+    const s1 = plan().items.find((i) => i.id === "S1")!;
+    const worst = itemWorstCase(shape(s1), STAGES);
+    expect(worst.ms).toBe(7_880_000);
+    expect(worst.ms).toBe(worst.parts.reduce((a, p) => a + p.ms, 0));
+    expect(Object.fromEntries(worst.parts.map((p) => [p.name, p.ms]))).toEqual({
+      "server start": 380_000,
+      "waits for the image service": 600_000,
+      Director: 160_000,
+      "image stage": 1_440_000,
+      "Design Agent": 1_810_000,
+      judges: 360_000,
+      "Design-Agent-only arm": 1_810_000,
+      "comparison judges": 720_000,
+      "export, checks and waits without a limit of their own": 600_000,
+    });
+    expect(formatDuration(worst.ms)).toBe("2 h 12 min");
+    expect(worst.ms).toBeGreaterThan(60 * 60 * 1000);
+  });
+
+  it("covers the Design Agent's deadline and the arm's at the product's maximum of an hour", () => {
+    const limits = stageLimits({ designMs: 3_600_000, designArmMs: 3_600_000, admissionWaitMs: 600_000 });
+    for (const item of plan().items) {
+      const worst = itemWorstCase(shape(item), limits);
+      const designs = item.calls.design + (item.comparison?.design ?? 0);
+      expect(worst.ms, item.key).toBeGreaterThan(designs * 3_600_000);
+      expect(worst.ms, item.key).toBeLessThan(2 ** 31 - 1);
+    }
+  });
+
+  it("counts a restart's second server start, a cancel's observation and a plan without comparison", () => {
+    const by = (id: string, compare: boolean) => {
+      const item = planRun({ scenarios: SCENARIOS, repeat: 1, compare, caps: capsDefault }).items.find((i) => i.id === id)!;
+      return Object.fromEntries(itemWorstCase(shape(item), STAGES).parts.map((p) => [p.name, p.ms]));
+    };
+    expect(by("S9", false)["server start"]).toBe(2 * 190_000);
+    expect(by("S9", false)["observing the image service"]).toBe(60_000);
+    expect(by("S8", false)["observing the image service"]).toBe(60_000);
+    expect(by("S7", false)["image stage"]).toBeUndefined();
+    expect(by("S1", false)["Design-Agent-only arm"]).toBeUndefined();
+    expect(by("S1", true)["server start"]).toBe(2 * 190_000);
+  });
+
+  it("refuses an item that could take longer than a Node timer can wait", () => {
+    const huge = stageLimits({ designMs: 3_600_000, designArmMs: 3_600_000, admissionWaitMs: 2 ** 31 });
+    expect(() => itemWorstCase(shape(plan().items[0]), huge)).toThrow(/cannot be given a test timeout/);
+  });
+
+  it("sizes the chat stream's idle limit from the largest stage limit, the image stage included, plus the margin", () => {
+    // The default: the Design Agent's 30 minutes are the largest stage.
+    expect(largestStageMs(STAGES)).toBe(1_800_000);
+    expect(chatTimeoutMs(largestStageMs(STAGES))).toBe(35 * 60 * 1000);
+    // A short deadline (the product's minimum is 60 s) leaves the image stage's 12 minutes the largest: the idle limit must not be the deadline's.
+    const short = stageLimits({ designMs: 60_000, designArmMs: 60_000, admissionWaitMs: 600_000 });
+    expect(largestStageMs(short)).toBe(12 * 60 * 1000);
+    expect(chatTimeoutMs(largestStageMs(short))).toBe(17 * 60 * 1000);
+    expect(chatTimeoutMs(largestStageMs(short))).toBeGreaterThan(60_000 + 5 * 60 * 1000);
   });
 });
 
@@ -599,17 +1578,68 @@ describe("acceptance baseline: summary", () => {
         cli: {
           server: { path: "~/bin/claude", version: "1.0.0 (Claude Code)", source: "CLAUDE_CLI_PATH from <project>/.env.local" },
           harness: { path: "~/bin/claude", version: "1.0.0 (Claude Code)" },
-          pin: { ok: true, uses: [], message: "CLI pinned: every model call uses ~/bin/claude (1.0.0 (Claude Code))." },
+          pin: {
+            ok: true,
+            explicit: true,
+            source: "CLAUDE_CLI_PATH from <project>/.env.local",
+            uses: [],
+            file: { size: 1234, sha256: "f".repeat(64) },
+            message: "CLI pinned: every model call uses ~/bin/claude (1.0.0 (Claude Code)).",
+            rechecks: [
+              { at: "server start on port 3417", ok: true, changes: [] },
+              { at: END_OF_RUN, ok: false, changes: ["SHA-256 changed"] },
+            ],
+            changed: true,
+          },
           sessions: {
             configured: "1.0.0",
             sessions: [
-              { sessionId: "s-1", versions: ["1.0.0"], status: "matches" },
-              { sessionId: "s-2", versions: ["1.0.9"], status: "differs" },
+              { sessionId: "s-1", role: "design-agent", versions: ["1.0.0"], status: "matches", error: null },
+              { sessionId: "s-2", role: "design-agent-only", versions: ["1.0.9"], status: "differs", error: null },
+              { sessionId: "s-3", role: "design-agent", versions: [], status: "unknown", error: "transcript unreadable" },
             ],
-            withoutSession: 0,
+            withoutSession: 2,
             mismatch: true,
-            director: "not recordable",
+            unverified: true,
+            director: { method: "not read from a transcript: synthetic", version: "1.0.0", proven: false },
+            judge: { method: "not read from a transcript: synthetic judge", version: "1.0.0", proven: true },
           },
+        },
+        serverEnvFiles: {
+          files: [
+            { file: "<project>/.env.local", state: "file", sha256: "d".repeat(64) },
+            { file: "<project>/.env", state: "absent", sha256: null },
+          ],
+          added: [{ name: "DESIGN_AGENT_TIMEOUT_SECONDS", file: "<project>/.env.local" }, { name: "HTTPS_PROXY", file: "<project>/.env.local" }],
+          refused: ["HTTPS_PROXY"],
+          unaccounted: [{ file: "<project>/.env.local", line: 4, reason: "not an assignment the loader reads" }],
+          loaderError: null,
+          allowlist: ["CLAUDE_CLI_PATH"],
+          ok: false,
+          message: "refused",
+          rechecks: [
+            { at: "server start on port 3417", ok: true, changes: [] },
+            { at: END_OF_RUN, ok: false, changes: ["<project>/.env.local changed"] },
+          ],
+          changed: true,
+        },
+        harnessEnvironment: { unreviewedNames: ["ACME_BUILD_FLAG", "HTTPS_PROXY", "NODE_OPTIONS", "npm_config_node_options"] },
+        modelPricing: modelPricing(["ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"]),
+        settingsKeys: {
+          listedForCli: SETTINGS_LISTED_FOR_CLI,
+          listedForPinnedCli: true,
+          files: [
+            { label: "user", exists: true, state: "ok", sha256: "1".repeat(64), keys: ["env", "model", "permissions"], envKeys: ["ANTHROPIC_BASE_URL"], unrecordedNames: 0 },
+            { label: "project", exists: false, state: "absent", sha256: null, keys: [], envKeys: [], unrecordedNames: 0 },
+            { label: "managed", exists: true, state: "ok", sha256: "2".repeat(64), keys: ["modelPricing"], envKeys: [], unrecordedNames: 0 },
+          ],
+        },
+        homeDiffersFromAccount: true,
+        limits: {
+          designAgent: { timeoutMs: 900_000, timeoutSource: "DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env.local", inactivityMs: 120_000, inactivitySource: "the product's default" },
+          designAgentOnly: { timeoutMs: 900_000, timeoutSource: "DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env.local", inactivityMs: 120_000, inactivitySource: "the product's default" },
+          chatIdleMs: 1_200_000,
+          itemTimeoutsMs: { "S1#1": 7_880_000 },
         },
         models: { designAgent: { models: ["model-x"], source: "transcripts" }, director: { models: [], source: "not recorded" }, designAgentOnly: [], judge: [] },
         inheritedConfiguration: syntheticConfiguration(),
@@ -621,6 +1651,8 @@ describe("acceptance baseline: summary", () => {
       wallMs: 1000,
     };
     const md = renderSummary(results);
+    const BANNER_CLASSES =
+      "**Of the 4 variable(s) of the harness's own environment that are not reviewed as harmless, 2 with a name that looks like an endpoint, socket, token or proxy variable, or is NODE_OPTIONS, and 0 with a name that contains MODEL (such a variable can point a call elsewhere, change how its process starts or choose a model); the names are in results.json only, never committed.**";
     expect(md).toContain(`synthetic brand "${SYNTHETIC_BRAND.name}"`);
     expect(md).toContain("in this order: S1#1, S1#2");
     expect(md).toContain("| S1#1 with Director | 1 | 2 | 3 | 4 | 10 |");
@@ -631,8 +1663,304 @@ describe("acceptance baseline: summary", () => {
     expect(md).toContain("Limitation: The harness strips CLAUDE_CODE_*");
     expect(md).toContain("model-x");
     expect(md).toContain("CLI pin: CLI pinned: every model call uses ~/bin/claude (1.0.0 (Claude Code)).");
-    expect(md).toContain("**CLI version mismatch:** Design Agent sessions on the configured version 1.0.0, from their transcripts: 1 match, 1 differ, 0 unknown, 0 without a session id.");
+    expect(md).toContain(`Pinned file: 1234 bytes, SHA-256 \`${"f".repeat(64)}\`; checked again 2 time(s), at each server start and at the end of the run.`);
+    expect(md).toContain("**Not comparable: the pinned CLI changed during the run** (end of the run: SHA-256 changed).");
+    expect(md).toContain(
+      "**CLI version mismatch:** **CLI version unverified:** Design Agent sessions (the Director arm's and the Design-Agent-only arm's) on the configured version 1.0.0, from their transcripts: 1 match, 1 differ, 1 unknown, 2 without a session id."
+    );
+    expect(md).toContain("**Director version not shown:** the pin did not hold or no re-check was made at the end of the run");
+    expect(md).toContain("Judge: version 1.0.0, shown by the resolved pin and the file re-checks, the last at the end of the run (not read from a transcript: synthetic judge).");
+    // The allowlist's names are fixed strings of the harness's source and are named; a name that is not on it is counted.
+    expect(md).toContain(
+      "Variables the servers' .env files add beyond the harness's environment, as Next.js's loader leaves them (the allowlist's names are named, any other is counted): `DESIGN_AGENT_TIMEOUT_SECONDS`; **not allowed: 1 variable(s), named in results.json only**."
+    );
+    expect(md).not.toContain("HTTPS_PROXY");
+    expect(md).toContain("**Lines the loader's result does not account for:** <project>/.env.local line 4.");
+    expect(md).toContain("Those 1 file(s) were hashed when checked and 2 time(s) again, at each server start and at the end of the run.");
+    expect(md).toContain("**Not comparable: the servers' .env files changed during the run** (end of the run: <project>/.env.local changed).");
+    // Only counts of the unreviewed names are shown, by class; no name from the machine reaches the summary.
+    expect(md).toContain(
+      "4 variable(s) of the harness's own environment that reach every server, judge and arm are not reviewed as harmless (2 with a name that looks like an endpoint, socket, token or proxy variable, or is NODE_OPTIONS, and 0 with a name that contains MODEL); their names, never values, are in results.json under harnessEnvironment, which is never committed (the model, effort and thinking variables are fingerprinted by name and value hash instead)."
+    );
+    expect(md).not.toContain("ACME_BUILD_FLAG");
+    expect(md).not.toContain("npm_config_node_options");
+    expect(md).not.toContain("NODE_OPTIONS`");
+    expect(md).toContain(BANNER_CLASSES);
+    expect(md).toContain(
+      "**Model price not shown:** 2 variable(s) whose name contains MODEL reached the run (their names are in results.json under modelPricing, never committed). " + MODEL_PRICE_NOTE
+    );
+    expect(md).not.toContain("`ANTHROPIC_MODEL`");
+    expect(md).toContain("**Settings keys present that can change a model call (the CLI's own key names, never values; any other key is counted): user: env, model; managed: modelPricing.**");
+    expect(md).toContain("2 present of 3 looked for (`user`, `managed`); their key names, the names under env and the drop-in files' names are in results.json under settingsKeys, which is never committed, and no value is read into any record.");
+    expect(md).toContain("This summary names only the CLI's own settings key names from a fixed list (model, effortLevel, alwaysThinkingEnabled, env, apiKeyHelper, modelPricing) and counts every other name.");
+    expect(md).toContain("HOME differs from the account's home folder; both are redacted as `~` in every stored path, and neither is recorded.");
+    // A key name under env is in results.json only.
+    expect(md).not.toContain("ANTHROPIC_BASE_URL");
+    // One banner line under the commit line names every reason the run is not comparable or not fully verified.
+    const lines = md.split("\n");
+    const at = lines.findIndex((l) => l.startsWith("Run started "));
+    expect(lines[at + 1]).toBe(
+      "**Not comparable or not fully verified:** the pinned CLI changed during the run; the servers' .env files changed during the run; a variable whose name contains MODEL reached the run, so a model it chose may not be in the CLI's price table; a session ran a CLI version other than the configured one; a session's CLI version is unknown or a run has no session id; the Director's CLI version is not shown by the pin. The Environment section says which."
+    );
+    // The environment banners follow it, one line each.
+    expect(lines[at + 2]).toBe(BANNER_CLASSES);
+    expect(lines[at + 3]).toBe("**Settings keys present that can change a model call (the CLI's own key names, never values; any other key is counted): user: env, model; managed: modelPricing.**");
+    expect(md).toContain("deadline 900 s (DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env.local), inactivity 120 s (the product's default); the arm ran under deadline 900 s, inactivity 120 s. The chat stream may stay quiet for 1200 s.");
     expect(md).not.toMatch(/[\u2013\u2014]/);
+  });
+});
+
+describe("acceptance baseline: an arm that did not complete is not judged (#232)", () => {
+  it("names the stop and judges only an arm that completed", () => {
+    expect(notJudgedReason({ ok: true, error: null, subtype: "success" })).toBeNull();
+    expect(notJudgedReason({ ok: false, error: "timed out", subtype: null })).toBe("the Design-Agent-only arm did not complete (timed out), so its set is neither scored nor compared");
+    expect(notJudgedReason({ ok: false, error: "stalled", subtype: null })).toContain("(stalled)");
+    expect(notJudgedReason({ ok: false, error: null, subtype: "error_max_budget_usd" })).toContain("(error_max_budget_usd)");
+    expect(notJudgedReason({ ok: false, error: null, subtype: null })).toContain("(no result)");
+  });
+
+  it("marks the pairwise row with the stop, and still charges the arm", () => {
+    const plan = planRun({ scenarios: [scenario("S1")], repeat: 1, compare: true, caps: capsDefault });
+    const stopped: ComparisonRecord = {
+      ...comparison("S1", 1, 1.5),
+      baselineCarouselId: "c-2",
+      baseline: { ...comparison("S1", 1, 1.5).baseline!, ok: false, error: "stalled" },
+      baselineExport: { ok: true, pngs: 2 },
+      notJudged: "the Design-Agent-only arm did not complete (stalled), so its set is neither scored nor compared",
+    };
+    const md = renderSummary(summaryResults({ comparisons: [stopped] }));
+    expect(md).toContain("| S1#1 | - | NOT JUDGED | - | - | - | 2 | $1.500 | - | the Design-Agent-only arm did not complete (stalled), so its set is neither scored nor compared |");
+    expect(md).not.toContain("| S1#1 | A=");
+    // It ran, so what it measured is charged, and it is not counted as a completed run.
+    expect(settlementDetail({ scenarios: [record("S1", 1)], comparisons: [stopped] }, plan, capsDefault).items[0].costUsd).toBeGreaterThanOrEqual(1.5);
+    expect(completeness({ scenarios: [], comparisons: [stopped] })).toEqual([{ scenario: "S1 Design Agent only", runs: 1, completed: 0, checksPassed: 0, checksTotal: 0, harnessErrors: 0 }]);
+  });
+});
+
+describe("acceptance baseline: the eval config refuses a paid run before any spend (#232)", () => {
+  const RESULTS = path.join(ROOT, "eval", "results");
+  const resultFolders = () => (existsSync(RESULTS) ? readdirSync(RESULTS).sort() : []);
+
+  /** The eval config as a subprocess without EVAL_DRY: a paid run as far as its refusal. No server and no real CLI is ever started. */
+  async function paidRun(env: Record<string, string>) {
+    const home = path.join(workdir, "home");
+    await mkdir(home, { recursive: true });
+    const ledger = path.join(workdir, "ledger-folder", "ledger.jsonl");
+    const archive = path.join(workdir, "archive");
+    const before = resultFolders();
+    const result = spawnSync(process.execPath, [path.join(ROOT, "node_modules", "vitest", "vitest.mjs"), "run", "--config", "vitest.eval.config.ts", "eval/acceptance/acceptance.eval.ts"], {
+      cwd: ROOT,
+      // The caps are valid and the plan fits, so only the check under test refuses it.
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: home,
+        EVAL_LEDGER: ledger,
+        EVAL_ARCHIVE_DIR: archive,
+        EVAL_ONLY: "S1",
+        EVAL_COMPARE: "0",
+        DIRECTOR_MAX_BUDGET_USD: "0.5",
+        DESIGN_AGENT_MAX_BUDGET_USD: "3",
+        ...env,
+      } as unknown as NodeJS.ProcessEnv,
+      encoding: "utf8",
+      timeout: 200_000,
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+    // Refused: non-zero, and nothing ran, was reserved, was archived or was started.
+    expect(result.status, output).not.toBe(0);
+    // No reservation: not even the ledger's folder was made, and nothing was archived.
+    expect(existsSync(ledger)).toBe(false);
+    expect(existsSync(path.dirname(ledger))).toBe(false);
+    expect(existsSync(`${ledger}.lock`)).toBe(false);
+    expect(existsSync(archive)).toBe(false);
+    // No server and no test: a started server or a run creates this run's results folder (its logs, results.json and summary.md go there).
+    expect(resultFolders()).toEqual(before);
+    expect(output).not.toMatch(/\d+ passed/);
+    return output;
+  }
+
+  it("exits non-zero with the refusal text, writes no ledger file and no reservation, and starts no server and no real CLI", { timeout: 240_000 }, async () => {
+    // An explicit CLI that is not there: the pin check refuses it, and nothing is ever spawned for it.
+    const output = await paidRun({ CLAUDE_CLI_PATH: path.join(workdir, "absent-claude") });
+    expect(output).toContain("Refusing a paid run before any spend: the CLI is not pinned");
+    expect(output).toContain("a CLI is missing or its version is unknown");
+    expect(output).toContain("Run the harness with CLAUDE_CLI_PATH=<one installed CLI> in its environment.");
+  });
+
+  it("refuses a paid dev run before the reservation, because next dev reloads the .env files into a running server", { timeout: 240_000 }, async () => {
+    const output = await paidRun({ EVAL_MODE: "dev", CLAUDE_CLI_PATH: path.join(workdir, "absent-claude") });
+    expect(output).toContain(DEV_MODE_REFUSAL);
+    // The dev refusal comes first, so the CLI check does not speak for it.
+    expect(output).not.toContain("the CLI is not pinned");
+  });
+
+  it("refuses a paid run when the harness's own environment sets a token limit, and names it", { timeout: 240_000 }, async () => {
+    // A CLI that only answers --version, so the pin check passes and the next check speaks. It is never run for a model.
+    const cli = path.join(workdir, "claude-pinned");
+    await writeFile(cli, '#!/bin/sh\necho "2.0.1 (Claude Code)"\n');
+    chmodSync(cli, 0o755);
+    const output = await paidRun({ CLAUDE_CLI_PATH: cli, MAX_THINKING_TOKENS: "1000", ANTHROPIC_UNIX_SOCKET: "/nonexistent" });
+    expect(output).toContain("Refusing a paid run before any spend: the harness's own environment sets MAX_THINKING_TOKENS,");
+    // The socket is recorded by name, not refused, so it is not what stopped the run.
+    expect(output).not.toContain("sets MAX_THINKING_TOKENS, ANTHROPIC_UNIX_SOCKET");
+  });
+});
+
+describe("acceptance baseline: a dry run prints the plan, what it records and what a paid run would refuse (#232)", () => {
+  it("prints the unreviewed harness variables and the model selection variables as counts, never by name, with the dev-mode refusal, starting nothing", { timeout: 240_000 }, async () => {
+    const home = path.join(workdir, "home");
+    await mkdir(home);
+    const VALUE = "synthetic-secret-value";
+    const run = (mode: string) =>
+      spawnSync(process.execPath, [path.join(ROOT, "node_modules", "vitest", "vitest.mjs"), "run", "--config", "vitest.eval.config.ts", "eval/acceptance/acceptance.eval.ts"], {
+        cwd: ROOT,
+        env: {
+          PATH: "/usr/bin:/bin",
+          HOME: home,
+          LANG: "C",
+          EVAL_DRY: "1",
+          EVAL_MODE: mode,
+          EVAL_LEDGER: path.join(workdir, "ledger.jsonl"),
+          EVAL_ARCHIVE_DIR: path.join(workdir, "archive"),
+          EVAL_ONLY: "S1",
+          EVAL_COMPARE: "0",
+          DIRECTOR_MAX_BUDGET_USD: "0.5",
+          DESIGN_AGENT_MAX_BUDGET_USD: "3",
+          CLAUDE_CLI_PATH: path.join(workdir, "absent-claude"),
+          ANTHROPIC_UNIX_SOCKET: VALUE,
+          ANTHROPIC_CUSTOM_HEADERS: VALUE,
+          OTEL_EXPORTER_OTLP_ENDPOINT: VALUE,
+          GITHUB_TOKEN: VALUE,
+          ANTHROPIC_MODEL: VALUE,
+          npm_config_node_options: VALUE,
+        } as unknown as NodeJS.ProcessEnv,
+        encoding: "utf8",
+        timeout: 200_000,
+      });
+    const before = existsSync(path.join(ROOT, "eval", "results")) ? readdirSync(path.join(ROOT, "eval", "results")).sort() : [];
+    const dev = run("dev");
+    const output = `${dev.stdout}\n${dev.stderr}`;
+    expect(dev.status, output).toBe(0);
+    const line = output.split("\n").find((l) => l.includes("not reviewed as harmless")) ?? "";
+    // No name is printed, by class or otherwise: the counts are what summary.md shows of these names.
+    for (const name of ["ANTHROPIC_UNIX_SOCKET", "ANTHROPIC_CUSTOM_HEADERS", "OTEL_EXPORTER_OTLP_ENDPOINT", "GITHUB_TOKEN", "npm_config_node_options", "ANTHROPIC_MODEL"]) expect(output, name).not.toContain(name);
+    // Of the variables set here besides the model one (which is fingerprinted instead), the socket, the endpoint and the token look like one of those; the headers and the npm name do not.
+    expect(line).toMatch(
+      /\[acceptance\] [1-9]\d* variable\(s\) in the harness's own environment that reach every server, judge and arm are not reviewed as harmless \([3-9] with a name that looks like an endpoint, socket, token or proxy variable, or is NODE_OPTIONS, and 0 with a name that contains MODEL\); counts only here and in summary\.md/
+    );
+    // Reviewed names are not listed, the model variable is fingerprinted instead, and no value is ever printed.
+    expect(line).not.toMatch(/\bPATH\b|\bHOME\b|\bEVAL_/);
+    expect(output).not.toContain(VALUE);
+    expect(output).toContain("[acceptance] 1 variable(s) whose name contains MODEL among those the servers, arm and judges receive (counted, not named; the names are in results.json); the run is flagged");
+    expect(output).toContain(`[acceptance] A paid run would be refused: ${DEV_MODE_REFUSAL}`);
+    expect(output).toContain("1 passed");
+    // A dry run starts nothing, so it leaves no results folder either.
+    expect(existsSync(path.join(ROOT, "eval", "results")) ? readdirSync(path.join(ROOT, "eval", "results")).sort() : []).toEqual(before);
+  });
+});
+
+describe("acceptance baseline: the server start gate and what a refusal means for an item (#232)", () => {
+  const scrubbed = (text: string) => text.replace(/\/home\/synthetic/g, "~");
+
+  it("names the pinned CLI's differences first and the .env files' after, one entry each", () => {
+    expect(startChanges([], [])).toEqual([]);
+    expect(startChanges(["SHA-256 changed", "size changed from 1 to 2 bytes"], ["<project>/.env.local changed"])).toEqual([
+      "the pinned CLI: SHA-256 changed",
+      "the pinned CLI: size changed from 1 to 2 bytes",
+      "<project>/.env.local changed",
+    ]);
+  });
+
+  it("admits a start with no difference, refuses the first with one, and stays closed for every later start", () => {
+    const gate = new StartGate();
+    expect(gate.refusal).toBeNull();
+    gate.assertOpen();
+    expect(() => gate.admit([])).not.toThrow();
+    const changes = startChanges(["SHA-256 changed"], ["<project>/.env.local changed"]);
+    expect(() => gate.admit(changes)).toThrow(ServerStartRefused);
+    const refusal = gate.refusal!;
+    expect(refusal).toBe("The pinned CLI or the servers' .env files changed since the run began (the pinned CLI: SHA-256 changed; <project>/.env.local changed), so no further model call is made");
+    // Closed for good: a later clean check does not reopen it, and a later start gets the first refusal's text.
+    expect(() => gate.admit([])).toThrow(refusal);
+    expect(() => gate.assertOpen()).toThrow(ServerStartRefused);
+    expect(() => gate.admit(["something else"])).toThrow(refusal);
+    expect(gate.refusal).toBe(refusal);
+    // Another run's gate is its own.
+    expect(() => new StartGate().admit([])).not.toThrow();
+  });
+
+  it("classifies an item's error: a refusal before any chat is not run, every other error, a refusal after a chat included, is a harness error", () => {
+    const refusal = new ServerStartRefused("changed under /home/synthetic/checkout");
+    expect(classifyItemFailure(refusal, 0, scrubbed)).toEqual({ kind: "not-run", reason: "changed under ~/checkout" });
+    // After the item's own chats the model was called: charged in full, and a failure.
+    const after = classifyItemFailure(refusal, 2, scrubbed);
+    expect(after.kind).toBe("harness-error");
+    expect((after as { message: string }).message).toContain("changed under ~/checkout");
+    expect((after as { message: string }).message).not.toContain("/home/synthetic");
+    const other = classifyItemFailure(new Error("port 3417 is in /home/synthetic/use"), 0, scrubbed);
+    expect(other.kind).toBe("harness-error");
+    expect((other as { message: string }).message).toContain("port 3417 is in ~/use");
+    expect(classifyItemFailure("not an error object", 0, scrubbed)).toEqual({ kind: "harness-error", message: "not an error object" });
+    expect(classifyItemFailure(undefined, 1, scrubbed)).toEqual({ kind: "harness-error", message: "undefined" });
+  });
+
+  it("gives a skipped comparison the refusal's text for an item that was not run, and 'no export' only when the item ran", () => {
+    expect(skippedComparisonReason({ notRun: null, directorExport: true })).toBeNull();
+    expect(skippedComparisonReason({ notRun: null, directorExport: false })).toBe("the Director arm produced no export to compare");
+    const notRun = "The pinned CLI or the servers' .env files changed since the run began (the pinned CLI: SHA-256 changed), so no further model call is made";
+    for (const directorExport of [false, true]) {
+      const reason = skippedComparisonReason({ notRun, directorExport })!;
+      expect(reason).toBe(`the item was not run: ${notRun}`);
+      expect(reason).not.toContain("produced no export");
+    }
+  });
+});
+
+describe("acceptance baseline: modules without an import cycle (#232)", () => {
+  /** The local modules a harness file imports, with or without `type`. */
+  const imports = (file: string) => [...readFileSync(path.join(ROOT, "eval", "acceptance", `${file}.ts`), "utf8").matchAll(/^(?:import|export)\s[^;]*?from\s+"\.\/([\w-]+)"/gm)].map((m) => m[1]);
+
+  it("keeps cli.ts and environment.ts apart: redactPath lives in a module that imports nothing local", () => {
+    expect(imports("redact")).toEqual([]);
+    expect(imports("cli")).not.toContain("environment");
+    expect(imports("harness-env")).toEqual([]);
+    expect(imports("server-env")).toEqual([]);
+    // Same function, found where it always was.
+    expect(redactPath).toBe(redactPathFromModule);
+    expect(redactPathFromModule("/home/synthetic/.local/bin/claude", "/home/synthetic")).toBe("~/.local/bin/claude");
+  });
+});
+
+describe("acceptance baseline: the comparability banner (#232)", () => {
+  const withEnvironment = (change: (e: EnvironmentRecord) => void): RunResults => {
+    const environment = cleanEnvironment();
+    change(environment);
+    return summaryResults({ environment });
+  };
+  const banner = (results: RunResults) => renderSummary(results).split("\n").filter((l) => l.startsWith("**Not comparable or not fully verified:**"));
+
+  it("is absent when the pin held, the files did not change and every version is shown", () => {
+    expect(comparabilityFlags(null)).toEqual([]);
+    expect(comparabilityFlags(cleanEnvironment())).toEqual([]);
+    expect(banner(withEnvironment(() => {}))).toEqual([]);
+    expect(renderSummary(withEnvironment(() => {}))).toContain("Variables whose name contains MODEL: none among those the servers, the arm and the judges receive.");
+  });
+
+  it("names each reason on one line under the commit line", () => {
+    const one = (change: (e: EnvironmentRecord) => void) => comparabilityFlags(withEnvironment(change).environment);
+    expect(one((e) => (e.cli.pin.changed = true))).toEqual(["the pinned CLI changed during the run"]);
+    expect(one((e) => (e.serverEnvFiles.changed = true))).toEqual(["the servers' .env files changed during the run"]);
+    expect(one((e) => (e.modelPricing = modelPricing(["ANTHROPIC_MODEL"])))).toEqual(["a variable whose name contains MODEL reached the run, so a model it chose may not be in the CLI's price table"]);
+    expect(one((e) => (e.cli.sessions!.mismatch = true))).toEqual(["a session ran a CLI version other than the configured one"]);
+    expect(one((e) => (e.cli.sessions!.unverified = true))).toEqual(["a session's CLI version is unknown or a run has no session id"]);
+    expect(one((e) => (e.cli.sessions!.director.proven = false))).toEqual(["the Director's CLI version is not shown by the pin"]);
+    expect(one((e) => (e.cli.sessions!.judge.proven = false))).toEqual(["the judge's CLI version is not shown by the pin"]);
+    // A run killed before its versions were recorded is not verified either.
+    expect(one((e) => (e.cli.sessions = null))).toEqual(["the CLI versions of the sessions were not recorded"]);
+    const lines = renderSummary(withEnvironment((e) => (e.serverEnvFiles.changed = true))).split("\n");
+    const at = lines.findIndex((l) => l.startsWith("Run started "));
+    expect(lines[at + 1]).toBe("**Not comparable or not fully verified:** the servers' .env files changed during the run. The Environment section says which.");
+    expect(banner(withEnvironment((e) => { e.cli.pin.changed = true; e.cli.sessions!.mismatch = true; }))).toHaveLength(1);
   });
 });
 
@@ -745,7 +2073,7 @@ describe("acceptance baseline: settlement", () => {
 
   it("charges a Design-Agent-only arm that timed out at the design bound", () => {
     const timedOut = comparedS1({
-      baseline: { ok: false, durationMs: 1, costUsd: null, usage: null, turns: null, models: [], subtype: null, resultText: null, error: "timed out" },
+      baseline: { ok: false, durationMs: 1, costUsd: null, usage: null, turns: null, models: [], subtype: null, resultText: null, sessionId: null, error: "timed out" },
       baselineExport: { ok: false, pngs: 0, error: "no slides" },
       baselineJudge: null,
       pairwise: null,
@@ -764,6 +2092,19 @@ describe("acceptance baseline: settlement", () => {
     // A comparison that threw before its set was exported started no judge.
     const early = comparedS1({ pairwise: null, baselineJudge: null, baselineExport: null, harnessError: "Error: boom" });
     expect(settlementUsd({ scenarios: [ranS1()], comparisons: [early] }, plan, capsDefault)).toBeCloseTo(2 + 1.2);
+  });
+
+  it("charges an item recorded as not run after a refused server start nothing, and its skipped comparison nothing; one refused after its chats stays a harness error, charged in full", () => {
+    // What the harness records once a server start is refused: no chat, no error, finished, and a comparison skipped for want of an export.
+    const notRun = { ...record("S1", 1), outcome: "not run: the pinned CLI changed since the run began", chats: [] };
+    const skipped = { ...comparison("S1", 1, 0), baseline: null, skipped: "the Director arm produced no export to compare" };
+    const refused = settlementDetail({ scenarios: [notRun], comparisons: [skipped] }, plan, capsDefault);
+    expect(refused.items.find((i) => i.key === "S1#1")).toMatchObject({ costUsd: 0, measuredUsd: 0, atBoundCalls: 0 });
+    expect(refused.costUsd).toBeCloseTo(0, 9);
+    // The same item as a harness error (refused after its own chats, so what had started is unknown) is charged every planned call.
+    const failed = settlementDetail({ scenarios: [{ ...notRun, harnessError: "Error: refused" }], comparisons: [] }, plan, capsDefault);
+    expect(failed.items.find((i) => i.key === "S1#1")!.costUsd).toBeGreaterThan(0);
+    expect(failed.items.find((i) => i.key === "S1#1")!.reasons.join(" ")).toContain("harness error: what had started is unknown");
   });
 
   it("charges a skipped comparison nothing", () => {
@@ -1233,7 +2574,7 @@ describe("acceptance baseline: inherited configuration fingerprint", () => {
     await put(
       ".claude.json",
       JSON.stringify({
-        mcpServers: { github: { command: "npx", args: ["--token", SECRET], env: { TOKEN: SECRET }, url: `https://example.invalid/${SECRET}` } },
+        mcpServers: { github: { command: "synthetic-mcp-launcher", args: ["--token", SECRET], env: { TOKEN: SECRET }, url: `https://example.invalid/${SECRET}` } },
         projects: { [project]: { mcpServers: { local: { command: SECRET } } }, "/somewhere/else": { mcpServers: { other: {} } } },
       })
     );
@@ -1333,7 +2674,7 @@ describe("acceptance baseline: inherited configuration fingerprint", () => {
     expect(memoryTrees({ userDir, userLabel: "~/.claude", roots: [roots[1], { label: "working directory", path: "/synthetic/main.worktree" }] })).toHaveLength(1);
     expect(memoryTrees({ userDir, userLabel: "~/.claude", roots: [{ label: "working directory", path: "/synthetic/with space" }] })[0].files.map((f) => f.path)).toEqual(["OLD.md"]);
     // A change to the memory changes the combined fingerprint.
-    const options = { home, project, platform: "win32" as const, serverEnv: {}, harnessEnv: {} };
+    const options = { home, project, platform: "win32" as const, serverEnv: {}, harnessEnv: {}, envFileVariables: [] };
     const before = inheritedConfiguration(options).sha256;
     const folder = project.replace(/[^a-zA-Z0-9]/g, "-");
     writeFileSync(path.join(userDir, "projects", folder, "memory", "MEMORY.md"), "changed memory");
@@ -1346,7 +2687,16 @@ describe("acceptance baseline: inherited configuration fingerprint", () => {
     process.env.CLAUDE_EFFORT = "high";
     process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "tokens-9000";
     try {
-      const options = { home, project, platform: "win32" as const, mode: "prod" as const, serverEnv: cleanEnv(), harnessEnv: process.env };
+      // What the checkout's .env.local adds, as Next.js's loader leaves it for a server given the clean environment.
+      const options = {
+        home,
+        project,
+        platform: "win32" as const,
+        serverEnv: cleanEnv(),
+        harnessEnv: process.env,
+        // For a server whose environment does not define the variable itself: Next.js leaves the environment's value over a file's.
+        envFileVariables: loadedFileVariables(loadServerEnv({ root: project, mode: "prod", env: { PATH: process.env.PATH } }), (name) => MODEL_ENV_NAME.test(name)),
+      };
       const config = inheritedConfiguration(options);
       expect(config.trees.map((t) => t.label)).toEqual([
         "~/.claude/skills",
@@ -1384,7 +2734,7 @@ describe("acceptance baseline: inherited configuration fingerprint", () => {
       expect(config.count).toBeGreaterThan(8);
 
       const json = JSON.stringify(config);
-      for (const forbidden of [SECRET, "model-a", "tokens-9000", workdir, "npx", "example.invalid"]) expect(json).not.toContain(forbidden);
+      for (const forbidden of [SECRET, "model-a", "tokens-9000", workdir, "synthetic-mcp-launcher", "example.invalid"]) expect(json).not.toContain(forbidden);
 
       // Anything that would change what the CLI loads changes the hash; nothing else does.
       expect(inheritedConfiguration(options).sha256).toBe(config.sha256);
@@ -1513,11 +2863,12 @@ function comparison(id: "S1", repetition: number, costUsd: number): ComparisonRe
     repetition,
     key: `${id}#${repetition}`,
     baselineCarouselId: null,
-    baseline: { ok: true, durationMs: 1000, costUsd, usage: null, turns: 3, models: [], subtype: "success", resultText: null, error: null },
+    baseline: { ok: true, durationMs: 1000, costUsd, usage: null, turns: 3, models: [], subtype: "success", resultText: null, sessionId: null, error: null },
     baselineExport: null,
     baselineJudge: null,
     pairwise: null,
     skipped: null,
+    notJudged: null,
     harnessError: null,
     finished: true,
   };
@@ -1579,6 +2930,63 @@ function syntheticConfiguration(): InheritedConfiguration {
   };
 }
 
+/** A settings record in which no file is present and the list was read for the pinned CLI. */
+function cleanSettingsKeys(): SettingsKeysRecord {
+  const absent = (label: string) => ({ label, exists: false, state: "absent" as const, sha256: null, keys: [], envKeys: [], unrecordedNames: 0 });
+  return { listedForCli: SETTINGS_LISTED_FOR_CLI, listedForPinnedCli: true, files: ["user", "project", "project-local", "managed"].map(absent) };
+}
+
+/** An environment record in which everything held: the pin and its re-checks, the files, every session and both proofs. */
+function cleanEnvironment(): EnvironmentRecord {
+  const proof = (who: string) => ({ method: `not read from a transcript: synthetic ${who}`, version: "1.0.0", proven: true });
+  return {
+    commit: "abc1234",
+    commitDirty: false,
+    node: "v0",
+    platform: "test",
+    cli: {
+      server: { path: "~/bin/claude", version: "1.0.0 (Claude Code)", source: "CLAUDE_CLI_PATH from the harness's environment" },
+      harness: { path: "~/bin/claude", version: "1.0.0 (Claude Code)" },
+      pin: {
+        ok: true,
+        explicit: true,
+        source: "CLAUDE_CLI_PATH from the harness's environment",
+        uses: [],
+        file: { size: 1234, sha256: "f".repeat(64) },
+        message: "CLI pinned: every model call uses ~/bin/claude (1.0.0 (Claude Code)).",
+        rechecks: [
+          { at: "server start on port 3417", ok: true, changes: [] },
+          { at: END_OF_RUN, ok: true, changes: [] },
+        ],
+        changed: false,
+      },
+      sessions: {
+        configured: "1.0.0",
+        sessions: [{ sessionId: "s-1", role: "design-agent", versions: ["1.0.0"], status: "matches", error: null }],
+        withoutSession: 0,
+        mismatch: false,
+        unverified: false,
+        director: proof("director"),
+        judge: proof("judge"),
+      },
+    },
+    serverEnvFiles: { files: [], added: [], refused: [], unaccounted: [], loaderError: null, allowlist: [], ok: true, message: "all allowed: none", rechecks: [], changed: false },
+    harnessEnvironment: { unreviewedNames: [] },
+    modelPricing: modelPricing([]),
+    settingsKeys: cleanSettingsKeys(),
+    homeDiffersFromAccount: false,
+    limits: {
+      designAgent: { timeoutMs: 1_800_000, timeoutSource: "the product's default", inactivityMs: 300_000, inactivitySource: "the product's default" },
+      designAgentOnly: { timeoutMs: 1_800_000, timeoutSource: "the product's default", inactivityMs: 300_000, inactivitySource: "the product's default" },
+      chatIdleMs: 2_100_000,
+      itemTimeoutsMs: { "S1#1": 7_880_000 },
+    },
+    models: { designAgent: { models: [], source: "none" }, director: { models: [], source: "not recorded" }, designAgentOnly: [], judge: [] },
+    inheritedConfiguration: syntheticConfiguration(),
+    harnessFiles: [],
+  };
+}
+
 function summaryResults(overrides: Partial<RunResults> = {}): RunResults {
   const plan = planRun({ scenarios: [scenario("S1")], repeat: 1, compare: false, caps });
   return {
@@ -1597,3 +3005,609 @@ function summaryResults(overrides: Partial<RunResults> = {}): RunResults {
     ...overrides,
   };
 }
+
+describe("acceptance baseline: the key names of the CLI's settings files (#232)", () => {
+  const VALUE = "synthetic-secret-value";
+  let home: string;
+  let project: string;
+  let managed: string;
+
+  beforeEach(async () => {
+    home = path.join(workdir, "home");
+    project = path.join(workdir, "checkout");
+    managed = path.join(workdir, "managed");
+    await mkdir(path.join(home, ".claude"), { recursive: true });
+    await mkdir(path.join(project, ".claude"), { recursive: true });
+    await mkdir(managed, { recursive: true });
+  });
+
+  const options = (extra: Record<string, unknown> = {}) => ({ home, project, platform: "linux" as const, managedDir: managed, username: "synthetic-user", ...extra });
+  const record = (extra: Record<string, unknown> = {}) => recordSettingsKeys({ ...options(extra), cliVersion: SETTINGS_LISTED_FOR_CLI });
+  const file = (r: SettingsKeysRecord, label: string) => r.files.find((f) => f.label === label)!;
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+
+  it("records the top-level key names and the names under env, never a value, and hashes the bytes the keys came from", async () => {
+    const user = JSON.stringify({
+      model: VALUE,
+      effortLevel: VALUE,
+      alwaysThinkingEnabled: true,
+      apiKeyHelper: VALUE,
+      permissions: { allow: [VALUE] },
+      env: { ANTHROPIC_BASE_URL: VALUE, MAX_THINKING_TOKENS: VALUE, ANTHROPIC_BETAS: VALUE },
+    });
+    await writeFile(path.join(home, ".claude", "settings.json"), user);
+    await writeFile(path.join(project, ".claude", "settings.json"), JSON.stringify({ hooks: { PreToolUse: [VALUE] } }));
+    await writeFile(path.join(project, ".claude", "settings.local.json"), JSON.stringify({ statusLine: VALUE }));
+    await writeFile(path.join(managed, "managed-settings.json"), JSON.stringify({ modelPricing: { [VALUE]: { multiplier: 2 } } }));
+    const r = record();
+    expect(r.files.map((f) => f.label)).toEqual(["user", "project", "project-local", "managed"]);
+    expect(file(r, "user")).toEqual({
+      label: "user",
+      exists: true,
+      state: "ok",
+      sha256: sha(user),
+      keys: ["alwaysThinkingEnabled", "apiKeyHelper", "effortLevel", "env", "model", "permissions"],
+      envKeys: ["ANTHROPIC_BASE_URL", "ANTHROPIC_BETAS", "MAX_THINKING_TOKENS"],
+      unrecordedNames: 0,
+    });
+    expect(file(r, "project")).toMatchObject({ state: "ok", keys: ["hooks"], envKeys: [] });
+    expect(file(r, "project-local")).toMatchObject({ state: "ok", keys: ["statusLine"] });
+    expect(file(r, "managed")).toMatchObject({ state: "ok", keys: ["modelPricing"] });
+    // No value anywhere in the record, and no path: labels only.
+    expect(JSON.stringify(r)).not.toContain(VALUE);
+    for (const f of r.files) {
+      expect(f.label.startsWith("/"), f.label).toBe(false);
+      expect(f.label).not.toContain(workdir);
+    }
+    expect(r).toMatchObject({ listedForCli: SETTINGS_LISTED_FOR_CLI, listedForPinnedCli: true });
+  });
+
+  it("records an absent file as absent, and an unparseable, non-object, folder or oversized one without its content", async () => {
+    // Nothing is there: every file is absent.
+    for (const f of record().files) expect(f, f.label).toEqual({ label: f.label, exists: false, state: "absent", sha256: null, keys: [], envKeys: [], unrecordedNames: 0 });
+    const broken = `{ "model": "${VALUE}", `;
+    await writeFile(path.join(project, ".claude", "settings.json"), broken);
+    await writeFile(path.join(project, ".claude", "settings.local.json"), JSON.stringify([VALUE]));
+    await mkdir(path.join(managed, "managed-settings.json")); // a folder where the file should be
+    await writeFile(path.join(home, ".claude", "settings.json"), "\uFEFF" + JSON.stringify({ model: VALUE })); // a byte-order mark is skipped
+    const r = record();
+    expect(file(r, "project")).toEqual({ label: "project", exists: true, state: "unparseable", sha256: sha(broken), keys: [], envKeys: [], unrecordedNames: 0 });
+    expect(file(r, "project-local")).toMatchObject({ exists: true, state: "unparseable", sha256: sha(JSON.stringify([VALUE])), keys: [] });
+    expect(file(r, "managed")).toEqual({ label: "managed", exists: true, state: "unreadable", sha256: null, keys: [], envKeys: [], unrecordedNames: 0 });
+    expect(file(r, "user")).toMatchObject({ state: "ok", keys: ["model"] });
+    expect(JSON.stringify(r)).not.toContain(VALUE);
+    // Over 4 MB is not read.
+    await writeFile(path.join(project, ".claude", "settings.json"), Buffer.alloc(4 * 1024 * 1024 + 1, 32));
+    expect(file(record(), "project")).toMatchObject({ exists: true, state: "unreadable", sha256: null });
+  });
+
+  it("leaves out, and only counts, a name that is not a plain name", async () => {
+    await writeFile(path.join(home, ".claude", "settings.json"), JSON.stringify({ model: "x", [`has space ${VALUE}`]: 1, env: { GOOD_NAME: "1", [`bad name ${VALUE}`]: "2" } }));
+    const user = file(record(), "user");
+    expect(user).toMatchObject({ keys: ["env", "model"], envKeys: ["GOOD_NAME"], unrecordedNames: 2 });
+    expect(JSON.stringify(user)).not.toContain(VALUE);
+  });
+
+  it("lists the files the pinned CLI reads by platform, in a linked worktree, with a drop-in folder and a configuration folder", async () => {
+    expect(managedSettingsDir("darwin")).toBe("/Library/Application Support/ClaudeCode");
+    expect(managedSettingsDir("linux")).toBe("/etc/claude-code");
+    expect(managedSettingsDir("win32")).toBe("C:\\Program Files\\ClaudeCode");
+    const labels = (extra: Record<string, unknown> = {}) => settingsSources(options(extra)).map((s) => s.label);
+    // Linux: the user, project, project-local and managed files, and no settings.local.json in the user folder.
+    expect(labels()).toEqual(["user", "project", "project-local", "managed"]);
+    expect(settingsSources(options()).map((s) => path.relative(home, s.file)).slice(0, 1)).toEqual([path.join(".claude", "settings.json")]);
+    expect(settingsSources(options()).some((s) => s.file === path.join(home, ".claude", "settings.local.json"))).toBe(false);
+    // macOS adds the managed preferences property lists, which are never parsed; without a user name only the device one.
+    const darwin = settingsSources(options({ platform: "darwin" }));
+    expect(darwin.map((s) => [s.label, s.parsed])).toEqual([
+      ["user", true],
+      ["project", true],
+      ["project-local", true],
+      ["managed", true],
+      ["managed-mdm-user", false],
+      ["managed-mdm-device", false],
+    ]);
+    expect(darwin.find((s) => s.label === "managed-mdm-user")!.file).toBe("/Library/Managed Preferences/synthetic-user/com.anthropic.claudecode.plist");
+    expect(darwin.find((s) => s.label === "managed-mdm-device")!.file).toBe("/Library/Managed Preferences/com.anthropic.claudecode.plist");
+    expect(settingsSources(options({ platform: "darwin", username: null })).map((s) => s.label)).toEqual(["user", "project", "project-local", "managed", "managed-mdm-device"]);
+    // The managed folder's drop-in files, sorted, without hidden or non-JSON files; an unusual name gets an index, never its text.
+    await mkdir(path.join(managed, "managed-settings.d"));
+    for (const name of ["20-b.json", "10-a.json", ".hidden.json", "notes.txt", "odd name!.json"]) await writeFile(path.join(managed, "managed-settings.d", name), "{}");
+    expect(labels()).toEqual(["user", "project", "project-local", "managed", "managed-drop-in/10-a.json", "managed-drop-in/20-b.json", "managed-drop-in/(unusual name 3)"]);
+    expect(labels().join()).not.toContain("odd name");
+    // A linked worktree also takes local settings from the main worktree; the same folder is not listed twice.
+    const main = path.join(workdir, "main-worktree");
+    await mkdir(path.join(main, ".claude"), { recursive: true });
+    await writeFile(path.join(main, ".claude", "settings.local.json"), JSON.stringify({ effortLevel: "high" }));
+    expect(labels({ mainWorktree: main })).toContain("project-local-main");
+    expect(file(record({ mainWorktree: main }), "project-local-main")).toMatchObject({ state: "ok", keys: ["effortLevel"] });
+    expect(labels({ mainWorktree: project })).not.toContain("project-local-main");
+    expect(labels({ mainWorktree: null })).not.toContain("project-local-main");
+    // CLAUDE_CONFIG_DIR replaces ~/.claude, and a relative one is taken from the checkout.
+    const config = path.join(workdir, "config");
+    await mkdir(config);
+    await writeFile(path.join(config, "settings.json"), JSON.stringify({ model: "x" }));
+    expect(file(record({ configDir: config }), "user")).toMatchObject({ state: "ok", keys: ["model"] });
+    expect(settingsSources(options({ configDir: "../config" }))[0].file).toBe(path.join(config, "settings.json"));
+    // No managed folder at all.
+    expect(labels({ managedDir: null })).toEqual(["user", "project", "project-local"]);
+  });
+
+  it("records a property list by existence and hash, never its keys", async () => {
+    const plist = path.join(workdir, "managed.plist");
+    await writeFile(plist, `<plist><dict><key>${VALUE}</key></dict></plist>`);
+    const r = readSettingsFile({ label: "managed-mdm-device", file: plist, parsed: false });
+    expect(r).toEqual({ label: "managed-mdm-device", exists: true, state: "not-parsed", sha256: sha(`<plist><dict><key>${VALUE}</key></dict></plist>`), keys: [], envKeys: [], unrecordedNames: 0 });
+    expect(JSON.stringify(r)).not.toContain(VALUE);
+    expect(readSettingsFile({ label: "managed-mdm-device", file: path.join(workdir, "absent.plist"), parsed: false })).toMatchObject({ exists: false, state: "absent" });
+  });
+
+  it("marks the list as possibly incomplete when the pinned CLI is not the version it was read from", () => {
+    expect(recordSettingsKeys({ ...options(), cliVersion: SETTINGS_LISTED_FOR_CLI }).listedForPinnedCli).toBe(true);
+    expect(recordSettingsKeys({ ...options(), cliVersion: "2.9.9" })).toMatchObject({ listedForCli: SETTINGS_LISTED_FOR_CLI, listedForPinnedCli: false });
+    expect(recordSettingsKeys({ ...options(), cliVersion: null }).listedForPinnedCli).toBe(false);
+    const lines = settingsBannerLines(recordSettingsKeys({ ...options(), cliVersion: "2.9.9" }));
+    expect(lines).toEqual([`Settings sources whose keys are not shown: the list of files, read from CLI ${SETTINGS_LISTED_FOR_CLI} and not from the pinned CLI, which may read others.`]);
+  });
+
+  it("flags the keys that can change a model call, by file label, naming only the CLI's own keys and counting the rest, and the sources whose keys are not shown", async () => {
+    for (const key of ["model", "effortLevel", "alwaysThinkingEnabled", "env", "apiKeyHelper", "modelPricing", "fallbackModel", "advisorModel", "MaxThinkingTokensX", "thinkingBudget", "EFFORT", "outputTokenLimit", "Token"]) expect(isNoteworthyKey(key), key).toBe(true);
+    for (const key of ["permissions", "hooks", "statusLine", "enabledPlugins", "autoMemoryEnabled", "includeCoAuthoredBy"]) expect(isNoteworthyKey(key), key).toBe(false);
+    await writeFile(path.join(home, ".claude", "settings.json"), JSON.stringify({ model: VALUE, env: { A: VALUE }, permissions: {} }));
+    await writeFile(path.join(project, ".claude", "settings.local.json"), JSON.stringify({ thinkingBudget: VALUE, hooks: {} }));
+    await writeFile(path.join(project, ".claude", "settings.json"), "{ not json");
+    await writeFile(path.join(managed, "managed-settings.json"), JSON.stringify({ modelPricing: VALUE }));
+    const lines = settingsBannerLines(record());
+    expect(lines).toEqual([
+      "Settings keys present that can change a model call (the CLI's own key names, never values; any other key is counted): user: env, model; project-local: 1 other key(s) whose name contains model, effort, think or token; managed: modelPricing.",
+      "Settings sources whose keys are not shown: project (not a JSON object).",
+    ]);
+    // Neither the values, the names under env nor a key that is not the CLI's own are in the banner.
+    expect(lines.join("\n")).not.toContain(VALUE);
+    expect(lines.join("\n")).not.toContain("thinkingBudget");
+    expect(settingsBannerLines(record({ mainWorktree: null }))).toHaveLength(2);
+    // Nothing present: nothing to say.
+    expect(settingsBannerLines(cleanSettingsKeys())).toEqual([]);
+    // An unreadable file and a property list are named as not shown.
+    const r = cleanSettingsKeys();
+    r.files.push({ label: "managed", exists: true, state: "unreadable", sha256: null, keys: [], envKeys: [], unrecordedNames: 0 });
+    r.files.push({ label: "managed-mdm-device", exists: true, state: "not-parsed", sha256: "a".repeat(64), keys: [], envKeys: [], unrecordedNames: 0 });
+    expect(settingsBannerLines(r)).toEqual(["Settings sources whose keys are not shown: managed (could not be read); managed-mdm-device (a property list, keys not read)."]);
+  });
+
+  it("describes a file for a dry run by state, hash, the CLI's own key names and counts, never a value or another name", async () => {
+    await writeFile(path.join(home, ".claude", "settings.json"), JSON.stringify({ model: VALUE, env: { ANTHROPIC_BASE_URL: VALUE }, acmeCustomKey: VALUE }));
+    await writeFile(path.join(project, ".claude", "settings.json"), "nope");
+    const r = record();
+    expect(describeSettingsFile(file(r, "user"))).toBe(
+      `present, SHA-256 ${file(r, "user").sha256!.slice(0, 12)}, 3 top-level key(s), of which env, model named by the CLI's own key list and 1 other(s) counted only; 1 name(s) under env, counted only`
+    );
+    expect(describeSettingsFile(file(r, "user"))).not.toContain("ANTHROPIC_BASE_URL");
+    expect(describeSettingsFile(file(r, "user"))).not.toContain("acmeCustomKey");
+    expect(describeSettingsFile(file(r, "project"))).toMatch(/^present but not a JSON object, SHA-256 [0-9a-f]{12}, keys not shown$/);
+    expect(describeSettingsFile(file(r, "project-local"))).toBe("absent");
+    expect(describeSettingsFile({ label: "x", exists: true, state: "unreadable", sha256: null, keys: [], envKeys: [], unrecordedNames: 0 })).toBe("present but could not be read, keys not shown");
+    for (const f of r.files) expect(describeSettingsFile(f)).not.toContain(VALUE);
+  });
+
+  it("shows the banner under the commit line of summary.md and keeps every value out of results.json and summary.md", async () => {
+    await writeFile(path.join(home, ".claude", "settings.json"), JSON.stringify({ model: VALUE, env: { HTTPS_PROXY: VALUE } }));
+    await writeFile(path.join(managed, "managed-settings.json"), JSON.stringify({ modelPricing: VALUE }));
+    const environment = cleanEnvironment();
+    environment.settingsKeys = record();
+    const results = summaryResults({ environment });
+    const md = renderSummary(results);
+    const lines = md.split("\n");
+    const at = lines.findIndex((l) => l.startsWith("Run started "));
+    expect(lines[at + 1]).toBe("**Settings keys present that can change a model call (the CLI's own key names, never values; any other key is counted): user: env, model; managed: modelPricing.**");
+    expect(environmentBannerLines(environment)).toEqual(["**Settings keys present that can change a model call (the CLI's own key names, never values; any other key is counted): user: env, model; managed: modelPricing.**"]);
+    expect(md).toContain("2 present of 4 looked for (`user`, `managed`)");
+    // The names under env are in results.json, which is not committed, and the values are nowhere.
+    expect(serializeResults(results)).toContain('"HTTPS_PROXY"');
+    expect(md).not.toContain("HTTPS_PROXY");
+    expect(`${serializeResults(results)}\n${md}`).not.toContain(VALUE);
+    // Nothing flagged, no banner.
+    expect(environmentBannerLines(cleanEnvironment())).toEqual([]);
+    expect(environmentBannerLines(null)).toEqual([]);
+  });
+
+  it("prints the settings files in a dry run by the CLI's own key names and counts, with the banner, and never a value or a name from the machine", { timeout: 240_000 }, async () => {
+    const config = path.join(workdir, "dry-home");
+    await mkdir(path.join(config, ".claude"), { recursive: true });
+    await writeFile(path.join(config, ".claude", "settings.json"), JSON.stringify({ model: VALUE, env: { ANTHROPIC_BASE_URL: VALUE }, permissions: {}, acmeCustomKey: VALUE }));
+    const run = spawnSync(process.execPath, [path.join(ROOT, "node_modules", "vitest", "vitest.mjs"), "run", "--config", "vitest.eval.config.ts", "eval/acceptance/acceptance.eval.ts"], {
+      cwd: ROOT,
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: config,
+        LANG: "C",
+        EVAL_DRY: "1",
+        EVAL_LEDGER: path.join(workdir, "ledger.jsonl"),
+        EVAL_ARCHIVE_DIR: path.join(workdir, "archive"),
+        EVAL_ONLY: "S1",
+        EVAL_COMPARE: "0",
+        DIRECTOR_MAX_BUDGET_USD: "0.5",
+        DESIGN_AGENT_MAX_BUDGET_USD: "3",
+        CLAUDE_CLI_PATH: path.join(workdir, "absent-claude"),
+        // Names from the operator's machine: none of them may reach the output.
+        ACME_MODEL_X: "1",
+        ACMECORP_DEPLOY_TOKEN: VALUE,
+        EMPLOYER_HTTP_PROXY: VALUE,
+      } as unknown as NodeJS.ProcessEnv,
+      encoding: "utf8",
+      timeout: 200_000,
+    });
+    const output = `${run.stdout}\n${run.stderr}`;
+    expect(run.status, output).toBe(0);
+    expect(output).toContain("[acceptance] Settings files the pinned CLI reads (never values; the CLI's own key names are named, any other name is counted;");
+    expect(output).toMatch(
+      /\[acceptance\] {3}user: present, SHA-256 [0-9a-f]{12}, 4 top-level key\(s\), of which env, model named by the CLI's own key list and 2 other\(s\) counted only; 1 name\(s\) under env, counted only\./
+    );
+    expect(output).toMatch(/\[acceptance\] {3}project: /);
+    expect(output).toContain("[acceptance] Settings keys present that can change a model call (the CLI's own key names, never values; any other key is counted): user: env, model.");
+    // The classes of the harness's own environment and the MODEL names are counted, never named (the run's own variables are counted too, hence at least).
+    const classes = /\[acceptance\] (\d+) variable\(s\) in the harness's own environment that reach every server, judge and arm are not reviewed as harmless \((\d+) with a name that looks like an endpoint, socket, token or proxy variable, or is NODE_OPTIONS, and (\d+) with a name that contains MODEL\)/.exec(output);
+    expect(classes, output).not.toBeNull();
+    expect(Number(classes![1])).toBeGreaterThanOrEqual(3);
+    expect(Number(classes![2])).toBeGreaterThanOrEqual(2);
+    expect(Number(classes![3])).toBeGreaterThanOrEqual(1);
+    expect(Number(/\[acceptance\] (\d+) variable\(s\) whose name contains MODEL among those the servers, arm and judges receive \(counted, not named/.exec(output)![1])).toBeGreaterThanOrEqual(1);
+    for (const name of ["ACME_MODEL_X", "ACMECORP_DEPLOY_TOKEN", "EMPLOYER_HTTP_PROXY", "acmeCustomKey", "ANTHROPIC_BASE_URL"]) expect(output, name).not.toContain(name);
+    expect(output).toMatch(/\[acceptance\] HOME (differs from|could not be compared with|is) the account's home folder; both are redacted in every stored path, and neither is printed\./);
+    expect(output).not.toContain(VALUE);
+    expect(output).toContain("1 passed");
+  });
+});
+
+describe("acceptance baseline: summary.md and a dry run name nothing that came from the operator's machine (#232)", () => {
+  const VALUE = "synthetic-secret-value";
+  // Names an operator's machine could hold: an employer's own variables, key and drop-in file.
+  const MACHINE_NAMES = ["ACME_MODEL_X", "ACMECORP_DEPLOY_TOKEN", "EMPLOYER_HTTP_PROXY", "acmeCustomKey", "acme-corp.json", "acme-corp", "ACME_ENV_NAME", "ACME_REFUSED_VAR"];
+
+  it("counts the unreviewed variable names by class and never names one", () => {
+    const names = ["ACME_BUILD_FLAG", "ANTHROPIC_UNIX_SOCKET", "GH_TOKEN", "HTTPS_PROXY", "NODE_OPTIONS", "OTEL_EXPORTER_OTLP_ENDPOINT", "https_proxy", "npm_config_node_options", "SECRET_PROJECT_NAME", "my_model_x"];
+    expect(countNamesByClass(names)).toEqual({ total: 10, endpointLike: 6, namesModel: 1 });
+    expect(countNamesByClass([])).toEqual({ total: 0, endpointLike: 0, namesModel: 0 });
+    // A name can be in both classes.
+    expect(countNamesByClass(["MODEL_ENDPOINT"])).toEqual({ total: 1, endpointLike: 1, namesModel: 1 });
+    expect(describeNameClasses(countNamesByClass(names))).toBe("6 with a name that looks like an endpoint, socket, token or proxy variable, or is NODE_OPTIONS, and 1 with a name that contains MODEL");
+    expect(ENDPOINT_LIKE_NAME.test("npm_config_node_options")).toBe(false);
+    expect(ENDPOINT_LIKE_NAME.test("NODE_OPTIONS")).toBe(true);
+  });
+
+  it("keeps ACME_MODEL_X, ACMECORP_DEPLOY_TOKEN, EMPLOYER_HTTP_PROXY, an unlisted settings key, a drop-in file and its env names out of summary.md and the dry run's lines, counts them right, and keeps them in results.json", async () => {
+    const home = path.join(workdir, "machine-home");
+    const project = path.join(workdir, "machine-checkout");
+    const managed = path.join(workdir, "machine-managed");
+    await mkdir(path.join(home, ".claude"), { recursive: true });
+    await mkdir(path.join(project, ".claude"), { recursive: true });
+    await mkdir(path.join(managed, "managed-settings.d"), { recursive: true });
+    await writeFile(path.join(home, ".claude", "settings.json"), JSON.stringify({ model: VALUE, acmeCustomKey: VALUE, acmeTokenLimit: 1, permissions: {} }));
+    await writeFile(path.join(managed, "managed-settings.json"), JSON.stringify({ modelPricing: VALUE }));
+    await writeFile(path.join(managed, "managed-settings.d", "acme-corp.json"), JSON.stringify({ env: { ACME_ENV_NAME: VALUE }, fallbackModel: VALUE, acmeCustomKey: VALUE }));
+    await writeFile(path.join(managed, "managed-settings.d", "acme-corp-b.json"), "{ not json");
+    const settingsKeys = recordSettingsKeys({ home, project, platform: "linux", managedDir: managed, username: null, cliVersion: SETTINGS_LISTED_FOR_CLI });
+    // The drop-in files' names, the unlisted key and the names under env are recorded: in results.json.
+    expect(settingsKeys.files.map((f) => f.label)).toEqual(["user", "project", "project-local", "managed", "managed-drop-in/acme-corp-b.json", "managed-drop-in/acme-corp.json"]);
+
+    // A real run's variables: the harness's environment, and a .env file that adds a name that is not on the allowlist.
+    const harnessEnv = { PATH: "/usr/bin", ACME_MODEL_X: "1", ACMECORP_DEPLOY_TOKEN: VALUE, EMPLOYER_HTTP_PROXY: VALUE };
+    const unreviewed = unreviewedHarnessNames(harnessEnv, () => false);
+    expect(unreviewed).toEqual(["ACMECORP_DEPLOY_TOKEN", "ACME_MODEL_X", "EMPLOYER_HTTP_PROXY"]);
+    await writeFile(path.join(workdir, ".env.local"), `ACME_REFUSED_VAR=${VALUE}\nDESIGN_AGENT_TIMEOUT_SECONDS=900\n`);
+    const loaded = loadedEnv(harnessEnv);
+    expect(loaded.record.refused).toEqual(["ACME_REFUSED_VAR"]);
+    // The allowlist's own name is named, with its file; the other is only counted.
+    expect(splitAddedNames(loaded.record)).toEqual({ named: [{ name: "DESIGN_AGENT_TIMEOUT_SECONDS", file: "<project>/.env.local" }], notAllowed: 1 });
+    const environment = cleanEnvironment();
+    environment.settingsKeys = settingsKeys;
+    environment.harnessEnvironment = { unreviewedNames: unreviewed };
+    environment.modelPricing = modelPricing(receivedNames(loaded.env, harnessEnv));
+    environment.serverEnvFiles = loaded.record;
+    expect(environment.modelPricing.selectionVariables).toEqual(["ACME_MODEL_X"]);
+    const results = summaryResults({ environment });
+    const md = renderSummary(results);
+    const json = serializeResults(results);
+
+    // None of the machine's names is in summary.md or its banners; the values are nowhere.
+    for (const name of MACHINE_NAMES) expect(md, name).not.toContain(name);
+    expect(`${json}\n${md}`).not.toContain(VALUE);
+    // The counts are right: 3 unreviewed, 2 endpoint-like (the token and the proxy) and 1 naming a model.
+    expect(md).toContain(
+      "3 variable(s) of the harness's own environment that reach every server, judge and arm are not reviewed as harmless (2 with a name that looks like an endpoint, socket, token or proxy variable, or is NODE_OPTIONS, and 1 with a name that contains MODEL)"
+    );
+    expect(md).toContain("1 variable(s) whose name contains MODEL reached the run (their names are in results.json under modelPricing, never committed).");
+    expect(md).toContain("`DESIGN_AGENT_TIMEOUT_SECONDS`; **not allowed: 1 variable(s), named in results.json only**.");
+    // user: model named, and 1 other key (acmeTokenLimit) counted; the drop-in files are counted and one of them is not JSON.
+    expect(md).toContain(
+      "(the CLI's own key names, never values; any other key is counted): user: model, and 1 other key(s) whose name contains model, effort, think or token; managed: modelPricing; 2 managed drop-in files: env, and 1 other key(s) whose name contains model, effort, think or token."
+    );
+    expect(md).toContain("Settings sources whose keys are not shown: 1 managed drop-in file (not a JSON object).");
+    expect(md).toContain("4 present of 6 looked for (`user`, `managed`, 2 managed drop-in files)");
+    // The banner lines carry the same counts.
+    const banner = environmentBannerLines(environment).join("\n");
+    expect(banner).toContain("Of the 3 variable(s) of the harness's own environment that are not reviewed as harmless, 2 with a name that looks like an endpoint");
+    for (const name of MACHINE_NAMES) expect(banner, name).not.toContain(name);
+
+    // results.json keeps the names, for the operator and never for a commit.
+    for (const name of ["ACME_MODEL_X", "ACMECORP_DEPLOY_TOKEN", "EMPLOYER_HTTP_PROXY", "acmeCustomKey", "acme-corp.json", "ACME_ENV_NAME", "ACME_REFUSED_VAR"]) expect(json, name).toContain(name);
+
+    // A dry run prints the same thing: the .env message, the classes, the settings lines.
+    const printed = [
+      printableMessage(loaded.record),
+      ...describeSettingsFiles(settingsKeys),
+      ...settingsBannerLines(settingsKeys),
+      describeNameClasses(countNamesByClass(unreviewed)),
+    ].join("\n");
+    for (const name of MACHINE_NAMES) expect(printed, name).not.toContain(name);
+    expect(printed).not.toContain(VALUE);
+    expect(printableMessage(loaded.record)).toContain("1 variable(s) the harness does not allow, not named here");
+    expect(printableMessage(loaded.record)).toContain("DESIGN_AGENT_TIMEOUT_SECONDS; 1 not on the allowlist, counted and not named");
+    // The operator's own terminal gets the full refusal, naming what to remove.
+    expect(loaded.record.message).toContain("variables the harness does not allow: ACME_REFUSED_VAR");
+    expect(refusalBeforeSpend({ mode: "prod", harnessRefusal: null, pin: { ok: true, message: "pinned" } as never, envFiles: loaded.record, limits: { ok: true } as never, armSettings: { ok: true } as never })).toBe(loaded.record.message);
+    expect(refusalBeforeSpend({ mode: "prod", harnessRefusal: null, pin: { ok: true, message: "pinned" } as never, envFiles: loaded.record, limits: { ok: true } as never, armSettings: { ok: true } as never }, { printable: true })).toBe(loaded.record.printable);
+    const lines = describeSettingsFiles(settingsKeys);
+    expect(lines).toEqual([
+      expect.stringMatching(/^user: present, SHA-256 [0-9a-f]{12}, 4 top-level key\(s\), of which model named by the CLI's own key list and 3 other\(s\) counted only; 0 name\(s\) under env, counted only$/),
+      "project: absent",
+      "project-local: absent",
+      expect.stringMatching(/^managed: present, SHA-256 [0-9a-f]{12}, 1 top-level key\(s\), of which modelPricing named/),
+      "2 managed drop-in files: 3 top-level key(s) in all, of which env named by the CLI's own key list and 2 other(s) counted only; 1 name(s) under env, counted only; 1 file(s) whose keys are not shown",
+    ]);
+  });
+
+  it("names only the fixed labels and the CLI's own key names, and counts everything else", async () => {
+    expect([...SETTINGS_KEYS_OF_NOTE]).toEqual(["model", "effortLevel", "alwaysThinkingEnabled", "env", "apiKeyHelper", "modelPricing"]);
+    const record: SettingsKeysRecord = {
+      listedForCli: SETTINGS_LISTED_FOR_CLI,
+      listedForPinnedCli: true,
+      files: [
+        { label: "managed-drop-in/acme-corp.json", exists: true, state: "ok", sha256: "a".repeat(64), keys: ["model"], envKeys: [], unrecordedNames: 0 },
+        { label: "managed-drop-in/(unusual name 2)", exists: true, state: "unreadable", sha256: null, keys: [], envKeys: [], unrecordedNames: 0 },
+        { label: "user", exists: false, state: "absent", sha256: null, keys: [], envKeys: [], unrecordedNames: 0 },
+      ],
+    };
+    expect(presentSources(record)).toEqual([{ text: "2 managed drop-in files", counted: true }]);
+    const text = [...settingsBannerLines(record), ...describeSettingsFiles(record)].join("\n");
+    expect(text).not.toContain("acme-corp");
+    expect(text).not.toContain("unusual name");
+    expect(text).toContain("2 managed drop-in files: model");
+    expect(text).toContain("1 managed drop-in file (could not be read)");
+  });
+});
+
+describe("acceptance baseline: what is refused and what is only recorded (#232)", () => {
+  it("says in the refusal exactly which four names are refused, and that nothing else is, without a claim about the CLI's own defaults", () => {
+    const text = harnessEnvironmentRefusal(["MAX_THINKING_TOKENS"])!;
+    expect(text).toContain("Only MAX_THINKING_TOKENS, CLAUDE_CODE_MAX_OUTPUT_TOKENS, CLAUDE_CODE_MAX_CONTEXT_TOKENS, CLAUDE_CODE_EFFORT_LEVEL are refused here");
+    expect(text).toContain("the CLI's other variables are recorded by name, and its settings files by key name, and are not refused");
+    expect(text).not.toMatch(/own defaults/);
+    expect(text).toContain("Unset it and run the harness again.");
+  });
+
+  it("records the CLI's other variables by name only, and does not refuse them", () => {
+    const env = { ANTHROPIC_BETAS: "x", MAX_MCP_OUTPUT_TOKENS: "9", BASH_MAX_OUTPUT_LENGTH: "9", PATH: "/usr/bin" };
+    expect(unreviewedHarnessNames(env, (name) => MODEL_ENV_NAME.test(name))).toEqual(["ANTHROPIC_BETAS", "BASH_MAX_OUTPUT_LENGTH", "MAX_MCP_OUTPUT_TOKENS"]);
+    expect(refusedHarnessNames(env)).toEqual([]);
+  });
+
+  it("states the settings files and the managed settings in the limitation of every run's record", () => {
+    const text = inheritedConfiguration({ home: workdir, project: workdir, serverEnv: {}, harnessEnv: {}, envFileVariables: [] }).limitations.join("\n");
+    expect(text).toContain("The Design Agent and the Design-Agent-only arm run without --setting-sources, so they load the CLI's settings files, which can set model, effort, thinking, env and apiKeyHelper; managed settings apply to every role, the Director and the judge included.");
+    expect(text).toContain("other CLI variables (for example ANTHROPIC_BETAS, MAX_MCP_OUTPUT_TOKENS and BASH_MAX_OUTPUT_LENGTH) are recorded by name only, not refused");
+    expect(text).toContain("A paid run is refused for exactly the four names MAX_THINKING_TOKENS, CLAUDE_CODE_MAX_OUTPUT_TOKENS, CLAUDE_CODE_MAX_CONTEXT_TOKENS and CLAUDE_CODE_EFFORT_LEVEL");
+  });
+});
+
+describe("acceptance baseline: statements that were false are corrected (#232)", () => {
+  const docs = readFileSync(path.join(ROOT, "docs", "architecture", "creative-workflow.md"), "utf8");
+  const harnessSources = () => readdirSync(path.join(ROOT, "eval", "acceptance")).filter((f) => f.endsWith(".ts")).map((f) => [f, readFileSync(path.join(ROOT, "eval", "acceptance", f), "utf8")] as const);
+
+  it("says that npm adds nothing at a server's start, and that what npm put in the harness's environment is recorded by name", () => {
+    for (const [name, text] of [["creative-workflow.md", docs], ...harnessSources()]) expect(text, name).not.toMatch(/no npm setting reaches/i);
+    expect(docs).toContain("Npm therefore adds nothing to a server's environment at its start.");
+    expect(docs).toContain("What npm put in the harness's own environment, when the harness was itself started through `npx` or `npm`, passes on like any other variable of it and is recorded by name.");
+    const limitation = inheritedConfiguration({ home: workdir, project: workdir, serverEnv: {}, harnessEnv: {}, envFileVariables: [] }).limitations.join("\n");
+    expect(limitation).toContain("npm adds nothing to a server's environment at its start; what npm put in the harness's own environment, when the harness was started through npx or npm, is recorded by name in harnessEnvironment.unreviewedNames like any other variable");
+  });
+
+  it("says of summary.md and a dry run exactly what they show: counts, and only strings fixed in the harness's source by name", () => {
+    // No claim that summary.md names the generic endpoint, socket, token, proxy or NODE_OPTIONS variables, or prints a recorded name.
+    for (const [name, text] of [["creative-workflow.md", docs], ...harnessSources()]) {
+      expect(text, name).not.toMatch(/by name, the generic/);
+      expect(text, name).not.toMatch(/and the generic endpoint, socket, token, proxy and NODE_OPTIONS names/);
+      expect(text, name).not.toMatch(/shows only (its|the) count of those names and, by name/);
+    }
+    expect(docs).toContain("summary.md and a dry run name none of them.");
+    expect(docs).toContain("They show the count of those names, and how many of them have a name that looks like an endpoint, socket, token or proxy variable (or is `NODE_OPTIONS`) and how many have a name that contains `MODEL`, in either case.");
+    expect(docs).toContain("summary.md and a dry run name no settings file, key or variable that came from the operator's machine.");
+    expect(docs).toContain("Every other name is counted:");
+    expect(docs).toContain("each file in the managed `managed-settings.d` folder, which is reported as a number of managed drop-in files and never by its file name.");
+    expect(docs).toContain("The names are in results.json under `modelPricing.selectionVariables`, which is never committed, and are not printed anywhere else.");
+    // The fixed strings it may print are the ones the source defines.
+    for (const key of SETTINGS_KEYS_OF_NOTE) expect(docs, key).toContain(`\`${key}\``);
+    const limitation = inheritedConfiguration({ home: workdir, project: workdir, serverEnv: {}, harnessEnv: {}, envFileVariables: [] }).limitations.join("\n");
+    expect(limitation).toContain("summary.md and a dry run show only counts of those names by class and name no variable that came from the machine");
+    expect(limitation).toContain("summary.md and a dry run name only the CLI's own key names from a fixed list and the fixed file labels, and count every other name");
+  });
+
+  it("describes no paid run under next dev, because it is refused", () => {
+    expect(docs).not.toContain("under both `next dev` and a production build");
+    expect(docs).not.toContain("A graceful signal under `next dev` closes open requests");
+    expect(docs).toContain("A paid run always uses a production build, because a paid run under `next dev` is refused");
+    const eval_ = readFileSync(path.join(ROOT, "eval", "acceptance", "acceptance.eval.ts"), "utf8");
+    expect(eval_).not.toContain("tests restart recovery in both modes");
+    expect(eval_).not.toContain("A graceful signal under\n * `next dev` closes open requests");
+  });
+
+  it("gives the CI variables a reason that matches what the CLI does with them", () => {
+    const ci = HARMLESS_HARNESS_NAMES.find((g) => g.names.includes("GITHUB_ACTIONS"))!;
+    expect(ci.why).not.toMatch(/neither the CLI nor Next\.js reads them/);
+    expect(ci.why).toContain("the CLI reads GITHUB_ACTIONS and others for its subprocess environment scrubbing and its telemetry");
+    expect(ci.why).toContain("none of them carries an endpoint, credential, proxy, configuration folder, preload or token limit");
+    expect(docs).toContain("The CLI reads `GITHUB_ACTIONS` and some of the other runner variables for its subprocess environment scrubbing and its telemetry, but none of them carries an endpoint, credential, proxy, configuration folder, preload or token limit.");
+  });
+
+  it("applies the model test to every name the servers, the arm and the judges receive, and says that managed modelPricing is not priced by the table", () => {
+    // Names no list chose in advance, in either case, from any of the environments.
+    expect(receivedNames({ PATH: "/usr/bin", FOO_MODEL_X: "1", UNSET: undefined }, { my_model: "1", PATH: "/bin" })).toEqual(["FOO_MODEL_X", "PATH", "my_model"]);
+    expect(modelPricing(receivedNames({ PATH: "/usr/bin", FOO_MODEL_X: "1" }, { my_model: "1" }))).toMatchObject({ selectionVariables: ["FOO_MODEL_X", "my_model"], unverified: true });
+    expect(modelPricing(receivedNames({ PATH: "/usr/bin" }, { HOME: "/home/x" }))).toMatchObject({ selectionVariables: [], unverified: false });
+    expect(MODEL_PRICE_NOTE).toContain("any variable whose name contains MODEL (in either case)");
+    expect(MODEL_PRICE_NOTE).toContain("Managed settings can also set `modelPricing`");
+    expect(MODEL_PRICE_NOTE).toContain("the record names a `modelPricing` key in a managed file and never its value");
+    expect(docs).toContain("Managed settings can also set `modelPricing`, which replaces the price the CLI uses for a model and scales the cost it reports, for every role.");
+    expect(docs).toContain("The test is applied to every name those processes receive, not to a list of names chosen in advance.");
+  });
+
+  it("lists the names Next.js adds to a server, `__NEXT_PROCESSED_ENV` among them, and does not claim that is all", () => {
+    expect(NEXT_ADDED_TO_SERVER).toEqual([
+      "NEXT_DEPLOYMENT_ID",
+      "NEXT_PRIVATE_START_TIME",
+      "NEXT_RUNTIME",
+      "PORT",
+      "RUST_MIN_STACK",
+      "TURBOPACK",
+      "__NEXT_PRIVATE_ORIGIN",
+      "__NEXT_PROCESSED_ENV",
+    ]);
+    for (const name of NEXT_ADDED_TO_SERVER) expect(docs, name).toContain(`\`${name}\``);
+    expect(docs).toContain("The arm's environment differs from a running server's by what Next.js itself adds to the server");
+    expect(docs).not.toContain("differs from a running server's only by");
+    const limitation = inheritedConfiguration({ home: workdir, project: workdir, serverEnv: {}, harnessEnv: {}, envFileVariables: [] }).limitations.join("\n");
+    for (const name of NEXT_ADDED_TO_SERVER) expect(limitation, name).toContain(name);
+    expect(limitation).not.toContain("only by what Next.js itself adds");
+    // The loader's result leaves every such marker out of the arm's environment.
+    expect(Object.keys(loadServerEnv({ root: workdir, mode: "prod", env: { PATH: process.env.PATH } }).env).filter((n) => n.startsWith("__NEXT_"))).toEqual([]);
+  });
+
+  it("says to reinstall the dependencies for a loader that did not run, and to correct a file for a file problem, never to remove a variable then", async () => {
+    // The loader could not start under this NODE_OPTIONS.
+    const broken = loadServerEnv({ root: workdir, mode: "prod", env: { PATH: process.env.PATH, NODE_OPTIONS: `--require ${path.join(workdir, "absent-preload.js")}` } }).record;
+    expect(broken.ok).toBe(false);
+    expect(broken.message).toContain("Reinstall the dependencies (npm ci) so that Next.js's loader runs, then run the harness again.");
+    expect(broken.message).not.toContain("Remove it from the .env files");
+    // A file that cannot be read: correct or remove the file.
+    execFileSync("mkfifo", [path.join(workdir, ".env.local")]);
+    const pipe = loadServerEnv({ root: workdir, mode: "prod", env: { PATH: process.env.PATH } }).record;
+    expect(pipe.message).toContain("Correct or remove the .env file the problem names, then run the harness again.");
+    expect(pipe.message).not.toContain("Reinstall");
+    expect(pipe.message).not.toContain("Remove it from the .env files");
+    await rm(path.join(workdir, ".env.local"));
+    // An unknown variable: remove it, or allow its name after review.
+    await writeFile(path.join(workdir, ".env.local"), "HTTPS_PROXY=http://proxy.example\n");
+    const refused = loadServerEnv({ root: workdir, mode: "prod", env: { PATH: process.env.PATH } }).record;
+    expect(refused.message).toContain("Remove it from the .env files, or add the name to SERVER_ENV_ALLOWLIST in eval/acceptance/server-env.ts after review.");
+    expect(refused.message).not.toContain("Reinstall");
+    // A line the loader does not read: correct or remove the line.
+    await writeFile(path.join(workdir, ".env.local"), "DISABLE_AUTOUPDATER=1\nNAME_ONLY\n");
+    const lines = loadServerEnv({ root: workdir, mode: "prod", env: { PATH: process.env.PATH } }).record;
+    expect(lines.ok).toBe(false);
+    expect(lines.message).toContain("Correct or remove those lines so that the loader reads them as assignments.");
+    expect(lines.message).not.toContain("Reinstall");
+    expect(docs).toContain("The refusal then says to reinstall the dependencies (`npm ci`), and for a file the loader could not read it says to correct or remove that file, and not to remove a variable.");
+  });
+
+  it("splits the sentences that were one very long line into one readable sentence per line", () => {
+    expect(docs).not.toContain("The parts are the server starts (each waits");
+    expect(docs).toContain("The parts are:\n- the server starts (each waits up to its ready limit and two stop graces);");
+    expect(docs).not.toContain("so a stop for another reason fails it; and it passes");
+    expect(docs).toContain("The reason names image generation or editing, in the stop message or in the Director's list of what is unavailable, so a stop for another reason fails it.\nIt passes \"nothing changed\" only when no slide or asset changed.");
+    for (const line of docs.split("\n").filter((l) => l.startsWith("The parts are") || l.startsWith("When the run stops, it passes") || l.startsWith("The code is `capability_unavailable`"))) expect(line.length, line).toBeLessThan(300);
+  });
+});
+
+describe("acceptance baseline: the worktree check is part of what a dry run reports (#232)", () => {
+  it("returns the reason a primary or undeterminable worktree is refused, and null for a linked one", async () => {
+    const { primary, linked } = await worktrees(workdir);
+    expect(worktreeRefusal(primary)).toMatch(/^Refusing to run in the repository's primary worktree/);
+    expect(worktreeRefusal(linked)).toBeNull();
+    const plain = path.join(workdir, "plain");
+    await mkdir(plain);
+    expect(worktreeRefusal(plain)).toMatch(/could not be determined/);
+    // The refusal names no absolute path.
+    expect(worktreeRefusal(primary)).not.toContain(workdir);
+  });
+
+  it("puts the worktree's refusal last among the checks, so a dry run never reports that nothing would refuse a primary worktree", () => {
+    const cli = path.join(workdir, "claude");
+    const refusal = "Refusing to run in the repository's primary worktree: synthetic";
+    const pin = checkCliPin([{ role: "servers", path: cli, version: "1.0.0" }], { explicit: true, source: "synthetic", file: { size: 1, sha256: "a".repeat(64) } });
+    const envFiles = loadedEnv({ PATH: process.env.PATH }).record;
+    const settings = (value: string) => ({ limits: designAgentLimits(loadedEnv({ DESIGN_AGENT_MAX_BUDGET_USD: "4", DESIGN_AGENT_TIMEOUT_SECONDS: value })), armSettings: designAgentOnlyRun(loadedEnv({ DESIGN_AGENT_MAX_BUDGET_USD: "4", DESIGN_AGENT_TIMEOUT_SECONDS: value })).settings });
+    const fine = { mode: "prod", harnessRefusal: null, pin, envFiles } as const;
+    // Everything else holds: the worktree is what refuses.
+    expect(refusalBeforeSpend({ ...fine, ...settings("900"), worktree: refusal })).toBe(refusal);
+    expect(refusalBeforeSpend({ ...fine, ...settings("900"), worktree: null })).toBeNull();
+    expect(refusalBeforeSpend({ ...fine, ...settings("900") })).toBeNull();
+    // Any earlier check speaks first.
+    const earlier = refusalBeforeSpend({ ...fine, ...settings("soon"), worktree: refusal })!;
+    expect(earlier).toMatch(/does not accept the Design Agent settings/);
+    expect(refusalBeforeSpend({ ...fine, mode: "dev", ...settings("900"), worktree: refusal })).toBe(DEV_MODE_REFUSAL);
+  });
+});
+
+describe("acceptance baseline: both home folders are redacted, and only whether they differ is recorded (#232)", () => {
+  const root = "/work/checkout";
+
+  it("redacts a path under either folder, and the shortest result when one lies under the other", () => {
+    expect(redactPathFromModule("/home/synthetic/.local/bin/claude", ["/tmp/scratch-home", "/home/synthetic"])).toBe("~/.local/bin/claude");
+    expect(redactPathFromModule("/tmp/scratch-home/.claude/skills", ["/tmp/scratch-home", "/home/synthetic"])).toBe("~/.claude/skills");
+    expect(redactPathFromModule("/home/synthetic", ["/tmp/scratch-home", "/home/synthetic"])).toBe("~");
+    // One home inside the other: the more specific folder gives the shorter result.
+    expect(redactPathFromModule("/home/synthetic/scratch/x", ["/home/synthetic", "/home/synthetic/scratch"])).toBe("~/x");
+    // Under neither: unchanged. A single folder still works as before.
+    expect(redactPathFromModule("/elsewhere/claude", ["/tmp/scratch-home", "/home/synthetic"])).toBe("/elsewhere/claude");
+    expect(redactPathFromModule("/home/synthetic/.local/bin/claude", "/home/synthetic")).toBe("~/.local/bin/claude");
+    expect(redactPathFromModule("/home/synthetic-two/claude", ["/home/synthetic"])).toBe("/home/synthetic-two/claude");
+  });
+
+  it("lists each home folder once, and compares HOME with the account's home folder without recording either path", () => {
+    expect(homeFolders("/tmp/scratch-home", "/home/synthetic")).toEqual(["/tmp/scratch-home", "/home/synthetic"]);
+    expect(homeFolders("/home/synthetic", "/home/synthetic")).toEqual(["/home/synthetic"]);
+    expect(homeFolders("/tmp/scratch-home", null)).toEqual(["/tmp/scratch-home"]);
+    expect(homeDiffersFromAccount("/tmp/scratch-home", "/home/synthetic")).toBe(true);
+    expect(homeDiffersFromAccount("/home/synthetic", "/home/synthetic")).toBe(false);
+    expect(homeDiffersFromAccount("/home/synthetic/", "/home/synthetic")).toBe(false);
+    // The account's home cannot be read: nothing can be said.
+    expect(homeDiffersFromAccount("/home/synthetic", null)).toBeNull();
+    for (const answer of [homeDiffersFromAccount("/tmp/scratch-home", "/home/synthetic"), homeDiffersFromAccount("/home/synthetic", null)]) expect(typeof answer === "boolean" || answer === null).toBe(true);
+    // The real one: a string or null, the same the system lists.
+    const real = accountHome();
+    expect(real === null || typeof real === "string").toBe(true);
+    expect(homeDiffersFromAccount(real ?? "/x", real)).toBe(real === null ? null : false);
+  });
+
+  it("removes the account's home folder from stored text and from results.json and summary.md, even when HOME names another folder", () => {
+    const redaction = { home: "/tmp/scratch-home", accountHome: "/home/synthetic", root };
+    const text = "failed at /home/synthetic/.local/bin/claude, cwd /tmp/scratch-home/work, checkout /work/checkout/data, and /home/synthetic-two/keep";
+    const out = redactText(text, redaction);
+    expect(out).toBe("failed at ~/.local/bin/claude, cwd ~/work, checkout <checkout>/data, and /home/synthetic-two/keep");
+    // The longer folder goes first when one lies under the other.
+    expect(redactText("/home/synthetic/scratch/x and /home/synthetic/y", { home: "/home/synthetic/scratch", accountHome: "/home/synthetic", root })).toBe("~/x and ~/y");
+    // Without an account home, as before.
+    expect(redactText(text, { home: "/tmp/scratch-home", root })).toContain("/home/synthetic/.local/bin/claude");
+    const results = summaryResults({ scenarios: [{ ...record("S1", 1), harnessError: "stack at /home/synthetic/work/x.ts" }] });
+    expect(serializeResults(results, redaction)).not.toContain("/home/synthetic/");
+    expect(renderSummary(results, redaction)).not.toContain("/home/synthetic/");
+    expect(serializeResults(results, redaction)).toContain("~/work/x.ts");
+  });
+
+  it("redacts a CLI path under either folder in the pin check", () => {
+    const pin = checkCliPin([{ role: "servers", path: "/home/synthetic/bin/claude", version: "1.0.0" }], { explicit: true, source: "synthetic", file: { size: 1, sha256: "a".repeat(64) }, home: ["/tmp/scratch-home", "/home/synthetic"] });
+    expect(pin.uses[0].path).toBe("~/bin/claude");
+    expect(pin.message).not.toContain("/home/synthetic");
+  });
+
+  it("records the boolean on the environment record and shows it in summary.md without either path", () => {
+    const environment = cleanEnvironment();
+    environment.homeDiffersFromAccount = true;
+    expect(renderSummary(summaryResults({ environment }))).toContain("HOME differs from the account's home folder; both are redacted as `~` in every stored path, and neither is recorded.");
+    environment.homeDiffersFromAccount = false;
+    expect(renderSummary(summaryResults({ environment }))).toContain("HOME is the account's home folder; both are redacted");
+    environment.homeDiffersFromAccount = null;
+    expect(renderSummary(summaryResults({ environment }))).toContain("HOME could not be compared with the account's home folder");
+    expect(JSON.stringify(environment)).not.toMatch(/\/home\/|\/Users\//);
+  });
+});

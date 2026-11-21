@@ -4,11 +4,9 @@ import { request, type IncomingMessage } from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
-import { DESIGN_AGENT_TIMEOUT_ENV, designAgentTimeout, MAX_DESIGN_AGENT_TIMEOUT_SECONDS } from "@/lib/design-agent";
 import type { Brand } from "@/types/brand";
 import type { AspectRatio, Carousel } from "@/types/carousel";
-import { serverSetting } from "./environment";
-import { ROOT, type ServerMode } from "./server";
+import { ROOT } from "./server";
 import { addUsage, usageFromCli, type TokenUsage } from "./usage";
 
 /**
@@ -53,37 +51,26 @@ export interface ChatOptions {
   onAbort?: () => void;
 }
 
-/** How much longer than the Design Agent's absolute deadline the chat stream may stay quiet: time for the server to stop the agent and finish the stream. */
-export const CHAT_TIMEOUT_MARGIN_MS = 5 * 60 * 1000;
-
-/**
- * The Design Agent's absolute deadline as a server the harness starts sees it
- * (#232): `DESIGN_AGENT_TIMEOUT_SECONDS` from the environment the harness
- * gives it, else from the checkout's `.env` files, else the product's
- * default, read with the product's own parser. A value the product refuses
- * stops no design early, so the product's maximum is used for it.
- */
-export function designAgentDeadline(options: { root: string; mode: ServerMode; env: Record<string, string | undefined> }): { ms: number; source: string } {
-  const setting = serverSetting(DESIGN_AGENT_TIMEOUT_ENV, options);
-  const parsed = designAgentTimeout(setting?.value);
-  if (!parsed.ok) return { ms: MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000, source: `${DESIGN_AGENT_TIMEOUT_ENV} from ${setting?.source} is invalid; the product's maximum` };
-  return { ms: parsed.ms, source: setting ? `${DESIGN_AGENT_TIMEOUT_ENV} from ${setting.source}` : "the product's default" };
-}
-
-/** How long the chat request may wait for its headers or between two chunks of the stream: the Design Agent's deadline plus the margin. */
-export function chatTimeoutMs(designDeadlineMs: number): number {
-  return designDeadlineMs + CHAT_TIMEOUT_MARGIN_MS;
-}
-
 export interface AppClientOptions {
   /**
    * How long the chat request waits for its headers, and then between chunks,
-   * before it gives up. Set it from `chatTimeoutMs`, so only the product's own
-   * limits stop a design; the default is the product's longest allowed
-   * deadline plus the margin.
+   * before it gives up. The harness sets it from `chatTimeoutMs(largestStageMs(...))`
+   * (limits.ts), so only the product's own limits stop a design; the default
+   * is `DEFAULT_CHAT_TIMEOUT_MS`.
    */
   chatTimeoutMs?: number;
 }
+
+/**
+ * The chat request's idle limit for a client that is told nothing: the longest
+ * stage the product can have, its maximum Design Agent deadline of an hour
+ * (`MAX_DESIGN_AGENT_TIMEOUT_SECONDS`), plus five minutes (`CHAT_TIMEOUT_MARGIN_MS`
+ * in limits.ts, where a test keeps the two in step).
+ */
+export const DEFAULT_CHAT_TIMEOUT_MS = 65 * 60 * 1000;
+
+/** How much of a non-2xx chat response's body is kept; the response is then closed unread. */
+const ERROR_BODY_CHARS = 500;
 
 export class AppClient {
   readonly chatTimeoutMs: number;
@@ -92,7 +79,7 @@ export class AppClient {
     readonly origin: string,
     options: AppClientOptions = {}
   ) {
-    this.chatTimeoutMs = options.chatTimeoutMs ?? chatTimeoutMs(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000);
+    this.chatTimeoutMs = options.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   }
 
   private headers(json = true): Record<string, string> {
@@ -268,12 +255,15 @@ export class AppClient {
         restartIdle();
         if (!ok) {
           errorText += decoder.decode(chunk, { stream: true });
+          // Only the start of a refusal is kept, so read no more of it than that.
+          if (errorText.length >= ERROR_BODY_CHARS) break;
           continue;
         }
         for (const event of parser.push(decoder.decode(chunk, { stream: true }))) handle(event);
       }
       if (!ok) {
-        result.httpError = (errorText + decoder.decode()).slice(0, 500);
+        result.httpError = (errorText + decoder.decode()).slice(0, ERROR_BODY_CHARS);
+        res.destroy();
         return result;
       }
       for (const event of parser.end()) handle(event);
@@ -353,10 +343,15 @@ export interface LogEntry {
   fields: Record<string, string | number | boolean | null>;
   /** The scalar fields of the nested objects in `NESTED_OBJECTS`, when the line has them. */
   objects?: Record<string, Record<string, string | number | boolean | null>>;
+  /** The string items of the lists in `STRING_LISTS`, when the line has them. */
+  lists?: Record<string, string[]>;
 }
 
 /** Nested objects read from a log line: the Design Agent's token usage on "run finished". */
 const NESTED_OBJECTS = ["designUsage"] as const;
+
+/** Lists of strings read from a log line: what the Director's plan needs that this machine lacks, on "plan finished". */
+const STRING_LISTS = ["unavailable"] as const;
 
 const TAGS = [
   "[director] plan finished",
@@ -404,7 +399,12 @@ export async function logEntries(logPath: string, carouselId: string, fromOffset
         const nested = nestedObject(body, key);
         if (nested) objects[key] = nested;
       }
-      entries.push({ at, entry: { tag, fields, ...(Object.keys(objects).length ? { objects } : {}) } });
+      const lists: NonNullable<LogEntry["lists"]> = {};
+      for (const key of STRING_LISTS) {
+        const list = stringList(body, key);
+        if (list) lists[key] = list;
+      }
+      entries.push({ at, entry: { tag, fields, ...(Object.keys(objects).length ? { objects } : {}), ...(Object.keys(lists).length ? { lists } : {}) } });
     }
   }
   return entries.sort((a, b) => a.at - b.at).map((e) => e.entry);
@@ -450,6 +450,32 @@ function nestedObject(body: string, key: string): LogEntry["fields"] | null {
       if (open === -1 || rest[open] !== "{") return null;
       const close = matchingBrace(rest, open);
       return close === -1 ? null : scalarFields(rest.slice(open + 1, close));
+    }
+  }
+  return null;
+}
+
+/** The quoted items of `key: [ ... ]` at the top level of a log line's object, or null. */
+function stringList(body: string, key: string): string[] | null {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"') quote = c;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") depth--;
+    else if (depth === 0 && body.startsWith(`${key}:`, i) && (i === 0 || /[\s,]/.test(body[i - 1]))) {
+      const rest = body.slice(i + key.length + 1);
+      const open = rest.search(/\S/);
+      if (open === -1 || rest[open] !== "[") return null;
+      const close = matchingBrace(rest, open);
+      if (close === -1) return null;
+      return [...rest.slice(open + 1, close).matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"/g)].map((m) => (m[1] ?? m[2]).replace(/\\(.)/g, "$1"));
     }
   }
   return null;

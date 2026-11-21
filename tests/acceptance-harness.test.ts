@@ -12,7 +12,9 @@ import { encodeChatEvent, type ChatStreamEvent } from "@/lib/chat-stream";
 import { DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS, MAX_DESIGN_AGENT_TIMEOUT_SECONDS } from "@/lib/design-agent";
 import type { CarouselAsset, Slide } from "@/types/carousel";
 import { admissionWaitMs, health, imageServiceUrl, observeBusy, waitForAdmission } from "../eval/acceptance/image-service";
-import { AppClient, CHAT_TIMEOUT_MARGIN_MS, chatTimeoutMs, designAgentDeadline, logEntries } from "../eval/acceptance/app";
+import { AppClient, DEFAULT_CHAT_TIMEOUT_MS, logEntries } from "../eval/acceptance/app";
+import { CHAT_TIMEOUT_MARGIN_MS, LONGEST_POSSIBLE_STAGE_MS, chatTimeoutMs, designAgentLimits } from "../eval/acceptance/limits";
+import { loadServerEnv } from "../eval/acceptance/server-env";
 import {
   checkExportFiles,
   checkFileHashes,
@@ -176,6 +178,19 @@ describe("acceptance harness: server log", () => {
     await writeFile(log, `noise\n${format("[creative-run] image failed", fields)}\n${format("[creative-run] image failed", { ...fields, carouselId: "other" })}\n`);
     const entries = await logEntries(log, "c-1");
     expect(entries).toEqual([{ tag: "[creative-run] image failed", fields }]);
+  });
+
+  it("reads what the Director's plan needs that the machine lacks, as the server prints the list", async () => {
+    const log = path.join(workdir, "server.log");
+    const fields = { carouselId: "c-1", outcome: "capability_unavailable", durationMs: 4000, costUsd: 0.1, violations: 1, violationList: ["image.generate: not available"], unavailable: ["image-generation", "image-editing"] };
+    await writeFile(log, `${format("[director] plan finished", fields)}\n${format("[director] plan finished", { ...fields, carouselId: "other", unavailable: ["relighting"] })}\n`);
+    const [entry] = await logEntries(log, "c-1");
+    expect(entry.lists).toEqual({ unavailable: ["image-generation", "image-editing"] });
+    expect(entry.fields).toMatchObject({ outcome: "capability_unavailable", costUsd: 0.1 });
+    // A line without the list has none, and a one-line list reads the same.
+    await writeFile(log, `${format("[director] plan finished", { carouselId: "c-1", outcome: "planned" })}\n${format("[director] plan finished", { carouselId: "c-2", unavailable: ["image-editing"] })}\n`);
+    expect((await logEntries(log, "c-1"))[0].lists).toBeUndefined();
+    expect((await logEntries(log, "c-2"))[0].lists).toEqual({ unavailable: ["image-editing"] });
   });
 });
 
@@ -489,46 +504,125 @@ describe("acceptance harness: chat stream timeouts", () => {
     expect(cut.events.map((e) => e.event.type)).toEqual(["stage"]);
   });
 
+  it("never sends the chat request through the global fetch, whose 300 s body timeout cut off quiet designs", async () => {
+    const { origin, state } = await quietRoute([{ type: "stage", stage: "designing" }]);
+    // Any use of fetch is an error: an old chat path on fetch fails this test, which a simulated clock could not show.
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("the chat request must not use the global fetch");
+    });
+    try {
+      const seen: string[] = [];
+      const pending = new AppClient(origin).chat({ carouselId: "c-1", message: "m" }, { onEvent: (e) => seen.push(e.event.type) });
+      await until(() => seen.length === 1);
+      state.stream!.write(encodeChatEvent({ type: "done", sessionId: "123e4567-e89b-42d3-a456-426614174000" }));
+      state.stream!.end();
+      const result = await pending;
+      expect(result.streamError).toBeNull();
+      expect(result.httpStatus).toBe(200);
+      expect(result.sessionId).toBe("123e4567-e89b-42d3-a456-426614174000");
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("keeps only the start of a refusal's body and closes the response instead of reading the rest", async () => {
+    let serverSide: ServerResponse | null = null;
+    const origin = await fake((req, res) => {
+      req.resume();
+      serverSide = res;
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      // More than the harness will keep, and no end: a body that never finishes.
+      res.write("x".repeat(2_000));
+    });
+    const result = await new AppClient(origin, { chatTimeoutMs: 60_000 }).chat({ carouselId: "c-1", message: "m" });
+    expect(result.httpStatus).toBe(500);
+    expect(result.httpError).toBe("x".repeat(500));
+    expect(result.streamError).toBeNull();
+    // The harness closed its side, so the server's response ends instead of waiting for a reader.
+    await until(() => serverSide!.destroyed || serverSide!.writableFinished || serverSide!.socket?.destroyed === true);
+  });
+
   it("sets the limit from the Design Agent's deadline the servers see, plus the margin", async () => {
+    /** The deadline as a server the harness starts sees it: the product's reading of what Next.js's own loader leaves it. */
+    const deadline = (env: Record<string, string>, mode: "prod" | "dev" = "prod") => {
+      const limits = designAgentLimits(loadServerEnv({ root: workdir, mode, env }));
+      return { ms: limits.timeoutMs, source: limits.timeoutSource };
+    };
     // The default: the product's 30-minute deadline plus five minutes, far beyond fetch's 300 s.
-    const none = designAgentDeadline({ root: workdir, mode: "prod", env: {} });
+    const none = deadline({});
     expect(none).toEqual({ ms: DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000, source: "the product's default" });
     expect(CHAT_TIMEOUT_MARGIN_MS).toBe(5 * 60 * 1000);
     expect(chatTimeoutMs(none.ms)).toBe(35 * 60 * 1000);
+    // A client told nothing waits for the longest stage the product can have, an hour, plus the margin: a plain constant in app.ts that this keeps in step.
+    expect(LONGEST_POSSIBLE_STAGE_MS).toBe(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000);
+    expect(DEFAULT_CHAT_TIMEOUT_MS).toBe(chatTimeoutMs(LONGEST_POSSIBLE_STAGE_MS));
     expect(new AppClient("http://127.0.0.1:1").chatTimeoutMs).toBe(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000 + CHAT_TIMEOUT_MARGIN_MS);
 
     // The servers now load the checkout's .env files, so those count, in Next.js's order, below the environment.
     await writeFile(path.join(workdir, ".env"), "DESIGN_AGENT_TIMEOUT_SECONDS=600\n");
-    expect(designAgentDeadline({ root: workdir, mode: "prod", env: {} })).toEqual({ ms: 600_000, source: "DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env" });
+    expect(deadline({})).toEqual({ ms: 600_000, source: "DESIGN_AGENT_TIMEOUT_SECONDS from <project>/.env" });
     await writeFile(path.join(workdir, ".env.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=2400\n");
-    expect(designAgentDeadline({ root: workdir, mode: "prod", env: {} }).ms).toBe(2_400_000);
+    expect(deadline({}).ms).toBe(2_400_000);
     await writeFile(path.join(workdir, ".env.production.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=2700\n");
-    expect(designAgentDeadline({ root: workdir, mode: "prod", env: {} }).ms).toBe(2_700_000);
-    expect(designAgentDeadline({ root: workdir, mode: "dev", env: {} }).ms).toBe(2_400_000);
-    expect(designAgentDeadline({ root: workdir, mode: "prod", env: { DESIGN_AGENT_TIMEOUT_SECONDS: "3000" } })).toEqual({
+    expect(deadline({}).ms).toBe(2_700_000);
+    expect(deadline({}, "dev").ms).toBe(2_400_000);
+    expect(deadline({ DESIGN_AGENT_TIMEOUT_SECONDS: "3000" })).toEqual({
       ms: 3_000_000,
       source: "DESIGN_AGENT_TIMEOUT_SECONDS from the harness's environment",
     });
     // A value the product refuses stops no design early: the limit covers the product's maximum.
-    expect(designAgentDeadline({ root: workdir, mode: "prod", env: { DESIGN_AGENT_TIMEOUT_SECONDS: "soon" } }).ms).toBe(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000);
+    expect(deadline({ DESIGN_AGENT_TIMEOUT_SECONDS: "soon" }).ms).toBe(MAX_DESIGN_AGENT_TIMEOUT_SECONDS * 1000);
+    // As in Next.js, a defined name ends the search even when empty: the product reads it as its default, not as the files' 2700.
+    expect(deadline({ DESIGN_AGENT_TIMEOUT_SECONDS: "" })).toEqual({
+      ms: DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000,
+      source: "the product's default (DESIGN_AGENT_TIMEOUT_SECONDS is empty in the harness's environment)",
+    });
+    expect(deadline({ DESIGN_AGENT_TIMEOUT_SECONDS: "  " }).ms).toBe(DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000);
+    await writeFile(path.join(workdir, ".env.production.local"), "DESIGN_AGENT_TIMEOUT_SECONDS=\n");
+    expect(deadline({})).toEqual({
+      ms: DEFAULT_DESIGN_AGENT_TIMEOUT_SECONDS * 1000,
+      source: "the product's default (DESIGN_AGENT_TIMEOUT_SECONDS is empty in <project>/.env.production.local)",
+    });
   });
 });
 
 describe("acceptance harness: S7, the image service unavailable", () => {
-  const verdicts = (code: string, carousel: { slides: Slide[]; assets?: CarouselAsset[] }) =>
-    Object.fromEntries(checkUnavailableServiceStop({ code, message: "The image service is not available" }, carousel).map((c) => [c.name, c.verdict]));
+  const generation = "This request needs a newly generated image, and image generation is not set up on this machine. Nothing was changed; you can ask for a design without generated images.";
+  const editing = "This request needs one of your photos edited, and image editing is not set up on this machine. Nothing was changed; you can ask for a design that uses the photo as it is.";
+  const verdicts = (code: string, carousel: { slides: Slide[]; assets?: CarouselAsset[] }, message = generation, unavailable: string[] | null = null) =>
+    Object.fromEntries(checkUnavailableServiceStop({ code, message }, carousel, unavailable).map((c) => [c.name, c.verdict]));
   const slide = { id: "s1", html: "<div></div>" } as Slide;
 
-  it("passes a stop with capability_unavailable or image_failed when nothing changed", () => {
-    for (const code of ["capability_unavailable", "image_failed"]) {
-      const v = verdicts(code, { slides: [], assets: [] });
-      expect(v["stopped with a reason"]).toEqual({ pass: true, evidence: `${code}: The image service is not available` });
-      expect(v["nothing changed"]).toEqual({ pass: true, evidence: "0 slides, 0 assets" });
-    }
+  it("passes a stop with capability_unavailable or image_failed that names image generation or editing, when nothing changed", () => {
+    const v = verdicts("capability_unavailable", { slides: [], assets: [] });
+    expect(v["stopped with a reason"].pass).toBe(true);
+    expect(v["stopped with a reason"].evidence).toContain(`capability_unavailable: ${generation}`);
+    expect(v["nothing changed"]).toEqual({ pass: true, evidence: "0 slides, 0 assets" });
+    expect(verdicts("capability_unavailable", { slides: [] }, editing)["stopped with a reason"].pass).toBe(true);
+    // The image stage's own refusal, as the product words it.
+    const failed = "The image for slide 1 could not be made. The local image service is not running. Nothing was changed.";
+    expect(verdicts("image_failed", { slides: [], assets: [] }, failed)["stopped with a reason"].pass).toBe(true);
+    expect(verdicts("image_failed", { slides: [], assets: [] }, "The images for slides 1, 2 could not be made. Nothing was changed.")["stopped with a reason"].pass).toBe(true);
   });
 
-  it("fails any other stop, and a stop that changed the carousel", () => {
+  it("accepts the Director's unavailable list as the reason when the message does not name it", () => {
+    const vague = "This request needs something this machine cannot do yet. Nothing was changed.";
+    expect(verdicts("capability_unavailable", { slides: [] }, vague)["stopped with a reason"].pass).toBe(false);
+    for (const list of [["image-generation"], ["image-editing"], ["relighting", "image-generation"]]) {
+      const v = verdicts("capability_unavailable", { slides: [] }, vague, list)["stopped with a reason"];
+      expect(v.pass, list.join()).toBe(true);
+      expect(v.evidence).toContain("the Director's unavailable list names image work");
+    }
+    expect(verdicts("capability_unavailable", { slides: [] }, vague, ["relighting", "object-removal"])["stopped with a reason"].pass).toBe(false);
+  });
+
+  it("fails any other stop, a stop for another reason, and a stop that changed the carousel", () => {
     expect(verdicts("plan_failed", { slides: [] })["stopped with a reason"].pass).toBe(false);
+    // The right code for the wrong reason: another missing capability.
+    const removal = "Only the background of a photo can be replaced. Removing things from a photo, changing the light on a person and putting a person into another photo are not available. Nothing was changed.";
+    expect(verdicts("capability_unavailable", { slides: [] }, removal, ["object-removal"])["stopped with a reason"].pass).toBe(false);
+    expect(verdicts("image_failed", { slides: [] }, "Something went wrong. Nothing was changed.")["stopped with a reason"].pass).toBe(false);
     expect(verdicts("capability_unavailable", { slides: [slide] })["nothing changed"]).toEqual({ pass: false, evidence: "1 slides, 0 assets" });
     expect(verdicts("image_failed", { slides: [], assets: [{ id: "a1" } as CarouselAsset] })["nothing changed"].pass).toBe(false);
   });

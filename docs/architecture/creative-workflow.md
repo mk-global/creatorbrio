@@ -197,27 +197,166 @@ It never changes a design, and a test fails only when the harness itself fails.
 It costs real model usage and is not part of `npm test`.
 A paid run refuses to start in the repository's primary worktree: the servers it starts read and write that checkout's `data/` folder, which in the primary worktree holds real carousels, brands and uploads.
 Run it from a dedicated linked worktree (`git worktree add <folder> -b <branch>`), which has its own `data/`.
-The check compares `git rev-parse --git-dir` with `--git-common-dir`, and a dry run (`EVAL_DRY=1`) is not subject to it.
+The check compares `git rev-parse --git-dir` with `--git-common-dir`.
+A dry run (`EVAL_DRY=1`) is not refused by it, and says that a paid run would be.
 A linked worktree whose `data/` or `public/uploads` is a link that resolves outside the checkout is refused too, since the servers would reach the same live data through it.
-Build first, then run it with `npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts`, selecting scenarios with `EVAL_ONLY`; `EVAL_MODE=dev` runs it against `next dev` instead of a production build.
+Build first, then run it with `npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts`, selecting scenarios with `EVAL_ONLY`.
+`EVAL_MODE=dev` is for dry runs only: a paid run under `next dev` is refused, as described below.
 Scenarios that generate images need the local image service, which may decline work while the machine is low on free memory, a review is running or other AI work is running.
 Before each of them the harness asks the service's read-only health check whether it would take work, and waits for up to 10 minutes (`EVAL_ADMISSION_WAIT_MS`); a scenario the service does not admit in time is recorded as not run, before any planning cost.
 `EVAL_IMAGE_SERVICE_URL` (a loopback address, `http://127.0.0.1:8791` by default) is the service the harness asks, and the harness gives the same address to every server it starts except the one for the unavailable-service scenario, so an `IMAGE_SERVICE_URL` in `.env.local` does not apply to these runs.
 `EVAL_RESTART_SIGNAL` (`SIGKILL` by default, `SIGINT` or `SIGTERM`) sets how the restart scenario stops the server.
-`SIGKILL` is a crash, which tests restart recovery under both `next dev` and a production build.
-A graceful signal under `next dev` closes open requests, so the run is cancelled rather than cut off, and the scenario records that restart recovery was not exercised.
-A production build keeps the request open until the harness kills the process 5 seconds later.
-The unavailable-service scenario passes "stopped with a reason" when the run stops with `capability_unavailable` (the Director found the service unreachable while planning) or `image_failed` (the image stage could not reach it), and fails it for any other outcome; either way it still requires that no slide or asset changed.
+`SIGKILL` is a crash, which tests restart recovery.
+A paid run always uses a production build, because a paid run under `next dev` is refused, so a graceful signal keeps the request open until the harness kills the process 5 seconds later.
+The unavailable-service scenario has two branches.
+When the run stops, it passes "stopped with a reason" only when two things hold.
+The code is `capability_unavailable` (the Director found the service unreachable while planning) or `image_failed` (the image stage could not reach it).
+The reason names image generation or editing, in the stop message or in the Director's list of what is unavailable, so a stop for another reason fails it.
+It passes "nothing changed" only when no slide or asset changed.
+When the run does not stop, it passes "no silent fallback" only if it completed and its plan had no required image, and fails otherwise.
 Raw results go to `eval/results/`, which is not committed; the service's reason codes appear only there, never in the summary.
+Every stored path has the home folder that `HOME` names, and the account's own home folder when it is another, replaced by `~`.
+results.json records only whether `HOME` differs from the account's home folder, never either path.
 
 Each server the harness starts gets an explicit `NODE_ENV` for its mode, `production` for `next start` and `development` for `next dev`, so it loads the checkout's `.env` files, `.env.local` among them, as the app does in normal use.
 The test runner's own `NODE_ENV=test` made Next.js skip `.env.local`, so before #232 the servers never saw its settings.
-The servers also get `CLAUDE_CLI_PATH` explicitly, which takes precedence over every `.env` file: the harness's own `CLAUDE_CLI_PATH` when set (the judge and the Design-Agent-only arm follow it too), else the one the `.env` files set, else what the app's own discovery finds.
-Before anything starts, the harness runs `--version` (no model is involved) on the CLI the servers get, the one the Design-Agent-only arm spawns and the one the judge spawns, and refuses a paid run when their real paths or versions differ, or when any is missing, before the ledger reservation and so before any spend.
-A dry run prints the same check, matched or not, instead of refusing.
+The harness starts each server with the Node.js that runs it and Next.js's own script from the checkout's `node_modules` (`serverLaunch` in `eval/acceptance/server.ts`), never through `npx` or `npm`.
+Those read the user's and the project's npm configuration, such as an `.npmrc` `node-options` or `npm_config_*`, and put what they find in the server's environment, which neither the settings loader nor the Design-Agent-only arm would see.
+Npm therefore adds nothing to a server's environment at its start.
+What npm put in the harness's own environment, when the harness was itself started through `npx` or `npm`, passes on like any other variable of it and is recorded by name.
+A server is therefore spawned with the harness's own environment minus what `cleanEnv` strips, plus `NODE_ENV` for its mode, `CLAUDE_CLI_PATH`, its image service address and the per-call caps.
+The loader's child process is given that environment, and the arm gets what the loader leaves.
+The arm's environment differs from a running server's by what Next.js itself adds to the server and, for the one server given the unused image service address (the unavailable-service scenario's), by that address.
+Seven of the names Next.js adds were measured in a started `next start` server of the installed Next.js (16.4.5), by listing its process environment against the one it was spawned with: `NEXT_DEPLOYMENT_ID`, `NEXT_PRIVATE_START_TIME`, `NEXT_RUNTIME`, `PORT`, `RUST_MIN_STACK`, `TURBOPACK` and `__NEXT_PRIVATE_ORIGIN`.
+`__NEXT_PROCESSED_ENV` is one more, which `@next/env` sets once it has loaded the files; it was read in that code and not seen in the measurement, and the loader's result leaves it out with every other `__NEXT_` name.
+The list is what was found, not a promise that nothing else is added: `next dev` adds more, which is one more reason a paid dev run is refused.
+Because the servers now load those files, the harness takes what they add from Next.js's own loader.
+`loadEnvConfig` from `@next/env` runs in a child process that is given the environment a server is spawned with.
+The names and values it leaves are the ones the servers and the Design-Agent-only arm see, for `next start` and `next dev` alike, with `$VAR` expansion as Next.js applies it.
+No parser of the harness's own decides what a file means.
+results.json records under `serverEnvFiles` the names, never the values, of every variable the files add beyond the harness's environment (results.json is never committed), and a paid run is refused before the ledger reservation when one is not on the allowlist (`SERVER_ENV_ALLOWLIST` in `eval/acceptance/server-env.ts`).
+The allowlist is a list of exact names, each with the reason it is there, and not a pattern.
+It holds `CLAUDE_CLI_PATH` and `DISABLE_AUTOUPDATER`.
+It holds the four names `src/` reads (`DESIGN_AGENT_MAX_BUDGET_USD`, `DESIGN_AGENT_TIMEOUT_SECONDS`, `DESIGN_AGENT_INACTIVITY_SECONDS` and `DIRECTOR_MAX_BUDGET_USD`) and `IMAGE_SERVICE_URL`, which the harness overrides.
+It holds the model names `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`, which the record fingerprints by name and value hash.
+A file's `CLAUDE_CLI_PATH` is resolved to a real path and pinned by the harness, which gives that path to the servers explicitly, so they never read the file's value directly.
+Every other name is refused, including URL, socket, gateway, model-catalogue and delegated-session variables, the provider switches `CLAUDE_CODE_USE_*`, the effort level `CLAUDE_CODE_EFFORT_LEVEL`, and the token limits `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and `MAX_THINKING_TOKENS`.
+A URL, socket, gateway, catalogue or session variable could send a call to an endpoint the record does not show.
+The token limits and the effort level are refused in a `.env` file because each could let one call run past the allowance the run reserved.
+`src/` never reads the effort level, and it can raise one turn's thinking.
+A name that merely starts like an allowed one (`DESIGN_AGENT_ANYTHING`) is refused too.
+The harness also fails closed on what it cannot account for.
+It refuses a paid run when any non-blank, non-comment line of a loaded file is not accounted for by the loader's result: a `NAME:value` line the loader does not read, a line a quoted value swallowed (a value that ends in a backslash can swallow a following `NODE_OPTIONS` line, which then sets nothing) and a file the loader could not read.
+A byte-order mark, a name and its `=` on separate lines, the `NAME: value` form and an expansion are read as the loader reads them, so each is loaded and checked by name.
+Only the line numbers of unaccounted lines are recorded, never their content.
+As in Next.js, a variable the harness's own environment defines is not added by a file, even when its value is empty.
+A dry run prints the result instead of refusing.
+It names the allowlist's own names that the files add, with their file, and only counts any other name, as summary.md does, so a name from the operator's machine is not printed.
+A paid run's refusal, in the operator's own terminal, names the variables to remove.
+The refusal says only what is true: an unknown name is refused rather than allowed, and it can be allowed by adding it to `SERVER_ENV_ALLOWLIST` after review.
+The harness's own environment is recorded separately, and as exactly as it is reviewed.
+It reaches every server, judge and arm unchanged apart from what `cleanEnv` strips (`CLAUDECODE`, `CLAUDE_CODE_*`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CLI_PATH` and `IMAGE_SERVICE_URL`), so what it holds could change where a model call goes.
+`HARMLESS_HARNESS_NAMES` in `eval/acceptance/harness-env.ts` is a list of exact names, each group with its reason: the user, location, locale and terminal variables, the harness's own `EVAL_*` settings, the caps and limits it sets, and the variables a GitHub Actions runner sets, but not the tokens a workflow adds.
+The CLI reads `GITHUB_ACTIONS` and some of the other runner variables for its subprocess environment scrubbing and its telemetry, but none of them carries an endpoint, credential, proxy, configuration folder, preload or token limit.
+results.json records under `harnessEnvironment.unreviewedNames` every other variable the harness passes on, by name only and never by value.
+A name can carry an organization, project or machine detail, so the full list stays in results.json, which is never committed.
+summary.md and a dry run name none of them.
+They show the count of those names, and how many of them have a name that looks like an endpoint, socket, token or proxy variable (or is `NODE_OPTIONS`) and how many have a name that contains `MODEL`, in either case.
+When either count is not zero, summary.md puts the counts in a banner line under its commit line.
+That includes proxy, endpoint, socket, header, credential and configuration-folder variables of any name (`ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_CUSTOM_HEADERS`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `GH_TOKEN` and the like), `NODE_OPTIONS`, and the `npm_*` and `INIT_CWD` variables that npm sets when the harness is started through `npx` or `npm`.
+The model, effort and thinking variables are not in that list, because they are recorded with more than a name: `inheritedConfiguration.environment.received` holds the name and the value's hash of each one the servers receive, `strippedByHarness` those the harness removed from the invoking shell, and `envFiles` those the `.env` files add.
+No value of any other variable is recorded, so a change in the value of a recorded variable is not seen, only its presence.
+A paid run is refused when the harness's own environment sets any of four names: `MAX_THINKING_TOKENS`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` or `CLAUDE_CODE_EFFORT_LEVEL`, as it is for a `.env` file.
+Each could let one call think, write or read past the allowance the run reserved.
+The refusal holds whether the harness would pass the name on (`MAX_THINKING_TOKENS`) or strip it (the `CLAUDE_CODE_*` ones).
+Those four names and the `.env` allowlist are all that is refused.
+The CLI's other variables, for example `ANTHROPIC_BETAS`, `MAX_MCP_OUTPUT_TOKENS` and `BASH_MAX_OUTPUT_LENGTH`, are recorded by name only, in `harnessEnvironment.unreviewedNames`, and not refused.
+The Design Agent and the Design-Agent-only arm run without `--setting-sources`, so they load the CLI's settings files, which can set the model, the effort, the thinking, an `env` block and an `apiKeyHelper`.
+Managed settings apply to every role, the Director and the judge included, because the CLI adds them whatever `--setting-sources` says.
+The harness neither refuses nor overrides any of these, so a run is not shown to be free of a setting that could raise a call's thinking, output or reads past the reserved allowance.
+It records the settings files' key names instead, as described below.
+Because `CLAUDE_CONFIG_DIR` cannot come from a `.env` file, the servers' configuration folder is the harness's own, and the session transcripts are read from it.
+The pinned CLI costs a model its price table lacks at the rate of its main model, notes that only in an analytics event and a flag of its cost state, and reports the cost like any other, so a call on such a model can be recorded at a cost that is not its own, and the per-call caps follow the cost the CLI reports.
+That was read in the code of the CLI the baseline pins, 2.1.328, and the flag is not in the result event the harness reads.
+The CLI's table cannot be read from outside, so the harness cannot see a model the table lacks, and flags what it can see.
+A run is marked `modelPricing.unverified` in results.json when any variable whose name contains `MODEL`, in either case, reaches the servers, the Design-Agent-only arm or the judges, from the harness's environment or the `.env` files, with the variables' names and never their values.
+The test is applied to every name those processes receive, not to a list of names chosen in advance.
+summary.md then carries a banner line and a line giving how many such variables there are, and a dry run prints the same count.
+The names are in results.json under `modelPricing.selectionVariables`, which is never committed, and are not printed anywhere else.
+A run with no such variable leaves the choice to the CLI's own defaults and settings files.
+A model chosen in a settings file is not seen as a model: the files are fingerprinted by hash and their key names are recorded, so a `model` key is shown but not its value.
+Managed settings can also set `modelPricing`, which replaces the price the CLI uses for a model and scales the cost it reports, for every role.
+The record names a `modelPricing` key in a managed settings file and never its value, so the settings banner flags it, and the per-call caps follow the cost the CLI then reports.
+When Next.js's loader cannot be run, the run is refused and the record gives only the class of the failure (a timeout, the exit code, a module that was not found, output that was not valid, or that it did not run), never the failure's text, which can hold a path or an account name.
+The refusal then says to reinstall the dependencies (`npm ci`), and for a file the loader could not read it says to correct or remove that file, and not to remove a variable.
+The loaded files are hashed (SHA-256 of each file's bytes, or absent) when they are checked, before the ledger reservation, and checked again at each server start and at the end of the run, each result recorded under `serverEnvFiles.rechecks`.
+A server does not start on files that changed, appeared or were removed.
+Any difference sets `serverEnvFiles.changed`, which summary.md reports as "Not comparable", and a later clean check does not clear it.
+A paid run with `EVAL_MODE=dev` is refused before the ledger reservation: `next dev` reloads the `.env` files into a server that is already running, so an edit made during the run would reach later model calls before the next check, while `next start` reads them once, when it starts.
+A dry run in dev mode still prints the plan, and says that a paid run would be refused.
+
+The CLI's settings files are recorded by key name before the ledger reservation, and are neither refused nor overridden.
+The Design Agent and the Design-Agent-only arm load the user, project and project-local files, and managed settings apply to every role.
+`eval/acceptance/settings-keys.ts` lists the files from the code of the pinned CLI (2.1.328), found in the text of the installed binary.
+They are the user folder's `settings.json` (the user folder is `CLAUDE_CONFIG_DIR`, else `~/.claude`), the checkout's `.claude/settings.json` and `.claude/settings.local.json`, and the managed settings file.
+The managed file is `managed-settings.json` in `/Library/Application Support/ClaudeCode` on macOS, `/etc/claude-code` on Linux and `C:\Program Files\ClaudeCode` on Windows, together with the `.json` files of its `managed-settings.d` folder.
+On macOS the managed preferences property lists (`/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist` and `/Library/Managed Preferences/com.anthropic.claudecode.plist`) are recorded by existence and hash only, because they are not JSON.
+When the checkout is a linked worktree, the CLI may also take local settings from the repository's main worktree (its canonical Git root, subject to an ownership check of its own that the harness does not repeat), so that worktree's `.claude/settings.local.json` is recorded as `project-local-main`.
+That version reads no `settings.local.json` in the user folder, so none is recorded for it.
+Server-managed settings and the Windows registry are not files and are not read, so a key set there is not seen.
+A different pinned CLI may read other files, so the record says which version the list was read from, and the banner says so when the pinned CLI is another one.
+For each file, results.json records under `settingsKeys` its label (`user`, `project`, `project-local`, `project-local-main`, `managed`, `managed-drop-in/<name>`, `managed-mdm-user` or `managed-mdm-device`, never a path), whether it exists, its state, the SHA-256 of its bytes, its top-level key names and the key names under `env`.
+results.json is never committed, so it holds every recorded name, a drop-in file's name included.
+A file that is not a JSON object is recorded as unparseable with its hash, a file that cannot be read as unreadable, and the keys of neither are shown.
+No value is kept: a file is parsed in memory to take its key names, and a name that is not a plain name is only counted.
+summary.md and a dry run name no settings file, key or variable that came from the operator's machine.
+They name only strings defined in the harness's own source: the fixed file labels (`user`, `project`, `project-local`, `project-local-main`, `managed`, `managed-mdm-user` and `managed-mdm-device`) and the CLI's own top-level key names `model`, `effortLevel`, `alwaysThinkingEnabled`, `env`, `apiKeyHelper` and `modelPricing`.
+Every other name is counted: a key whose name contains `model`, `effort`, `think` or `token` in either case but is not one of those six, any other key, every name under `env`, and each file in the managed `managed-settings.d` folder, which is reported as a number of managed drop-in files and never by its file name.
+A banner line gives, for each label, the CLI's own key names present in it and the number of other keys whose name contains one of those words; a second line gives the sources whose keys are not shown.
+A dry run prints one line per label with the same names and counts, and the number of names under `env`.
+
+The harness resolves one CLI once: its own `CLAUDE_CLI_PATH`, else the one the `.env` files set (as the loader leaves it), else what the app's own discovery finds, and takes its real path (links resolved, a relative path taken from the checkout).
+That real path is given to every server as `CLAUDE_CLI_PATH`, which takes precedence over every `.env` file, and the harness sets its own `CLAUDE_CLI_PATH` to it before it spawns anything, so the judge and the Design-Agent-only arm spawn exactly that file and never look for another.
+Every role shares that one pinned path by design, and `eval/acceptance/cli.ts` owns its resolution, its checks and the proofs of its version.
+The cross-check below compares the roles' uses all the same, so a future change that gives one role another CLI or version is refused before any spend instead of accepted because it used to be impossible.
+A CLI that only the app's discovery found is never called pinned: a paid run is refused before the ledger reservation, and so before any spend, unless `CLAUDE_CLI_PATH` names the CLI in the harness's environment or a `.env` file.
+Before anything starts, the harness reads the file's size and SHA-256 and runs `--version` (no model is involved) on the CLI the servers get, the one the Design-Agent-only arm spawns and the one the judge spawns, and refuses a paid run when their real paths or versions differ, when any is missing, or when the file cannot be read.
+The refusal says to run the harness with `CLAUDE_CLI_PATH=<one installed CLI>` in its environment.
+A dry run prints the same check and where the path came from, matched or not, instead of refusing.
+The file's existence, size, SHA-256 and `--version` are checked again at each server start and at the end of the run, and each result is recorded in results.json under `environment.cli.pin.rechecks`.
+A server does not start on a file that has changed.
+Any difference sets `environment.cli.pin.changed`, which summary.md reports as "Not comparable", and a later clean check does not clear it, so a changed CLI is never silently accepted.
+After the first refused server start the harness starts no more: each later item is recorded as not run when its test begins, before any stage, so settlement charges it nothing.
+An item whose server start was refused before it made any model call is recorded the same way, as not run and charged nothing, while a refusal after its own chats is a harness error and is charged in full, so the ledger never under-counts what started.
+The test still fails, and summary.md says why.
+
+The Design-Agent-only arm runs under the same effective settings as the Design Agent a server spawns.
+Its CLI gets the environment the loader leaves a server, value for value, so the model, effort and thinking settings of a server's Design Agent reach it too.
+It gets the same cap, absolute deadline and inactivity limit, read with the product's own parser.
+Its process is stopped as the chat route stops the Design Agent: output resets the inactivity limit and never moves the deadline, the first limit to fire is the only one, and a CLI that ignores the stop is killed after a short grace.
+The arm's session id is taken from the `system` init event as well as the result event, so an arm run that was stopped before its result is still checked for its CLI version.
+An arm run that did not complete (it timed out, stalled or failed) leaves an unfinished set, so its set is exported but neither scored nor compared: summary.md marks its pairwise row "NOT JUDGED" with the stop, and the arm is still charged.
+results.json records both arms' effective limits under `environment.limits`, with the chat stream's idle limit and each plan item's test timeout.
+These limits, the environment and the pinned CLI are a break in comparability with any batch recorded before #232: until then the arm ran under its own limits and the harness's environment, and the servers ran the auto-updated CLI without the checkout's `.env.local`, so results from the two periods are not compared.
+
 The chat request uses `node:http` rather than `fetch`, whose default body timeout of 300 seconds between chunks cut off designs whose stream was quiet for longer.
-It waits for the response headers, and then between chunks, for the Design Agent's absolute deadline plus five minutes, so only the product's own limits stop a design.
-The deadline is `DESIGN_AGENT_TIMEOUT_SECONDS` as the servers see it (the harness's environment, then the `.env` files), or the product's default of 1800 seconds; a value the product would refuse is read as the product's maximum, and a dry run prints the limit it will use.
+It waits for the response headers, and then between chunks, for the largest stage limit plus five minutes.
+The stage limits are the Director's 120 seconds with the 30 seconds for reading linked pages, the image stage's 12 minutes and the Design Agent's absolute deadline, so a short deadline cannot leave a quiet image stage cut off.
+The deadline is `DESIGN_AGENT_TIMEOUT_SECONDS` as the servers see it (the harness's environment, then the `.env` files; a defined but empty value is the product's default, as in Next.js), or the product's default of 1800 seconds.
+A paid run is refused before the reservation when the product would refuse the Design Agent's cap, deadline or inactivity limit, and a dry run prints the limits it will use.
+Each plan item's Vitest timeout is not a fixed hour: it is the sum of the item's stage limits plus a ten-minute margin for what has no limit of its own.
+The parts are:
+- the server starts (each waits up to its ready limit and two stop graces);
+- the waits for the image service (`EVAL_ADMISSION_WAIT_MS` each);
+- the observations of the image service after a stop (60 seconds each);
+- the Director (its 120 seconds, the 30 seconds for reading linked pages and the 10-second stop allowance);
+- the image stage (12 minutes for each run and each retry);
+- the Design Agent's deadline with its own 10-second stop allowance;
+- the judges (6 minutes each);
+- when compared, the Design-Agent-only arm with its stop allowance, and its judges.
+The 10-second stop allowance per call covers the product's 5-second grace before it force-kills a call that ignores a stop, and the margin covers the PNG export, copying the slides for the judges, waiting for a run to go idle and the checks.
+A plan with an item that no Node timer can wait for is refused, and the dry run prints each item's timeout.
+Only the product's own limits therefore stop a design: the harness's limits, the chat stream's idle limit and the item's timeout sit above them.
 
 `EVAL_REPEAT=n` (1 by default) runs every selected scenario n times, repetition by repetition in the same order, and each run carries a pairing key (`S1#2` is the second repetition of S1), so two runs of the same plan can be compared run for run.
 The summary reports, per scenario, how many runs completed out of those made and how many checks passed out of those run, and then the sample size, median, minimum and maximum of the judge's scores, latency, token usage and cost; results.json keeps every run's raw record.
@@ -256,18 +395,29 @@ Keep one ledger for the whole M1 effort, outside every checkout and worktree, so
 `node eval/acceptance/ledger.ts show` prints the ledger and the remaining allowance, and `node eval/acceptance/ledger.ts add --usd <amount> --note <text> [--run <run id>]` records earlier spend or settles a killed run (Node 22.18 or later; older versions need `--experimental-strip-types`).
 `EVAL_DRY=1` prints the plan, the per-call limits, the worst case, the remaining allowance and the hold-back, starting no server and no model.
 
-Each run records the CLI version the servers and the harness use, with the servers' path and where it came from, the result of the CLI pin check, the models seen (the Design Agent's from the CLI's session transcripts, since the server log does not name it; the judge's and the Design-Agent-only arm's from their result events; the Director's are not recorded), the SHA-256 of every harness file, the commit, and a fingerprint of the configuration the Design Agent's CLI inherits.
+Each run records the CLI version the servers and the harness use, with the servers' path and where it came from, the result of the CLI pin check and of its re-checks, the models seen (the Design Agent's from the CLI's session transcripts, since the server log does not name it; the judge's and the Design-Agent-only arm's from their result events; the Director's are not recorded), the SHA-256 of every harness file, the commit, and a fingerprint of the configuration the Design Agent's CLI inherits.
 The fingerprint holds names, sizes and hashes only, never contents:
 
 - the user settings, instructions and rules, managed settings, and the project's instructions, settings, rules and MCP file, by redacted label, size and SHA-256;
 - the `skills`, `agents`, `commands`, `plugins`, `hooks` and `output-styles` trees of `~/.claude` (or `$CLAUDE_CONFIG_DIR`) and the `skills`, `agents` and `commands` trees of the project's `.claude/`, by relative file name, size and SHA-256 per file, and one combined hash per tree;
-- the project's auto-memory folder, `<config dir>/projects/<project folder>/memory`, by file name, size and SHA-256 only, for the working directory and for the repository's main worktree (which linked worktrees may share), located by the CLI's project-folder naming convention; the session transcripts beside it are never read;
+- the project's auto-memory folder, `<config dir>/projects/<project folder>/memory`, by file name, size and SHA-256 only, for the working directory and for the repository's main worktree (which linked worktrees may share), located by the CLI's project-folder naming convention; the session transcripts beside it are not part of this fingerprint (this run's own sessions' transcripts are opened separately, below, for their model names and `version` fields only);
 - the MCP server names in the user scope and the project's entry of `~/.claude.json`, and never a command, argument, environment value or URL;
-- the names and the SHA-256 of the values of the model, effort and thinking variables (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `MAX_THINKING_TOKENS`, `CLAUDE_EFFORT` and the other Claude Code variables for models, effort, thinking and output tokens) in the environment the servers receive, and in the checkout's `.env` files the servers load.
+- the names and the SHA-256 of the values of the model, effort and thinking variables (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `MAX_THINKING_TOKENS`, `CLAUDE_EFFORT` and the other Claude Code variables for models, effort, thinking and output tokens) in the environment the servers receive, and among what the checkout's `.env` files add, as Next.js's loader leaves it.
 
-After the run, results.json records under `environment.cli.sessions` the CLI version each Design Agent session actually ran, read from the `version` field of its session transcript (`<config dir>/projects/<project folder>/<session id>.jsonl`, the transcripts the models are read from; nothing else in them is read).
-Each session is marked `matches`, `differs` (any recorded version is not the configured CLI's) or `unknown` (no transcript, or no version in it), a chat that reached the design stage without a session id is counted, and `mismatch` flags the run when any session differs; summary.md states the counts and marks a mismatch.
-The Director's version cannot be recorded this way: it runs with `--no-session-persistence`, so its CLI writes no transcript, and the record says so; it is spawned by the same server from the same `CLAUDE_CLI_PATH` as the Design Agent.
+After the run, results.json records under `environment.cli.sessions` the CLI version each Design Agent session actually ran: the Director arm's chats and, with their own role (`design-agent-only`), the Design-Agent-only arm's runs, whose `session_id` comes from the CLI's result event or, for a run stopped before one, from its `system` init event.
+Each version is read from the `version` field of the session's transcript (`<config dir>/projects/<project folder>/<session id>.jsonl`, the transcripts the models are read from); the readers take only the model names and the `version` field from those files, and keep nothing else.
+Each session is marked `matches`, `differs` (any recorded version is not the configured CLI's) or `unknown`.
+`unknown` means no transcript, no version in it, or a transcript that could not be read, which is recorded as the fixed string "transcript unreadable" for that file alone.
+A Design Agent run that reached the design stage without a session id, and an arm run without one, are counted.
+`mismatch` flags the run when any session differs.
+A run without a mismatch is still not verified when any session is `unknown` or any run has no session id: `unverified` flags that, and summary.md marks both flags.
+The Director's version cannot be read from a transcript: it runs with `--no-session-persistence`, so its CLI writes none.
+It is shown instead by the resolved pin and the end-of-run file check: its server is given the one real CLI file as `CLAUDE_CLI_PATH`, and that file's size, SHA-256 and `--version` are unchanged at every server start and at the end of the run.
+results.json records this under `environment.cli.sessions.director`, where `proven` is true only when the pin held and the end-of-run check was made.
+That is how the baseline shows the Director's CLI version: by the pin and the file check, not by a transcript.
+The judge keeps no transcript either, since it runs with `--no-session-persistence` as well, so only the pin shows its version: the harness spawns the one real CLI file for it.
+results.json records this under `environment.cli.sessions.judge`, with its own `proven` on the same condition and a `method` that says so.
+summary.md carries one banner line under its commit line when the pinned CLI or the `.env` files changed during the run, when a variable chose a model whose price the CLI's table may lack, when a session ran another CLI version or one cannot be shown, or when the Director's or the judge's version is not shown by the pin.
 
 Recorded limitations: the harness's `cleanEnv` strips `CLAUDE_CODE_*` and `CLAUDE_EFFORT`, which `/start` passes through, so the environment of a baseline launched by the harness can differ from the app's normal launch.
 The record therefore also lists, by name and value hash, the model-related variables it removed from the invoking shell.

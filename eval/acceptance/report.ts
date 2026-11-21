@@ -2,11 +2,13 @@ import type { ChatResult, ServerCosts } from "./app";
 import type { BaselineResult } from "./baseline";
 import type { Preflight, RunPlan, Settlement } from "./budget";
 import { redactText, type EnvironmentRecord, type Redaction } from "./environment";
+import { countNamesByClass, describeNameClasses } from "./harness-env";
 import type { AdmissionResult, BusyObservation, HealthSample } from "./image-service";
 import type { LedgerEntry } from "./ledger";
 import type { PlannedAsset, PlanSummary, StagedSnapshot } from "./verify";
 import { MIN_READ_TURNS, OUTCOME_DIMENSIONS, type Arm, type JudgeCall, type OutcomeVerdict, type PairwiseVerdict, type RevisionVerdict } from "./judge";
 import { renderBaselineSections } from "./report-baseline";
+import { settingsBannerLines } from "./settings-keys";
 import { requestMs } from "./stats";
 import type { ScenarioId } from "./scenarios";
 
@@ -111,6 +113,13 @@ export interface ComparisonRecord {
   pairwise: { mapping: { A: Arm; B: Arm }; winner: Arm | "tie" | null; result: JudgeCall<PairwiseVerdict> } | null;
   /** Why no comparison was made when that is a legitimate outcome, such as a blocked Director arm. */
   skipped: string | null;
+  /**
+   * Why the Design-Agent-only arm's set was exported but not judged: the arm
+   * did not complete (it timed out or stalled), so its set is not a finished
+   * design and a pairwise judgment of it would compare a stop with a design.
+   * Unlike `skipped`, the arm ran and is charged.
+   */
+  notJudged: string | null;
   harnessError: string | null;
   /** The comparison returned or failed; false while it runs and after a test timeout. */
   finished: boolean;
@@ -203,12 +212,64 @@ export function totals(results: RunResults) {
   return { director, design, baseline, judges, all: director + design + baseline + judges };
 }
 
+/**
+ * What makes a run's evidence not comparable or not fully verified, in words,
+ * for the banner under summary.md's commit line: the pinned CLI or the `.env`
+ * files changed during the run, a variable chose a model whose price the CLI's
+ * table may lack, a session ran another CLI version or one cannot be shown, or
+ * the Director's or judge's version is not shown by the pin. Nothing before
+ * the environment is recorded, and an empty list when everything held.
+ */
+export function comparabilityFlags(env: EnvironmentRecord | null): string[] {
+  if (!env) return [];
+  const flags: string[] = [];
+  if (env.cli.pin.changed) flags.push("the pinned CLI changed during the run");
+  if (env.serverEnvFiles.changed) flags.push("the servers' .env files changed during the run");
+  if (env.modelPricing.unverified) flags.push("a variable whose name contains MODEL reached the run, so a model it chose may not be in the CLI's price table");
+  const sv = env.cli.sessions;
+  if (!sv) flags.push("the CLI versions of the sessions were not recorded");
+  else {
+    if (sv.mismatch) flags.push("a session ran a CLI version other than the configured one");
+    if (sv.unverified) flags.push("a session's CLI version is unknown or a run has no session id");
+    if (!sv.director.proven) flags.push("the Director's CLI version is not shown by the pin");
+    if (!sv.judge.proven) flags.push("the judge's CLI version is not shown by the pin");
+  }
+  return flags;
+}
+
+/**
+ * The banner lines of what a reader of summary.md should see about the
+ * environment, each on its own line under the commit line and none holding a
+ * value or a name from the operator's machine: the counts, by class, of the
+ * harness's own environment's variables that can point a call elsewhere,
+ * change how its process starts or choose a model (a name can carry an
+ * organization or machine detail, so none is printed), and the settings keys
+ * that can change a model call or could not be read (the CLI's own key names
+ * from a fixed list, and counts; the file names of managed drop-in files are
+ * counted too). `results.json` holds the names.
+ */
+export function environmentBannerLines(env: EnvironmentRecord | null): string[] {
+  if (!env) return [];
+  const lines: string[] = [];
+  const classes = countNamesByClass(env.harnessEnvironment.unreviewedNames);
+  if (classes.endpointLike > 0 || classes.namesModel > 0) {
+    lines.push(
+      `**Of the ${classes.total} variable(s) of the harness's own environment that are not reviewed as harmless, ${describeNameClasses(classes)} (such a variable can point a call elsewhere, change how its process starts or choose a model); the names are in results.json only, never committed.**`
+    );
+  }
+  for (const line of settingsBannerLines(env.settingsKeys)) lines.push(`**${line}**`);
+  return lines;
+}
+
 export function renderSummary(results: RunResults, redaction?: Redaction): string {
   const lines: string[] = [];
   const t = totals(results);
   lines.push(`# Creative run acceptance results`);
   lines.push("");
   lines.push(`Run started ${results.startedAt} against commit \`${results.commit}\` in ${results.mode} mode.`);
+  const flags = comparabilityFlags(results.environment);
+  if (flags.length) lines.push(`**Not comparable or not fully verified:** ${flags.join("; ")}. The Environment section says which.`);
+  lines.push(...environmentBannerLines(results.environment));
   lines.push(`Harness wall time ${s(results.wallMs)} s (everything the harness did, including judging, export and waits; request latency is reported separately).`);
   lines.push(`Measured model spend ${usd(t.all)} from calls that reported a cost (Director ${usd(t.director)}, design ${usd(t.design)}, Design-Agent-only baseline ${usd(t.baseline)}, judges ${usd(t.judges)}); a call that reported none is counted as 0 here and charged at its per-call limit in the ledger settlement below.`);
   lines.push(`Costs come from the server log and the CLI result events; image generation is local and has no API cost.`);
@@ -292,6 +353,10 @@ export function renderSummary(results: RunResults, redaction?: Redaction): strin
       }
       if (c.harnessError) {
         lines.push(`| ${c.key} | - | ERROR | - | - | - | - | - | - | ${cell(c.harnessError)} |`);
+        continue;
+      }
+      if (c.notJudged) {
+        lines.push(`| ${c.key} | - | NOT JUDGED | - | - | - | ${c.baselineExport?.pngs ?? "-"} | ${usd(c.baseline?.costUsd)} | - | ${cell(c.notJudged)} |`);
         continue;
       }
       const p = c.pairwise;

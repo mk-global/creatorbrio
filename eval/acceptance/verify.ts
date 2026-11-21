@@ -217,7 +217,7 @@ export async function checkExportFiles(files: string[], aspectRatio: AspectRatio
 }
 
 // ---------------------------------------------------------------------------
-// Reuse of staged images by a retry.
+// S7: the image service unavailable.
 
 /**
  * The codes with which a run may stop, with a reason, when the image service
@@ -227,20 +227,40 @@ export async function checkExportFiles(files: string[], aspectRatio: AspectRatio
  */
 export const UNAVAILABLE_SERVICE_STOPS: readonly string[] = ["image_failed", "capability_unavailable"];
 
+/** The Director's names for what S7's request needs and this machine lacks: generating or editing an image. */
+const IMAGE_CAPABILITIES: readonly string[] = ["image-generation", "image-editing"];
+
 /**
- * S7's checks for a run that stopped: it stopped with one of those reasons,
- * and nothing changed on the carousel.
+ * Words in the product's stop messages that name image work: "image
+ * generation is not set up", "image editing is not set up", "the local image
+ * service is not running", "the image for slide 1 could not be made".
+ */
+const NAMES_IMAGE_WORK = /\bimage (generation|editing|service)\b|\b(?:newly )?(?:generated|edited) (?:image|photo)s?\b|\bimages? (?:for slides? [\d, ]+ )?could not be made\b/i;
+
+/**
+ * S7's checks for a run that stopped: it stopped with one of those codes and
+ * a reason that names image generation or editing (the stop message, or the
+ * Director's list of what is unavailable), so a stop for another reason does
+ * not pass; and nothing changed on the carousel.
  */
 export function checkUnavailableServiceStop(
   blocked: { code: string; message: string },
-  carousel: Pick<Carousel, "slides" | "assets">
+  carousel: Pick<Carousel, "slides" | "assets">,
+  directorUnavailable: readonly string[] | null = null
 ): { name: string; verdict: Verdict }[] {
   const assets = (carousel.assets ?? []).length;
+  const codeOk = UNAVAILABLE_SERVICE_STOPS.includes(blocked.code);
+  const namedByMessage = NAMES_IMAGE_WORK.test(blocked.message);
+  const namedByList = (directorUnavailable ?? []).some((c) => IMAGE_CAPABILITIES.includes(c));
+  const reason = namedByMessage ? "the stop message names image work" : namedByList ? "the Director's unavailable list names image work" : "neither the stop message nor the Director's unavailable list names image generation or editing";
   return [
-    { name: "stopped with a reason", verdict: { pass: UNAVAILABLE_SERVICE_STOPS.includes(blocked.code), evidence: `${blocked.code}: ${blocked.message}` } },
+    { name: "stopped with a reason", verdict: { pass: codeOk && (namedByMessage || namedByList), evidence: `${blocked.code}: ${blocked.message} (${codeOk ? reason : "not a stop for an unavailable image service"})` } },
     { name: "nothing changed", verdict: { pass: carousel.slides.length === 0 && assets === 0, evidence: `${carousel.slides.length} slides, ${assets} assets` } },
   ];
 }
+
+// ---------------------------------------------------------------------------
+// Reuse of staged images by a retry.
 
 export interface StagedItem {
   key: string;
