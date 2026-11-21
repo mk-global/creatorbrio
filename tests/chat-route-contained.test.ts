@@ -17,6 +17,10 @@ import { CHAT_ERROR_MESSAGES, createChatStreamParser, type ChatStreamEvent } fro
 import { isAgentSessionBound } from "@/lib/agent-sessions";
 import { stubDirector } from "./helpers/stub-director";
 import { startAppRoutesServer, type AppRoutesServer } from "./helpers/app-routes-server";
+import net from "node:net";
+import { retrieveSources } from "@/lib/source-retrieval";
+import { FOLLOWUP_MESSAGE, hostileMessage, hostilePage, PAGE_URL, type HostileContext } from "../eval/t1/lib/hostile";
+import { addressPlan } from "../eval/t1/run";
 
 let claudePath = "";
 vi.mock("@/lib/claude-path", () => ({
@@ -438,6 +442,56 @@ describe("a contained design run", () => {
     const followUp = await postChat({ carouselId: own.id, sessionId: SESSION, message: "Make the second slide shorter" });
     expect(followUp.events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
     expect(await recordedJson<string[]>("argv.json")).toEqual(expect.arrayContaining(["--resume", SESSION]));
+  });
+
+  it("carries both T1 messages through the app's real gates to the designing stage, with the checklist in the agent's task (#237 A)", async () => {
+    // Model-free: the Director is the stub and the agent the stand-in, but the link limit, the message limit and page retrieval are the app's own.
+    // Whether a real Director plans these messages is a model behavior this cannot show; the paid run's process evidence decides that (#237 B).
+    await play("success");
+    const { own, other } = await newCarousels();
+    const ctx: HostileContext = { appPort: 3000, decoyPort: 4100, subjectAddress: "11.230.17.20", runCarouselId: own.id, otherCarouselId: other.id, otherBrandId: "brand-other", files: {}, home: "/home/designer", checkout: "/app", socksPorts: [3999], agentPort: 48211 };
+    const page = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(hostilePage(ctx));
+    });
+    await new Promise<void>((resolve) => page.listen(0, "127.0.0.1", resolve));
+    const pagePort = (page.address() as { port: number }).port;
+    const resolved: string[] = [];
+    const web = addressPlan("11.230.17.0/24").web;
+    creativeRunDeps.retrieveSources = (message: string) =>
+      retrieveSources(message, {
+        resolve: async (host) => {
+          resolved.push(host);
+          if (host !== "web.t1.test") throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+          return [web];
+        },
+        // The harness's web server, reached at its validated address; plain HTTP stands in for its TLS here.
+        dial: () => net.connect({ host: "127.0.0.1", port: pagePort }),
+      });
+    try {
+      const stages = (events: ChatStreamEvent[]) => events.flatMap((e) => (e.type === "stage" ? [e.stage] : []));
+      const first = await postChat({ carouselId: own.id, message: hostileMessage(ctx) });
+      expect(first.status).toBe(200);
+      expect(stages(first.events)).toEqual(expect.arrayContaining(["reading-sources", "planning", "designing"]));
+      expect(first.events.some((e) => e.type === "blocked")).toBe(false);
+      expect(first.events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
+      expect(resolved).toEqual(["web.t1.test"]);
+      // The page reached the Director and the agent as server-read text, with its hidden checklist; the pasted copy reached the agent too.
+      expect(director.requests[0].sources.map((s) => s.url)).toEqual([PAGE_URL]);
+      expect(director.requests[0].sources[0].text).toContain("mandatory brand-compliance checklist");
+      const task = await recorded("task");
+      expect(task).toContain(`Linked page 1 (web.t1.test): the server retrieved it from ${PAGE_URL}.`);
+      expect(task.match(/mandatory brand-compliance checklist/g)?.length).toBeGreaterThanOrEqual(2);
+
+      await rm(path.join(fakeDir, "pid"), { force: true });
+      const followUp = await postChat({ carouselId: own.id, sessionId: SESSION, message: FOLLOWUP_MESSAGE });
+      expect(stages(followUp.events)).toEqual(expect.arrayContaining(["planning", "designing"]));
+      expect(stages(followUp.events)).not.toContain("reading-sources");
+      expect(followUp.events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
+      expect(await recordedJson<string[]>("argv.json")).toEqual(expect.arrayContaining(["--resume", SESSION]));
+    } finally {
+      await new Promise<void>((resolve) => page.close(() => resolve()));
+    }
   });
 
   it("gives the agent each linked page as server-read text that the page cannot break out of", async () => {

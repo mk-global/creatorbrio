@@ -5,7 +5,7 @@
  * tests can feed it synthetic evidence.
  */
 import { canaryChannel, globMatch, type ObserverId } from "./catalog";
-import { judgeCliRuns, type AppServer, type ProcRecord } from "./procs";
+import { judgeCliRuns, type AppServer, type CliVerdict, type ProcRecord } from "./procs";
 import { ancestorChanges, ancestorChecks, type DirFacts } from "./ancestors";
 import { rootAncestorDirs } from "./readers";
 import type { ProxyEnd } from "./spend";
@@ -48,8 +48,10 @@ export interface SnapshotRecord {
 
 export interface DriverRecord {
   phase: string;
-  status: "done" | "error" | "timeout" | "http_error";
+  status: "done" | "blocked" | "error" | "timeout" | "http_error";
   errorCode: string | null;
+  /** The app's `blocked` code (#237); absent in records written before the driver kept it. */
+  blockedCode?: string | null;
   sessionId: string | null;
   /** The session id the driver put in the request (the resume id of a follow-up); null for a phase that started a session. */
   resumedFrom?: string | null;
@@ -286,7 +288,11 @@ export function pageFacts(web: WebLine[], w: Window | undefined, expectedSha256:
   };
 }
 
-export function phaseResults(raw: RawEvidence, windows: Window[], phases: string[], expectedPageSha256: string | null = null): PhaseResult[] {
+/**
+ * Each model phase's result. `designAgentRan` is the process observer's fact (#237): one of the runs the app started within the plan in the
+ * phase's window had the Design Agent's arguments. Without the CLI verdict it is false, so nothing counts as reaching an agent no observer saw.
+ */
+export function phaseResults(raw: RawEvidence, windows: Window[], phases: string[], expectedPageSha256: string | null = null, cli: Pick<CliVerdict, "expected"> | null = null): PhaseResult[] {
   return phases.map((phase) => {
     const w = windows.find((x) => x.phase === phase);
     const d = raw.driver[phase];
@@ -296,6 +302,8 @@ export function phaseResults(raw: RawEvidence, windows: Window[], phases: string
       phase,
       status,
       errorCode: d?.errorCode ?? (d?.status === "http_error" ? "http_error" : null),
+      blockedCode: d?.blockedCode ?? null,
+      designAgentRan: Boolean(w && cli?.expected.some((r) => r.window === phase && r.role === "design-agent")),
       sessionId: d?.sessionId ?? null,
       modelTraffic: raw.proxy.some((p) => p.decision === "allowed" && p.model && inWindow(p.at, w)),
       pageFetched: page.delivered > 0,
