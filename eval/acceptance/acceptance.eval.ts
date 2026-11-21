@@ -9,24 +9,40 @@ import { findClaudePath } from "@/lib/claude-path";
 import type { Carousel } from "@/types/carousel";
 import { AppClient, logEntries, logOffset, readRunRecord, serverCosts, type ChatOptions, type ChatResult } from "./app";
 import { archiveDir, archiveRun } from "./archive";
-import { runDesignAgentOnly } from "./baseline";
+import { designAgentOnlyCliPath, notJudgedReason, runDesignAgentOnly } from "./baseline";
+import {
+  checkCliPin,
+  cliFileFacts,
+  cliVersion,
+  directorProof,
+  END_OF_RUN,
+  judgeProof,
+  pinCli,
+  recheckCli,
+  recordRecheck,
+  resolveServerCli,
+  versionNumber,
+} from "./cli";
 import { parseCaps, parseHoldBack, parseRepeat, planRun, preflight, renderPlan, reserveRun, settleRun, type PlanItem } from "./budget";
 import {
-  assertLinkedWorktree,
-  cliVersion,
-  envLocalCliPath,
   gitState,
   harnessHashes,
   inheritedConfiguration,
+  MODEL_ENV_NAME,
   memoryRoots,
   redactPath,
   redactText,
+  sessionVersions,
   transcriptModels,
+  worktreeRefusal,
+  type DesignLimitsRecord,
   type EnvironmentRecord,
 } from "./environment";
-import { health, imageServiceUrl, observeBusy, waitForAdmission, type BusyObservation } from "./image-service";
-import { judgeOutcome, judgePairwise, judgeRevision, type JudgeContext } from "./judge";
+import { countNamesByClass, describeNameClasses, harnessEnvironmentRefusal, modelPricing, receivedNames, refusedHarnessNames, unreviewedHarnessNames, type HarnessEnvironment } from "./harness-env";
+import { admissionWaitMs, health, imageServiceUrl, observeBusy, waitForAdmission, type BusyObservation } from "./image-service";
+import { judgeCliPath, judgeOutcome, judgePairwise, judgeRevision, type JudgeContext } from "./judge";
 import { DEFAULT_TICKET, ledgerPath, m1CapUsd, readLedger } from "./ledger";
+import { chatTimeoutMs, designAgentLimits, designAgentOnlyRun, formatDuration, itemWorstCase, largestStageMs, refusalBeforeSpend, stageLimits, type ItemShape } from "./limits";
 import {
   renderSummary,
   serializeResults,
@@ -37,14 +53,19 @@ import {
   type RunResults,
   type ScenarioRecord,
 } from "./report";
+import { accountHome, homeDiffersFromAccount, homeFolders } from "./redact";
 import { founderPhoto, SCENARIOS, SYNTHETIC_BRAND, type Scenario } from "./scenarios";
-import { cleanEnv, ROOT, runDir, runId, startServer, type HarnessPort, type RunningServer } from "./server";
+import { cleanEnv, ROOT, runDir, runId, serverEnvironment, startServer, type HarnessPort, type RunningServer } from "./server";
+import { loadedFileVariables, loadServerEnv, printableMessage, recheckEnvFiles, recordEnvRecheck, splitAddedNames } from "./server-env";
+import { describeSettingsFiles, recordSettingsKeys, settingsBannerLines } from "./settings-keys";
+import { classifyItemFailure, skippedComparisonReason, StartGate, startChanges } from "./start-gate";
 import {
   checkExportFiles,
   checkFileHashes,
   checkPlacement,
   checkPreview,
   checkTasks,
+  checkUnavailableServiceStop,
   plannedAssets,
   planSummary,
   runTasks,
@@ -64,9 +85,11 @@ import {
  *   DIRECTOR_MAX_BUDGET_USD=0.50 DESIGN_AGENT_MAX_BUDGET_USD=3.00 EVAL_ONLY=S1,S10 EVAL_REPEAT=3 \
  *     npx vitest run --config vitest.eval.config.ts eval/acceptance/acceptance.eval.ts
  *
- * EVAL_MODE=dev uses `next dev` instead of a production build; EVAL_COMPARE=0
- * skips the Design-Agent-only comparison. A test fails only on a harness
- * error; quality misses are recorded in results.json and summary.md.
+ * EVAL_MODE=dev uses `next dev` instead of a production build, for a dry run
+ * only: a paid dev run is refused, because `next dev` reloads the .env files
+ * into a running server. EVAL_COMPARE=0 skips the Design-Agent-only
+ * comparison. A test fails only on a harness error; quality misses are
+ * recorded in results.json and summary.md.
  *
  * Spending (#224): both per-call caps are required and are given to every
  * server and to the Design-Agent-only arm. Before anything starts, the
@@ -99,6 +122,48 @@ import {
  * data/ folder holds real carousels, brands and uploads the servers would
  * read and write; run it from a dedicated linked worktree.
  *
+ * The CLI is pinned (#232). It is resolved once, to a real path, from the
+ * harness's CLAUDE_CLI_PATH or the checkout's .env files, and that path is
+ * given to every server as CLAUDE_CLI_PATH and spawned directly by the judges
+ * and the Design-Agent-only arm. A paid run whose CLI was only found by the
+ * app's discovery is refused, as is one whose servers', arm's and judge's
+ * paths or versions differ, before anything is reserved or spent. The file's
+ * size, SHA-256 and --version are checked again at each server start and at
+ * the end of the run, and any change marks the run as not comparable. Each
+ * server gets NODE_ENV for its mode, so it loads the checkout's .env files.
+ * What those files add is taken from Next.js's own loader (server-env.ts): a
+ * paid run is refused when a name is not on the exact allowlist or a line of
+ * a file is not accounted for by the loader's result, the files are hashed and
+ * checked again at each server start and at the end of the run, and the
+ * Design-Agent-only arm gets the environment the loader leaves a server, with
+ * the same deadline, inactivity limit and cap as the Design Agent a server
+ * spawns. The servers are started with Node.js and Next.js's own script, never
+ * through npx or npm, so npm adds nothing to a server's environment at its
+ * start. The harness's own environment reaches every process unchanged apart
+ * from what it strips, and every variable in it that is not reviewed as
+ * harmless is recorded by name in results.json (harness-env.ts), which is never
+ * committed; summary.md and a dry run show only counts of them by class, and
+ * name no variable, settings key or settings file that came from the
+ * operator's machine (only fixed strings of the harness's own source: the
+ * refused names, the .env allowlist, the settings file labels and the CLI's
+ * own settings key names). A paid run is refused for exactly four names in it
+ * (MAX_THINKING_TOKENS, CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+ * CLAUDE_CODE_MAX_CONTEXT_TOKENS and CLAUDE_CODE_EFFORT_LEVEL) and for a .env
+ * name that is not on the allowlist; the CLI's other variables are recorded by
+ * name only. The Design Agent and the Design-Agent-only arm load the CLI's
+ * settings files (they run without --setting-sources), which can set model,
+ * effort, thinking, env and apiKeyHelper, and managed settings apply to every
+ * role; their key names, never values, are recorded in results.json before
+ * the reservation (settings-keys.ts) and neither refused nor overridden. After a refused
+ * server start no later item starts: each is recorded as not run, before any
+ * stage, and charged nothing. EVAL_DRY=1 prints all of these checks instead of
+ * refusing.
+ *
+ * Time (#232): the chat request waits for the largest stage limit plus five
+ * minutes for each chunk, and each plan item's test is given the sum of its
+ * stage limits plus a margin (limits.ts), so only the product's own limits
+ * stop a design.
+ *
  * Scenarios that need generated images first wait, for up to
  * EVAL_ADMISSION_WAIT_MS (10 minutes by default), for the image service's
  * read-only health check to say it admits work; one that is not admitted is
@@ -107,10 +172,9 @@ import {
  * address it gives every server it starts (but the unavailable-service one),
  * so `.env.local` cannot point the app elsewhere. EVAL_RESTART_SIGNAL (SIGKILL, the default, SIGINT or
  * SIGTERM) is how the restart scenario stops the server. SIGKILL is a crash,
- * which tests restart recovery in both modes. A graceful signal under
- * `next dev` closes open requests, so the run is cancelled rather than cut
- * off; a production build keeps the request open until the harness kills
- * the process 5 s later.
+ * which tests restart recovery. A paid run uses a production build (a paid
+ * `next dev` run is refused), which keeps the request open after a graceful
+ * signal until the harness kills the process 5 s later.
  */
 
 const MODE = process.env.EVAL_MODE === "dev" ? "dev" : "prod";
@@ -133,11 +197,10 @@ const OPTIONAL_UNAVAILABLE = /^An optional image for slide \d+ could not be made
 const NO_IMAGE_SERVICE_URL = "http://127.0.0.1:8799";
 
 const DRY = process.env.EVAL_DRY === "1";
-// The servers share this checkout's data/ folder: never run against a primary worktree's live data.
-if (!DRY) assertLinkedWorktree(ROOT);
 const TICKET = process.env.EVAL_TICKET?.trim() || DEFAULT_TICKET;
-/** Stored messages and the summary name neither the home folder nor this checkout. */
-const REDACTION = { home: os.homedir(), root: ROOT };
+/** Stored messages and the summary name neither the home folder (HOME's and the account's own, which can differ) nor this checkout. */
+const HOMES = homeFolders();
+const REDACTION = { home: os.homedir(), accountHome: accountHome(), root: ROOT };
 const scrub = (text: string) => redactText(text, REDACTION);
 const selected = SCENARIOS.filter((s) => !ONLY || ONLY.has(s.id));
 // The preflight runs before anything else; a missing cap, a bad setting or a
@@ -145,7 +208,7 @@ const selected = SCENARIOS.filter((s) => !ONLY || ONLY.has(s.id));
 const CAPS = parseCaps(process.env);
 const PLAN = planRun({ scenarios: selected, repeat: parseRepeat(process.env.EVAL_REPEAT), compare: COMPARE, caps: CAPS });
 const LEDGER = ledgerPath();
-const LEDGER_LABEL = redactPath(LEDGER, os.homedir());
+const LEDGER_LABEL = redactPath(LEDGER, HOMES);
 const M1_CAP_USD = m1CapUsd();
 const HOLD_BACK_USD = parseHoldBack(process.env.EVAL_HOLD_BACK_USD);
 const PREFLIGHT = preflight(PLAN, readLedger(LEDGER), M1_CAP_USD, HOLD_BACK_USD);
@@ -157,6 +220,116 @@ const CAP_ENV = {
   DIRECTOR_MAX_BUDGET_USD: process.env.DIRECTOR_MAX_BUDGET_USD!.trim(),
   DESIGN_AGENT_MAX_BUDGET_USD: process.env.DESIGN_AGENT_MAX_BUDGET_USD!.trim(),
 };
+
+// ---------------------------------------------------------------------------
+// The one CLI, the servers' environment and the limits (#232): all resolved
+// before the ledger reservation, so a refusal costs nothing.
+
+/** The address the harness polls, so the app cannot be pointed elsewhere by `.env.local`, and the explicit per-call caps, which take precedence over it. */
+const serverEnvExtra = (imageUrl: string) => ({ IMAGE_SERVICE_URL: imageUrl, ...CAP_ENV });
+/**
+ * What a server is given before the CLI is pinned: without `CLAUDE_CLI_PATH`,
+ * but with the harness's own, so Next.js's loader shows which CLI the
+ * harness's environment and then the `.env` files name.
+ */
+const UNPINNED_ENV = {
+  ...serverEnvironment({ mode: MODE, extra: serverEnvExtra(imageServiceUrl()) }),
+  ...(process.env.CLAUDE_CLI_PATH === undefined ? {} : { CLAUDE_CLI_PATH: process.env.CLAUDE_CLI_PATH }),
+};
+/** The CLI every model call uses: the harness's CLAUDE_CLI_PATH, else the checkout's .env files', else the app's discovery, as a real path. */
+const SERVER_CLI = resolveServerCli({ root: ROOT, loaded: loadServerEnv({ root: ROOT, mode: MODE, env: UNPINNED_ENV }), discover: findClaudePath });
+// The servers get it as CLAUDE_CLI_PATH; the judges and the arm spawn exactly it.
+if (SERVER_CLI.path) pinCli(SERVER_CLI.path);
+const CLI_FILE = SERVER_CLI.path ? cliFileFacts(SERVER_CLI.path) : null;
+const versions = new Map<string | null, string | null>();
+const versionOf = (cli: string | null) => {
+  if (!versions.has(cli)) versions.set(cli, cliVersion(cli, cleanEnv()));
+  return versions.get(cli)!;
+};
+const CLI_VERSION = versionOf(SERVER_CLI.path);
+/** What each server's process environment holds before Next.js loads the .env files under it. */
+const SERVER_ENV = serverEnvironment({ mode: MODE, cliPath: SERVER_CLI.path ?? "", extra: serverEnvExtra(imageServiceUrl()) });
+/**
+ * What Next.js's own loader leaves a server (the .env files under that
+ * environment): the one source of the Design Agent's settings, the Design-Agent-only
+ * arm's environment and the names of what the files add. One that is not on the allowlist, or a
+ * line the loader's result does not account for, refuses a paid run.
+ */
+const LOADED = loadServerEnv({ root: ROOT, mode: MODE, env: SERVER_ENV });
+const ENV_FILES = LOADED.record;
+/**
+ * Every variable the harness passes to the servers, the arm and the judges
+ * that is not reviewed as harmless (harness-env.ts), by name only. The model
+ * variables are fingerprinted by name and value hash instead.
+ */
+const HARNESS_ENVIRONMENT: HarnessEnvironment = { unreviewedNames: unreviewedHarnessNames(cleanEnv(), (name) => MODEL_ENV_NAME.test(name)) };
+/**
+ * Every name the servers and the arm (the loader's result, files included) and
+ * the judges (the cleaned environment) receive is tested for MODEL, so the run
+ * is flagged when one chose a model whose price the CLI's table may lack.
+ */
+const MODEL_PRICING = modelPricing(receivedNames(LOADED.env, cleanEnv()));
+/** The checkout's own folder and its main worktree: the CLI's local settings may come from either. */
+const MEMORY_ROOTS = memoryRoots(ROOT);
+/**
+ * The key names, never values, of the settings files the pinned CLI reads
+ * (settings-keys.ts), taken before the reservation. They are neither refused
+ * nor overridden.
+ */
+const SETTINGS_KEYS = recordSettingsKeys({
+  home: os.homedir(),
+  configDir: LOADED.env.CLAUDE_CONFIG_DIR || undefined,
+  project: ROOT,
+  mainWorktree: MEMORY_ROOTS.find((r) => r.label === "main worktree")?.path ?? null,
+  username: (() => {
+    try {
+      return os.userInfo().username;
+    } catch {
+      return null;
+    }
+  })(),
+  cliVersion: versionNumber(CLI_VERSION),
+});
+/** Set in the harness's own environment: a token or effort limit refuses a paid run. */
+const HARNESS_REFUSAL = harnessEnvironmentRefusal(refusedHarnessNames(process.env));
+// Refused before any spend unless the servers, the Design-Agent-only arm and
+// the judge all run one CLI that CLAUDE_CLI_PATH named; a dry run prints it.
+const CLI_PIN = checkCliPin(
+  [
+    { role: "servers (Director and Design Agent)", path: SERVER_ENV.CLAUDE_CLI_PATH || null, version: CLI_VERSION },
+    { role: "Design-Agent-only arm", path: designAgentOnlyCliPath(), version: versionOf(designAgentOnlyCliPath()) },
+    { role: "judge", path: judgeCliPath(), version: versionOf(judgeCliPath()) },
+  ],
+  { explicit: SERVER_CLI.explicit, source: SERVER_CLI.source, file: CLI_FILE }
+);
+/** The Design Agent's deadline and inactivity limit as the servers see them, and what the Design-Agent-only arm runs under: the same. */
+const LIMITS = designAgentLimits(LOADED);
+const ARM = designAgentOnlyRun(LOADED);
+// The servers share this checkout's data/ folder: the last check refuses a primary worktree, whose live data they would read and write. All of them come before anything is reserved or spent.
+const BEFORE_SPEND_CHECKS: Parameters<typeof refusalBeforeSpend>[0] = {
+  mode: MODE,
+  pin: CLI_PIN,
+  envFiles: ENV_FILES,
+  harnessRefusal: HARNESS_REFUSAL,
+  limits: LIMITS,
+  armSettings: ARM.settings,
+  worktree: worktreeRefusal(ROOT),
+};
+const REFUSAL_BEFORE_SPEND = refusalBeforeSpend(BEFORE_SPEND_CHECKS);
+/** The same refusal without any `.env` variable name that is not on the allowlist, for a dry run's output. */
+const REFUSAL_PRINTABLE = refusalBeforeSpend(BEFORE_SPEND_CHECKS, { printable: true });
+if (!DRY && REFUSAL_BEFORE_SPEND) throw new Error(REFUSAL_BEFORE_SPEND);
+const STAGES = stageLimits({ designMs: LIMITS.timeoutMs, designArmMs: ARM.limits.timeoutMs, admissionWaitMs: admissionWaitMs() });
+/** How long the chat stream may stay quiet: the largest stage limit, the image stage included, plus a margin. */
+const CHAT_TIMEOUT_MS = chatTimeoutMs(largestStageMs(STAGES));
+const itemShape = (item: PlanItem): ItemShape => {
+  const scenario = selected.find((s) => s.id === item.id)!;
+  return { kind: scenario.kind, needsImages: !!scenario.needsImages, calls: item.calls, comparison: item.comparison };
+};
+/** Each item's worst-case duration, the sum of its stage limits plus a margin: its test timeout. A plan no timer can wait for is refused here. */
+const ITEM_DURATIONS = new Map(PLAN.items.map((item) => [item.key, itemWorstCase(itemShape(item), STAGES)]));
+const limitsRecord = (l: DesignLimitsRecord): DesignLimitsRecord => ({ timeoutMs: l.timeoutMs, timeoutSource: l.timeoutSource, inactivityMs: l.inactivityMs, inactivitySource: l.inactivitySource });
+const appClient = (server: RunningServer) => new AppClient(server.origin, { chatTimeoutMs: CHAT_TIMEOUT_MS });
 
 const started = Date.now();
 const results: RunResults = {
@@ -184,19 +357,41 @@ const sourceKey = (scenario: Scenario, record: { repetition: number }) => `${sce
 
 let current: { key: keyof typeof PORTS; server: RunningServer } | null = null;
 
+/** Checks the pinned file and its version against the pin, and records the result on it; a difference marks the run as not comparable. */
+function recheckPinnedCli(at: string) {
+  if (!SERVER_CLI.path || !CLI_FILE || !CLI_VERSION) throw new Error("No pinned CLI to check");
+  return recordRecheck(CLI_PIN, recheckCli({ path: SERVER_CLI.path, file: CLI_FILE, version: CLI_VERSION }, at, cleanEnv()));
+}
+
+/** Checks the loaded .env files against their hashes from check time, records the result, and flags the run as not comparable on a difference. */
+const recheckEnvironmentFiles = (at: string) => recordEnvRecheck(ENV_FILES, recheckEnvFiles(LOADED, ROOT, at));
+
+/**
+ * The gate every server start passes (start-gate.ts). Once a start is
+ * refused, no later item starts a server or a model call: each is recorded as
+ * not run when its test begins, before any stage, so settlement charges it
+ * nothing. What had started is still charged in full (the ledger never
+ * under-counts).
+ */
+const GATE = new StartGate();
+
 async function serverFor(key: keyof typeof PORTS): Promise<RunningServer> {
   if (current?.key === key) return current.server;
+  GATE.assertOpen();
   await stopServer();
+  if (!SERVER_CLI.path) throw new Error("No Claude CLI found for the servers");
+  // A server must not start on a CLI or .env files that are no longer what the run was checked against.
+  const at = `server start on port ${PORTS[key]}`;
+  GATE.admit(startChanges(recheckPinnedCli(at).changes, recheckEnvironmentFiles(at).changes));
   const server = await startServer({
     mode: MODE,
     port: PORTS[key],
-    // The address the harness polls, so the app cannot be pointed elsewhere by
-    // `.env.local`, and the explicit per-call caps, which take precedence over it.
-    env: { IMAGE_SERVICE_URL: key === "no-images" ? NO_IMAGE_SERVICE_URL : imageServiceUrl(), ...CAP_ENV },
+    cliPath: SERVER_CLI.path,
+    env: serverEnvExtra(key === "no-images" ? NO_IMAGE_SERVICE_URL : imageServiceUrl()),
   });
   current = { key, server };
   if (!results.brand) {
-    const brand = await new AppClient(server.origin).ensureBrand(SYNTHETIC_BRAND);
+    const brand = await appClient(server).ensureBrand(SYNTHETIC_BRAND);
     results.brand = { id: brand.id, name: brand.name };
   }
   return server;
@@ -224,34 +419,32 @@ async function save() {
 // ---------------------------------------------------------------------------
 // The environment record, the ledger and the durable copy.
 
-/** The CLI the servers spawn: `.env.local`'s CLAUDE_CLI_PATH, which they load, or the app's own discovery without the shell's. */
-function serverCliPath(): string | null {
-  const configured = envLocalCliPath(ROOT);
-  if (configured) return configured;
-  const saved = process.env.CLAUDE_CLI_PATH;
-  delete process.env.CLAUDE_CLI_PATH;
-  try {
-    return findClaudePath();
-  } finally {
-    if (saved !== undefined) process.env.CLAUDE_CLI_PATH = saved;
-  }
-}
-
-const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+/** Where the CLI keeps its session transcripts: the servers' effective CLAUDE_CONFIG_DIR, which the allowlist leaves only the harness's own. */
+const CONFIG_DIR = LOADED.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 
 function environmentRecord(): EnvironmentRecord {
-  const home = os.homedir();
+  const home = HOMES;
   const git = gitState(ROOT);
-  const serverCli = serverCliPath();
-  const harnessCli = findClaudePath();
+  const serverCli = SERVER_CLI.path;
+  const harnessCli = judgeCliPath();
   return {
     commit: git.commit,
     commitDirty: git.dirty,
     node: process.version,
     platform: process.platform,
     cli: {
-      server: { path: serverCli ? redactPath(serverCli, home) : null, version: cliVersion(serverCli, cleanEnv()) },
-      harness: { path: harnessCli ? redactPath(harnessCli, home) : null, version: cliVersion(harnessCli, cleanEnv()) },
+      server: { path: serverCli ? redactPath(serverCli, home) : null, version: CLI_VERSION, source: SERVER_CLI.source },
+      harness: { path: harnessCli ? redactPath(harnessCli, home) : null, version: versionOf(harnessCli) },
+      pin: CLI_PIN,
+      sessions: null,
+    },
+    serverEnvFiles: ENV_FILES,
+    harnessEnvironment: HARNESS_ENVIRONMENT,
+    limits: {
+      designAgent: limitsRecord(LIMITS),
+      designAgentOnly: ARM.limits,
+      chatIdleMs: CHAT_TIMEOUT_MS,
+      itemTimeoutsMs: Object.fromEntries([...ITEM_DURATIONS].map(([key, d]) => [key, d.ms])),
     },
     models: {
       designAgent: { models: [], source: "filled in after the run" },
@@ -259,27 +452,43 @@ function environmentRecord(): EnvironmentRecord {
       designAgentOnly: [],
       judge: [],
     },
+    modelPricing: MODEL_PRICING,
+    settingsKeys: SETTINGS_KEYS,
+    homeDiffersFromAccount: homeDiffersFromAccount(),
     inheritedConfiguration: inheritedConfiguration({
-      home,
+      home: os.homedir(),
       project: ROOT,
-      configDir: process.env.CLAUDE_CONFIG_DIR || undefined,
-      mode: MODE,
-      memoryRoots: memoryRoots(ROOT),
-      // What the servers receive is the harness's cleaned environment; the shell's own is compared with it.
-      serverEnv: cleanEnv(),
+      configDir: LOADED.env.CLAUDE_CONFIG_DIR || undefined,
+      memoryRoots: MEMORY_ROOTS,
+      // What the servers receive: the harness's cleaned environment, with the explicit settings; the shell's own is compared with it.
+      serverEnv: SERVER_ENV,
       harnessEnv: process.env,
+      // What the .env files add, from Next.js's own loader.
+      envFileVariables: loadedFileVariables(LOADED, (name) => MODEL_ENV_NAME.test(name)),
     }),
     harnessFiles: harnessHashes(path.join(ROOT, "eval", "acceptance")),
   };
 }
 
-/** The models seen in this run's usage records and session transcripts. */
+/** The models and CLI versions seen in this run's usage records and session transcripts. */
 function recordModels(env: EnvironmentRecord) {
-  const sessionIds = results.scenarios.flatMap((r) => r.chats.map((c) => c.result.sessionId)).filter((id): id is string => !!id);
-  const design = transcriptModels(sessionIds, CONFIG_DIR);
+  const chats = results.scenarios.flatMap((r) => r.chats);
+  const arms = results.comparisons.flatMap((c) => (c.baseline ? [c.baseline] : []));
+  const designIds = chats.map((c) => c.result.sessionId).filter((id): id is string => !!id);
+  const armIds = arms.map((b) => b.sessionId).filter((id): id is string => !!id);
+  env.cli.sessions = sessionVersions({
+    sessions: [...designIds.map((id) => ({ id, role: "design-agent" as const })), ...armIds.map((id) => ({ id, role: "design-agent-only" as const }))],
+    withoutSession: chats.filter((c) => !c.result.sessionId && sawStage(c.result, "designing")).length + arms.filter((b) => !b.sessionId).length,
+    configDir: CONFIG_DIR,
+    configured: versionNumber(env.cli.server.version),
+    director: directorProof(env.cli.pin, env.cli.server.version),
+    judge: judgeProof(env.cli.pin, env.cli.server.version),
+  });
+  const unreadable = env.cli.sessions.sessions.filter((x) => x.error).length;
+  const design = transcriptModels(designIds, CONFIG_DIR);
   env.models.designAgent = design.length
-    ? { models: design, source: "the CLI's session transcripts; the server log does not record the model" }
-    : { models: [], source: "not found: the server log does not record the model and no session transcript was found" };
+    ? { models: design, source: `the CLI's session transcripts; the server log does not record the model${unreadable ? `; ${unreadable} transcript(s) unreadable` : ""}` }
+    : { models: [], source: `not found: the server log does not record the model and no session transcript was found${unreadable ? `; ${unreadable} transcript(s) unreadable` : ""}` };
   const union = (lists: (string[] | undefined)[]) => [...new Set(lists.flatMap((l) => l ?? []))].sort();
   env.models.designAgentOnly = union(results.comparisons.map((c) => c.baseline?.models));
   env.models.judge = union([
@@ -318,6 +527,9 @@ if (!DRY) {
       }
     };
     await attempt("stopping the server", () => stopServer());
+    // The Director's and the judge's versions are shown by this check (neither keeps a transcript), so it comes before the models are recorded.
+    await attempt("checking the pinned CLI again", () => recheckPinnedCli(END_OF_RUN));
+    await attempt("checking the .env files again", () => recheckEnvironmentFiles(END_OF_RUN));
     await attempt("recording models", () => results.environment && recordModels(results.environment));
     await attempt("saving results", save);
     // The settlement charges every call that started (budget.ts), also when the
@@ -336,12 +548,12 @@ if (!DRY) {
     await attempt("saving results", save);
     try {
       const files = archiveRun(runDir(), ARCHIVE_DIR);
-      results.archive = { dir: redactPath(ARCHIVE_DIR, os.homedir()), files: files.length, error: null };
+      results.archive = { dir: redactPath(ARCHIVE_DIR, HOMES), files: files.length, error: null };
     } catch (err) {
-      results.archive = { dir: redactPath(ARCHIVE_DIR, os.homedir()), files: 0, error: scrub((err as Error).message) };
+      results.archive = { dir: redactPath(ARCHIVE_DIR, HOMES), files: 0, error: scrub((err as Error).message) };
     }
     await attempt("saving results", save);
-    console.info(`[acceptance] results in ${runDir()}; archived to ${ARCHIVE_DIR}`);
+    console.info(`[acceptance] results in ${redactPath(runDir(), HOMES)}; archived to ${redactPath(ARCHIVE_DIR, HOMES)}`);
   }, 120_000);
 }
 
@@ -608,7 +820,7 @@ async function retryAndVerify(
     record.observations.push("retry not attempted: the image service was not admitting");
     return null;
   }
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const retryFrom = await logOffset(server.logPath);
   const retry = await chat(record, app, "explicit retry", { carouselId, message: "Retry", retryRunId: runId });
   record.reuse.attempted = true;
@@ -643,7 +855,7 @@ async function retryPartialRun(record: ScenarioRecord, scenario: Scenario, serve
 
 async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("main");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   let carouselId: string;
   let sessionId: string | null = null;
   if (scenario.revisionOf) {
@@ -692,7 +904,7 @@ async function runIntegration(scenario: Scenario, record: ScenarioRecord) {
 
 async function runImageServiceUnavailable(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("no-images");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
@@ -703,8 +915,9 @@ async function runImageServiceUnavailable(scenario: Scenario, record: ScenarioRe
   const required = typeof plan?.required === "number" ? plan.required : null;
   const generate = typeof plan?.generate === "number" ? plan.generate : null;
   if (record.blocked) {
-    check(record, "stopped with a reason", record.blocked.code === "image_failed", `${record.blocked.code}: ${record.blocked.message}`);
-    check(record, "nothing changed", carousel.slides.length === 0 && (carousel.assets ?? []).length === 0, `${carousel.slides.length} slides, ${(carousel.assets ?? []).length} assets`);
+    // What the Director's plan needs that this machine lacks, from its log line: a reason besides the stop message.
+    const director = (await logEntries(server.logPath, carouselId, logFrom)).filter((e) => e.tag === "[director] plan finished").at(-1);
+    for (const { name, verdict } of checkUnavailableServiceStop(record.blocked, carousel, director?.lists?.unavailable ?? null)) check(record, name, verdict.pass, verdict.evidence);
     record.observations.push(`behaviour: blocked before design (plan asked for ${generate ?? "?"} image(s), ${required ?? "?"} required)`);
   } else {
     // Designing without the requested photo is only acceptable if no required image was planned.
@@ -729,7 +942,7 @@ function busyLine(after: string, busy: BusyObservation): string {
 
 async function runCancel(scenario: Scenario, record: ScenarioRecord) {
   const server = await serverFor("main");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
@@ -784,7 +997,7 @@ async function runCancel(scenario: Scenario, record: ScenarioRecord) {
 
 async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
   let server = await serverFor("own");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carouselId = (await app.createCarousel(`Acceptance ${record.key}`, scenario.aspectRatio, brandId())).id;
   record.carouselId = carouselId;
   const logFrom = await logOffset(server.logPath);
@@ -840,7 +1053,7 @@ async function runRestartRetry(scenario: Scenario, record: ScenarioRecord) {
 
   server = await serverFor("own");
   record.server.readyMs = server.readyMs;
-  const status = await new AppClient(server.origin).generation(carouselId);
+  const status = await appClient(server).generation(carouselId);
   record.observations.push(`after the restart: generating ${status.generating}, interrupted ${status.interrupted}`);
   const retried = await retryAndVerify(record, scenario, server, carouselId, runId, snapshot, logFrom);
   if (!retried) {
@@ -863,25 +1076,29 @@ function newComparison(scenario: Scenario, item: PlanItem): ComparisonRecord {
     baselineJudge: null,
     pairwise: null,
     skipped: null,
+    notJudged: null,
     harnessError: null,
     finished: false,
   };
 }
 
 /** Fills `record` in place, so what was measured before a throw or a timeout stays in it and is charged. */
-async function runComparison(scenario: Scenario, item: PlanItem, record: ComparisonRecord): Promise<void> {
+async function runComparison(scenario: Scenario, item: PlanItem, record: ComparisonRecord, notRun: string | null): Promise<void> {
   const director = directorPngs.get(item.key);
-  if (!director) {
-    // For example, the Director arm was blocked because an image could not be made.
-    record.skipped = "the Director arm produced no export to compare";
+  // An item that was not run says why; otherwise, for example, the Director arm was blocked because an image could not be made.
+  const skipped = skippedComparisonReason({ notRun, directorExport: !!director });
+  if (skipped || !director) {
+    record.skipped = skipped ?? "the Director arm produced no export to compare";
     return;
   }
   const server = await serverFor("main");
-  const app = new AppClient(server.origin);
+  const app = appClient(server);
   const carousel = await app.createCarousel(`Acceptance ${item.key} baseline`, scenario.aspectRatio, brandId());
   record.baselineCarouselId = carousel.id;
   if (scenario.reference) await app.addReference(carousel.id, await founderPhoto(), "founder-photo.png");
-  record.baseline = await runDesignAgentOnly({ origin: server.origin, carouselId: carousel.id, message: scenario.message });
+  const cliPath = designAgentOnlyCliPath();
+  if (!cliPath || !ARM.settings.ok) throw new Error("The Design-Agent-only arm has no pinned CLI or accepted settings");
+  record.baseline = await runDesignAgentOnly({ origin: server.origin, carouselId: carousel.id, message: scenario.message, cliPath, env: ARM.env, settings: ARM.settings });
   const after = await app.getCarousel(carousel.id);
   if (after.slides.length === 0) {
     record.baselineExport = { ok: false, pngs: 0, error: "no slides" };
@@ -890,6 +1107,8 @@ async function runComparison(scenario: Scenario, item: PlanItem, record: Compari
   const exported = await app.exportPngs(carousel.id, path.join(runDir(), `${scenario.id}-r${item.repetition}-baseline`));
   record.baselineExport = exported.ok ? { ok: true, pngs: exported.files.length } : { ok: false, pngs: 0, error: `${exported.status} ${exported.error}` };
   if (!exported.ok) return;
+  record.notJudged = notJudgedReason(record.baseline);
+  if (record.notJudged) return; // an arm that was stopped or failed left an unfinished set
   const context = await judgeContext(scenario, after);
   record.baselineJudge = await judgeOutcome(context, exported.files);
   record.pairwise = await judgePairwise(context, { director, baseline: exported.files });
@@ -902,6 +1121,44 @@ if (DRY) {
   describe("creative run acceptance (dry run)", () => {
     it("fits the remaining M1 allowance", () => {
       console.info(renderPlan(PLAN, PREFLIGHT, LEDGER_LABEL));
+      // What would refuse a paid run is printed instead, the check of the worktree included.
+      // A dry run's output follows summary.md's rule: no variable, settings key or file name that came from the operator's machine; a paid run's refusal, in the operator's terminal, names them.
+      console.info(`[acceptance] ${REFUSAL_PRINTABLE ? `A paid run would be refused: ${REFUSAL_PRINTABLE}` : "No check made before the ledger reservation would refuse a paid run."}`);
+      console.info(`[acceptance] CLI check: ${CLI_PIN.message}`);
+      console.info(
+        `[acceptance] CLI: ${SERVER_CLI.explicit ? "named by" : "NOT pinned, found by"} ${SERVER_CLI.source}; file ${CLI_FILE ? `${CLI_FILE.size} bytes, SHA-256 ${CLI_FILE.sha256.slice(0, 12)}` : "not readable"}; version ${CLI_VERSION ?? "unknown"}.`
+      );
+      const addedNames = splitAddedNames(ENV_FILES);
+      console.info(
+        `[acceptance] Variables the servers' .env files add beyond the harness's environment, as Next.js's loader leaves them (the allowlist's names are named, any other is counted): ${addedNames.named.map((v) => `${v.name} (${v.file})`).join(", ") || "none"}${addedNames.notAllowed ? `; ${addedNames.notAllowed} not on the allowlist, not named` : ""}.`
+      );
+      console.info(`[acceptance] ${printableMessage(ENV_FILES)}`);
+      const unreviewed = countNamesByClass(HARNESS_ENVIRONMENT.unreviewedNames);
+      console.info(
+        `[acceptance] ${unreviewed.total} variable(s) in the harness's own environment that reach every server, judge and arm are not reviewed as harmless (${describeNameClasses(unreviewed)}); counts only here and in summary.md: the names (never values; model variables are fingerprinted by name and value hash instead) are in results.json, which is never committed.`
+      );
+      console.info(
+        `[acceptance] ${MODEL_PRICING.selectionVariables.length} variable(s) whose name contains MODEL among those the servers, arm and judges receive (counted, not named; the names are in results.json)${MODEL_PRICING.unverified ? "; the run is flagged, because the CLI's price for a model its table lacks is not shown" : ""}.`
+      );
+      // The settings files are recorded by key name in results.json and never refused: the Design Agent and the arm load the first three kinds, managed settings apply to every role.
+      // Here, as in summary.md, only the CLI's own key names are named, and every other name, the names under env and the drop-in files' names are counted.
+      console.info(
+        `[acceptance] Settings files the pinned CLI reads (never values; the CLI's own key names are named, any other name is counted; the Design Agent and the Design-Agent-only arm load user, project and project-local; managed settings apply to every role):`
+      );
+      for (const line of describeSettingsFiles(SETTINGS_KEYS)) console.info(`[acceptance]   ${line}.`);
+      const settingsBanner = settingsBannerLines(SETTINGS_KEYS);
+      for (const line of settingsBanner) console.info(`[acceptance] ${line}`);
+      if (settingsBanner.length === 0) console.info("[acceptance] No settings file holds a key that can change a model call, and every source could be read.");
+      console.info(
+        `[acceptance] HOME ${homeDiffersFromAccount() === null ? "could not be compared with" : homeDiffersFromAccount() ? "differs from" : "is"} the account's home folder; both are redacted in every stored path, and neither is printed.`
+      );
+      const sec = (ms: number | null) => (ms === null ? "none" : `${Math.round(ms / 1000)} s`);
+      console.info(
+        `[acceptance] Design Agent limits, servers: deadline ${sec(LIMITS.timeoutMs)} (${LIMITS.timeoutSource}), inactivity ${sec(LIMITS.inactivityMs)} (${LIMITS.inactivitySource})${LIMITS.ok ? "" : `; the product refuses a setting: ${LIMITS.problem}`}.`
+      );
+      console.info(`[acceptance] Design Agent limits, Design-Agent-only arm: deadline ${sec(ARM.limits.timeoutMs)}, inactivity ${sec(ARM.limits.inactivityMs)}; same environment as a server's Design Agent.`);
+      console.info(`[acceptance] Chat stream timeout ${sec(CHAT_TIMEOUT_MS)} without data: the largest stage limit of ${sec(largestStageMs(STAGES))} plus a margin.`);
+      for (const [key, d] of ITEM_DURATIONS) console.info(`[acceptance] Test timeout ${key}: ${formatDuration(d.ms)} (${d.parts.map((p) => `${p.name} ${formatDuration(p.ms)}`).join(", ")}).`);
       expect(PREFLIGHT.ok, PREFLIGHT.message).toBe(true);
     });
   });
@@ -912,7 +1169,10 @@ if (DRY) {
       const t0 = Date.now();
       const record = newRecord(scenario, item);
       results.scenarios.push(record);
+      let notRun: string | null = null;
       try {
+        // After a refused server start nothing more starts: this item is recorded as not run, before any stage.
+        GATE.assertOpen();
         // A revision whose first run did not complete is skipped by its driver, without waiting.
         const priorMissing = !!scenario.revisionOf && !sessions.has(sourceKey(scenario, record));
         let admitted = true;
@@ -929,7 +1189,12 @@ if (DRY) {
         else await runRestartRetry(scenario, record);
         if (current) record.server = { port: current.server.port, mode: current.server.mode, readyMs: record.server.readyMs || current.server.readyMs };
       } catch (err) {
-        record.harnessError = scrub((err as Error).stack ?? String(err));
+        // A refusal before this item made any model call is not run, and charged nothing; a refusal after its chats is a harness error, charged in full.
+        const failure = classifyItemFailure(err, record.chats.length, scrub);
+        if (failure.kind === "not-run") {
+          notRun = failure.reason;
+          record.outcome = `not run: ${notRun}`;
+        } else record.harnessError = failure.message;
       } finally {
         record.wallMs = Date.now() - t0;
         record.finished = true; // read at settlement: a test that times out never gets here
@@ -942,7 +1207,7 @@ if (DRY) {
         const comparison = newComparison(scenario, item);
         results.comparisons.push(comparison);
         try {
-          await runComparison(scenario, item, comparison);
+          await runComparison(scenario, item, comparison, notRun);
         } catch (err) {
           comparison.harnessError = scrub((err as Error).stack ?? String(err));
         } finally {
@@ -951,6 +1216,8 @@ if (DRY) {
         await save();
         expect(comparison.harnessError).toBeNull();
       }
-    }, 60 * 60 * 1000);
+      // The refusal fails the test, after the item's comparison was recorded as skipped.
+      expect(notRun, "the item was not run").toBeNull();
+    }, ITEM_DURATIONS.get(item.key)!.ms);
   }
 });

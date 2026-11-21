@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { request, type IncomingMessage } from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
@@ -50,8 +51,36 @@ export interface ChatOptions {
   onAbort?: () => void;
 }
 
+export interface AppClientOptions {
+  /**
+   * How long the chat request waits for its headers, and then between chunks,
+   * before it gives up. The harness sets it from `chatTimeoutMs(largestStageMs(...))`
+   * (limits.ts), so only the product's own limits stop a design; the default
+   * is `DEFAULT_CHAT_TIMEOUT_MS`.
+   */
+  chatTimeoutMs?: number;
+}
+
+/**
+ * The chat request's idle limit for a client that is told nothing: the longest
+ * stage the product can have, its maximum Design Agent deadline of an hour
+ * (`MAX_DESIGN_AGENT_TIMEOUT_SECONDS`), plus five minutes (`CHAT_TIMEOUT_MARGIN_MS`
+ * in limits.ts, where a test keeps the two in step).
+ */
+export const DEFAULT_CHAT_TIMEOUT_MS = 65 * 60 * 1000;
+
+/** How much of a non-2xx chat response's body is kept; the response is then closed unread. */
+const ERROR_BODY_CHARS = 500;
+
 export class AppClient {
-  constructor(readonly origin: string) {}
+  readonly chatTimeoutMs: number;
+
+  constructor(
+    readonly origin: string,
+    options: AppClientOptions = {}
+  ) {
+    this.chatTimeoutMs = options.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
+  }
 
   private headers(json = true): Record<string, string> {
     // Same-origin, like the app's own pages.
@@ -132,7 +161,13 @@ export class AppClient {
     return false;
   }
 
-  /** Sends one chat message and reads the whole event stream. Never throws for stream problems. */
+  /**
+   * Sends one chat message and reads the whole event stream. Never throws for
+   * stream problems. It uses `node:http` rather than `fetch`, whose default
+   * body timeout of 300 s between chunks cut off designs whose stream was
+   * quiet for longer (#232); this request gives up only after
+   * `chatTimeoutMs` without its headers or without a chunk.
+   */
   async chat(
     body: { carouselId: string; message: string; sessionId?: string | null; retryRunId?: string },
     options: ChatOptions = {}
@@ -175,37 +210,69 @@ export class AppClient {
       }
     };
 
+    const payload = JSON.stringify({
+      message: body.message,
+      carouselId: body.carouselId,
+      ...(body.sessionId ? { sessionId: body.sessionId } : {}),
+      ...(body.retryRunId ? { retryRunId: body.retryRunId } : {}),
+    });
+    // The idle limit, restarted by every chunk: the headers, then each part of the stream.
+    let idleTimer: NodeJS.Timeout | null = null;
+    let timedOut: string | null = null;
+    let destroy: ((err: Error) => void) | null = null;
+    const restartIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = `the chat stream sent nothing for ${Math.round(this.chatTimeoutMs / 1000)} s`;
+        destroy?.(new Error(timedOut));
+      }, this.chatTimeoutMs);
+    };
+
     try {
-      const res = await fetch(`${this.origin}/api/chat`, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          message: body.message,
-          carouselId: body.carouselId,
-          ...(body.sessionId ? { sessionId: body.sessionId } : {}),
-          ...(body.retryRunId ? { retryRunId: body.retryRunId } : {}),
-        }),
-        signal: controller.signal,
+      restartIdle();
+      const res = await new Promise<IncomingMessage>((resolve, reject) => {
+        const req = request(
+          new URL("/api/chat", this.origin),
+          {
+            method: "POST",
+            headers: { ...this.headers(), "Content-Length": String(Buffer.byteLength(payload)) },
+            // A socket of its own, so no agent's keep-alive or socket timeout applies.
+            agent: false,
+            signal: controller.signal,
+          },
+          resolve
+        );
+        destroy = (err) => req.destroy(err);
+        req.on("error", reject);
+        req.end(payload);
       });
-      result.httpStatus = res.status;
-      if (!res.ok || !res.body) {
-        result.httpError = (await res.text()).slice(0, 500);
-        return result;
-      }
-      const parser = createChatStreamParser();
+      result.httpStatus = res.statusCode ?? 0;
+      const ok = result.httpStatus >= 200 && result.httpStatus < 300;
       const decoder = new TextDecoder();
-      const reader = res.body.getReader();
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        for (const event of parser.push(decoder.decode(value, { stream: true }))) handle(event);
+      const parser = createChatStreamParser();
+      let errorText = "";
+      for await (const chunk of res as AsyncIterable<Buffer>) {
+        restartIdle();
+        if (!ok) {
+          errorText += decoder.decode(chunk, { stream: true });
+          // Only the start of a refusal is kept, so read no more of it than that.
+          if (errorText.length >= ERROR_BODY_CHARS) break;
+          continue;
+        }
+        for (const event of parser.push(decoder.decode(chunk, { stream: true }))) handle(event);
+      }
+      if (!ok) {
+        result.httpError = (errorText + decoder.decode()).slice(0, ERROR_BODY_CHARS);
+        res.destroy();
+        return result;
       }
       for (const event of parser.end()) handle(event);
       if (!sawDone) result.streamError = "stream ended without a done event";
     } catch (err) {
-      if (!result.aborted) result.streamError = (err as Error).message;
+      if (!result.aborted) result.streamError = timedOut ?? (err as Error).message;
     } finally {
       if (abortTimer) clearTimeout(abortTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       result.durationMs = Date.now() - started;
     }
     return result;
@@ -276,10 +343,15 @@ export interface LogEntry {
   fields: Record<string, string | number | boolean | null>;
   /** The scalar fields of the nested objects in `NESTED_OBJECTS`, when the line has them. */
   objects?: Record<string, Record<string, string | number | boolean | null>>;
+  /** The string items of the lists in `STRING_LISTS`, when the line has them. */
+  lists?: Record<string, string[]>;
 }
 
 /** Nested objects read from a log line: the Design Agent's token usage on "run finished". */
 const NESTED_OBJECTS = ["designUsage"] as const;
+
+/** Lists of strings read from a log line: what the Director's plan needs that this machine lacks, on "plan finished". */
+const STRING_LISTS = ["unavailable"] as const;
 
 const TAGS = [
   "[director] plan finished",
@@ -327,7 +399,12 @@ export async function logEntries(logPath: string, carouselId: string, fromOffset
         const nested = nestedObject(body, key);
         if (nested) objects[key] = nested;
       }
-      entries.push({ at, entry: { tag, fields, ...(Object.keys(objects).length ? { objects } : {}) } });
+      const lists: NonNullable<LogEntry["lists"]> = {};
+      for (const key of STRING_LISTS) {
+        const list = stringList(body, key);
+        if (list) lists[key] = list;
+      }
+      entries.push({ at, entry: { tag, fields, ...(Object.keys(objects).length ? { objects } : {}), ...(Object.keys(lists).length ? { lists } : {}) } });
     }
   }
   return entries.sort((a, b) => a.at - b.at).map((e) => e.entry);
@@ -373,6 +450,32 @@ function nestedObject(body: string, key: string): LogEntry["fields"] | null {
       if (open === -1 || rest[open] !== "{") return null;
       const close = matchingBrace(rest, open);
       return close === -1 ? null : scalarFields(rest.slice(open + 1, close));
+    }
+  }
+  return null;
+}
+
+/** The quoted items of `key: [ ... ]` at the top level of a log line's object, or null. */
+function stringList(body: string, key: string): string[] | null {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"') quote = c;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") depth--;
+    else if (depth === 0 && body.startsWith(`${key}:`, i) && (i === 0 || /[\s,]/.test(body[i - 1]))) {
+      const rest = body.slice(i + key.length + 1);
+      const open = rest.search(/\S/);
+      if (open === -1 || rest[open] !== "[") return null;
+      const close = matchingBrace(rest, open);
+      if (close === -1) return null;
+      return [...rest.slice(open + 1, close).matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"/g)].map((m) => (m[1] ?? m[2]).replace(/\\(.)/g, "$1"));
     }
   }
   return null;
