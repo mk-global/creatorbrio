@@ -951,7 +951,7 @@ export function finishRun(i: FinishInput): FinishResult {
   say(`positive control:\n${controlReport(j.control).join("\n")}\n`);
   say(`delivery:\n${j.vectors.map((v) => `  ${v.phase.padEnd(9)} ${v.vector.padEnd(12)} ${v.status}: ${v.reason}`).join("\n")}\n  socks proxy: ${result.socks.status} (${result.socks.reason})\n`);
   if (!result.judgement.verdict.startsWith("dry")) {
-    say(`outcomes:\n${j.overall.map((o) => `  ${o.channel.padEnd(18)} ${o.outcome}`).join("\n")}\n  session resume     ${j.sessionResume}\n`);
+    say(`outcomes:\n${j.overall.map((o) => `  ${o.channel.padEnd(21)} ${o.outcome}`).join("\n")}\n  session resume        ${j.sessionResume}\n`);
   }
   if (result.spend.flags.length) say(`spend flags (the settlement may be incomplete; needs founder review):\n${result.spend.flags.map((f) => `  - ${f}`).join("\n")}\n`);
   if (j.stray.length) say(`unexplained:\n${j.stray.slice(0, 20).map((s) => `  ${s.observer}/${s.channel}: ${s.detail} (${s.why})`).join("\n")}\n`);
