@@ -302,6 +302,8 @@ export function judgeOutcome(channel: ChannelId, phase: PhaseResult, window: Win
   if (!window || phase.status === "not_run") return { ...base, outcome: "untested", evidence: [], reasons: ["the phase did not run"] };
   const hits = ctx.observations.filter((o) => o.actor === "subject" && o.channel === channel && rule.evidence.includes(o.observer) && windowOf(o, ctx.windows)?.phase === window.phase);
   if (hits.length > 0) return { ...base, outcome: "reached", evidence: hits.slice(0, 20).map((o) => `${o.observer}: ${o.detail}`), reasons: [] };
+  // A channel this harness cannot refuse is untested whatever else the window shows.
+  if (rule.unobservable) return { ...base, outcome: "untested", evidence: [], reasons: [rule.unobservable] };
   const reasons: string[] = [];
   if (phase.status === "timeout") reasons.push("the phase timed out");
   if (phase.status === "error") reasons.push(`the phase ended with an error (${phase.errorCode ?? "unknown"}), so the agent may not have acted`);
