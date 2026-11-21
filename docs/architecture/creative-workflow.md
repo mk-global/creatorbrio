@@ -46,7 +46,9 @@ They reach the browser as `stage` events in the typed stream contract (`src/lib/
 1. **Reading linked pages** runs only when the message contains links, at most three.
    Each page is fetched through the source-retrieval boundary (`src/lib/source-retrieval.ts`).
    Any page that cannot be read stops the run before planning, naming the host and the kind of failure and suggesting the user paste the text.
-   Page text goes to the Director as untrusted content and is never stored; the handoff lists the pages by URL.
+   Page text goes to the Director as untrusted content; the legacy handoff lists the pages by URL and stores no page text.
+   With the contained Design Agent profile, which has no web fetch, the handoff also carries each page's text in its own untrusted-page block ([design-agent.md](design-agent.md#contained)), so the run's continuation record keeps it for as long as the run can be continued.
+   `untrustedPageContent()` in `src/lib/source-text.ts` builds that block for both readers, and makes any spelling of its delimiters inside page text inert, so a page cannot close its block.
 2. **Planning visuals** runs the Visual Director (see [visual-director.md](visual-director.md)).
    A ready plan's brief update is not saved at this stage: it is merged into the carousel's Creative Brief only when the run goes on to design, after its images are attached.
    A run that stops before design leaves the brief unchanged.
@@ -111,7 +113,7 @@ It is removed when the task runs again.
 Retry is a button on a blocked run, never automatic.
 It sends a normal chat request with the run's ID; there is no separate endpoint.
 The server accepts it only for the carousel's most recent run, only when that run ended blocked, and only within 24 hours.
-A retry neither reads linked pages nor plans again: it re-validates the stored plan against the carousel as it is now, uses the stored message rather than anything the client sends, runs only the images that are not already valid, and applies the stored plan's Creative Brief update when it reaches design.
+A retry does not plan again, and reads linked pages again only for the contained Design Agent, which needs their text: it re-validates the stored plan against the carousel as it is now, uses the stored message rather than anything the client sends, runs only the images that are not already valid, and applies the stored plan's Creative Brief update when it reaches design.
 The plan and message are stored as soon as a plan with images is accepted, so a run cut off by a server restart before design can be retried too.
 
 ### Cancellation

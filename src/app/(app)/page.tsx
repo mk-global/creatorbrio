@@ -51,6 +51,19 @@ export default function Home() {
 
   return (
     <div className="space-y-14 lg:space-y-20">
+      {status?.claude.available && status.designAgent?.profile === "contained" && !status.designAgent.available && (
+        <PageNotice
+          tone="alert"
+          title="The Design Agent can't run on this computer"
+          action={
+            <Link href="/settings#design-agent" className="btn btn-quiet btn-sm">
+              What it needs
+            </Link>
+          }
+        >
+          You can still open, arrange and export existing work. {status.designAgent.reason}
+        </PageNotice>
+      )}
       {status && !status.claude.available && (
         <PageNotice
           tone="alert"

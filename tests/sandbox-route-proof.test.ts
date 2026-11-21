@@ -789,7 +789,9 @@ describe("the probe script", () => {
     for (const id of ["listener_socks", "decoy_socks", "decoy_socks_127"]) {
       expect(script.split("\n").find((l) => l.trim().startsWith(`http ${id} `)), id).toContain(`--proxy "$socks" --noproxy ''`);
     }
-    expect(script).toContain(`http external_socks "https://example.com/" --proxy "$socks" --noproxy ''`);
+    expect(script).toContain(`http external_socks "$external" --proxy "$socks" --noproxy ''`);
+    // The external target defaults to example.com over HTTPS; the proof may replace it per host and records it.
+    expect(script).toContain('external="${EXTERNAL_URL:-https://example.com/}"');
     expect(script).toContain('skip_all "no SOCKS proxy in the environment" listener_socks decoy_socks decoy_socks_127');
     expect(script).toContain('skip_all "no SOCKS proxy in the environment" external_socks');
   });
@@ -813,5 +815,18 @@ describe("the probe script", () => {
     expect(run("")).toEqual([{ id: "env_names", ok: true, detail: "count=0 lines=0" }]);
     expect(script).toContain("| emit_names env_names");
     expect(script).toContain("| emit_names env_sensitive");
+  });
+});
+
+describe("external probes over plain HTTP", () => {
+  it("count only the destination's success or redirect as reached, and the sandbox proxy's own refusal as refused", async () => {
+    const { externalOutcome, SANDBOX_PROXY_REFUSAL } = await import("../eval/sandbox-route/proof");
+    expect(externalOutcome({ ok: true, detail: "rc=0 http=200 body=<!doctype html>" })).toBe("reached");
+    expect(externalOutcome({ ok: true, detail: "rc=0 http=301 body=" })).toBe("reached");
+    expect(externalOutcome({ ok: true, detail: `rc=0 http=403 body=${SANDBOX_PROXY_REFUSAL}` })).toBe("refused");
+    // Any other error status could be the destination or anything between: never refused.
+    expect(externalOutcome({ ok: true, detail: "rc=0 http=403 body=Forbidden" })).toBe("untested");
+    expect(externalOutcome({ ok: true, detail: "rc=0 http=502 body=" })).toBe("untested");
+    expect(externalOutcome({ ok: false, detail: "rc=6 http=000 err=curl: (6) Could not resolve host" })).toBe("refused");
   });
 });

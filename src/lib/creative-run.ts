@@ -73,6 +73,12 @@ export interface CreativeRunInput {
   continueRunId?: string | null;
   /** Whether the Design Agent resumes the carousel's conversation, so a continuation need not repeat the original task. */
   resumingSession?: boolean;
+  /**
+   * The contained profile: the Design Agent has no web fetch, so its task
+   * carries the linked pages' text as the server read it (#228), and a retry
+   * reads them again rather than leaving the agent only the URLs.
+   */
+  pageTextForAgent?: boolean;
 }
 
 export type CreativeRunOutcome =
@@ -258,7 +264,7 @@ export async function prepareCreativeRun(
   try {
     const sources = await readSources(input, events, carouselId, runId, signal);
     plan = await plan_(input, sources, events, carouselId, runId, signal);
-    return await imagesThenHandoff(input, plan, sources.map((s) => s.url), events, runId, signal);
+    return await imagesThenHandoff(input, plan, sources, events, runId, signal);
   } catch (err) {
     return endBeforeDesign(err, carouselId, runId, plan, input.message);
   }
@@ -286,7 +292,9 @@ async function retryRun(input: CreativeRunInput, events: CreativeRunEvents, sign
   log("retry", { carouselId, runId, reused: prepared.reused.length, pending: prepared.pending.length });
   try {
     if (!plan) throw new Blocked("retry_refused", "This attempt can no longer be retried; send the request again.");
-    return await imagesThenHandoff({ ...input, message: prepared.message }, plan, [], events, runId, signal, prepared.pending);
+    const retryInput = { ...input, message: prepared.message };
+    const pages = input.pageTextForAgent ? await readSources(retryInput, events, carouselId, runId, signal) : [];
+    return await imagesThenHandoff(retryInput, plan, pages, events, runId, signal, prepared.pending);
   } catch (err) {
     return endBeforeDesign(err, carouselId, runId, plan, prepared.message);
   }
@@ -447,7 +455,7 @@ async function plan_(
 async function imagesThenHandoff(
   input: CreativeRunInput,
   plan: ReadyPlan,
-  sourceUrls: string[],
+  sources: DirectorSource[],
   events: CreativeRunEvents,
   runId: string,
   signal: AbortSignal,
@@ -576,7 +584,13 @@ async function imagesThenHandoff(
   await setCreativeBrief(carouselId, mergeBrief(current?.creativeBrief, plan.briefUpdate, new Date().toISOString()));
 
   events.stage("designing");
-  const designMessage = buildDesignMessage(input.message, { plan, assets, references: input.references, sources: sourceUrls });
+  const designMessage = buildDesignMessage(input.message, {
+    plan,
+    assets,
+    references: input.references,
+    sources: sources.map((s) => s.url),
+    pages: input.pageTextForAgent ? sources : undefined,
+  });
   // Kept so that an unfinished design can be continued without planning again.
   const assetIds: Record<string, string | null> = {};
   for (const asset of plan.execution.assets) {

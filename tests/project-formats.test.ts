@@ -250,11 +250,21 @@ describe("planning a Reel cover", () => {
 });
 
 describe("the app status", () => {
-  it("reports Claude Code and image generation without paths, URLs or secrets", async () => {
+  it("reports Claude Code, image generation and the Design Agent profile without paths, URLs or secrets", async () => {
     const body = await (await statusRoute()).json();
-    expect(Object.keys(body).sort()).toEqual(["claude", "imageGeneration"]);
+    expect(Object.keys(body).sort()).toEqual(["claude", "designAgent", "imageGeneration"]);
     expect(typeof body.claude.available).toBe("boolean");
     expect(typeof body.imageGeneration.configured).toBe("boolean");
+    expect(body.designAgent).toEqual({ profile: "legacy" });
     expect(JSON.stringify(body)).not.toMatch(/[/\\]|http|token/i);
+  });
+
+  it("reports an invalid Design Agent profile setting as invalid (#227)", async () => {
+    process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "sandboxed";
+    try {
+      expect((await (await statusRoute()).json()).designAgent).toEqual({ profile: "invalid" });
+    } finally {
+      delete process.env.CREATORBRIO_DESIGN_AGENT_PROFILE;
+    }
   });
 });

@@ -94,6 +94,11 @@ The same idea is being extended to video: one production that you can edit by ha
 CreatorBrio is developed on macOS, and CI runs on Linux.
 Windows has code paths for starting the app but is not tested, and `/stop` does not work there.
 
+The contained Design Agent profile, which is off by default while it is qualified, has stricter requirements.
+It runs on macOS, and on Linux with **bubblewrap and socat** installed (for example `sudo apt install bubblewrap socat`); Debian 12 is the only Linux it has been tested on.
+It is not available on native Windows or WSL2, which have not been tested.
+It has been tested on Claude Code 2.1.328, refuses versions older than 2.1.219, and warns about any other version; `npm run doctor` checks the platform, the sandbox prerequisites and the version.
+
 ### Install and start
 
 With Claude Code:
@@ -181,7 +186,8 @@ flowchart LR
 **Carousels.**
 The **Visual Director** is a separate Claude CLI call that can only read copies of the carousel's own images; it returns a plan the server validates in full (slide count, each slide's treatment, which images go where, and any to generate).
 The plan's intent is stored on the carousel as its **Creative Brief**.
-The **design agent** then receives your message and the plan; the chat route runs it with `--allowedTools Bash WebFetch Read`, and it saves each slide by calling the app's own API.
+The **design agent** then receives your message and the plan, and saves each slide by calling the app's own API.
+Today it runs with `--allowedTools Bash WebFetch Read` and your own Claude Code configuration; a contained profile, which runs it inside Claude Code's sandbox with access to only its own carousel, is being qualified and is off by default (`CREATORBRIO_DESIGN_AGENT_PROFILE`, see [design-agent.md](docs/architecture/design-agent.md#profiles)).
 After it finishes, the server compares the slides with the plan and reports any differences without changing them.
 Slides are body-level HTML; one function, `wrapSlideHtml()`, turns them into full documents for both the preview and the export, so what you see is what you download.
 
@@ -265,6 +271,7 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/style-presets.json` | Style presets the design agent can save |
 | `data/staged-actions.json` | Records for an internal API that the UI does not use |
 | `data/.font-cache/` | Cached Google Fonts used by export |
+| `data/design-agent-sessions.json` | Which Claude sessions each carousel's contained Design Agent may resume (only with the contained profile) |
 | `data/generation-runs.json` | Whether each carousel's last chat run finished, and its last creative run, including a plan kept for 24 hours so a run stopped before design can be retried |
 | `data/asset-staging/` | Generated images waiting to be added to a carousel; removed once added, or after 24 hours |
 | `data/video/` | Video Studio productions, each with its full edit history |
@@ -272,6 +279,7 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/video-renders/` | Exported videos, their captions and manifests |
 | `data/video-auth/`, `data/video-studio.key` | Paired browser sessions and the local key the Video Studio API uses; keep them private |
 | `public/uploads/` | Uploaded logos and reference images, and generated images |
+| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's working folder and its staged copies of reference images (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); `/reset` does not remove it |
 | `.env.local` | Local settings such as `CLAUDE_CLI_PATH`, the time and spending limits above, and `IMAGE_SERVICE_URL` (loopback addresses only) |
 
 Chat transcripts, and the session ID that lets the next message continue the conversation, are kept in your browser's local storage for each carousel; Claude Code also keeps its own record of each session.

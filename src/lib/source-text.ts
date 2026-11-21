@@ -79,3 +79,23 @@ export function extractPlainText(body: string): ExtractedText {
   const truncated = full.length > MAX_SOURCE_TEXT_CHARS;
   return { title: "", text: truncated ? full.slice(0, MAX_SOURCE_TEXT_CHARS) : full, truncated };
 }
+
+/** The delimiters of an untrusted page block; page text can never contain them. */
+export const UNTRUSTED_PAGE_OPEN = "<untrusted-page-content>";
+export const UNTRUSTED_PAGE_CLOSE = "</untrusted-page-content>";
+
+/**
+ * Makes any spelling of the block's delimiters in page text inert, so a page
+ * cannot close its block early or open a new one. Extraction decodes entities,
+ * so `&lt;/untrusted-page-content&gt;` in a page arrives here as the real
+ * delimiter; it becomes `‹/untrusted-page-content>`.
+ */
+export function neutralizePageDelimiters(text: string): string {
+  return text.replace(/<(\s*\/?\s*untrusted-page-content)/gi, "\u2039$1");
+}
+
+/** A page's text inside the untrusted-content delimiters, with any delimiter in it made inert. */
+export function untrustedPageContent(page: { title: string; text: string; truncated: boolean }): string {
+  const title = page.title ? `Title: ${neutralizePageDelimiters(page.title)}\n` : "";
+  return `${UNTRUSTED_PAGE_OPEN}\n${title}${neutralizePageDelimiters(page.text)}${page.truncated ? "\n[truncated]" : ""}\n${UNTRUSTED_PAGE_CLOSE}`;
+}

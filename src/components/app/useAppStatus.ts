@@ -2,9 +2,15 @@
 
 import { useEffect, useState } from "react";
 
+export type DesignAgentStatus =
+  | { profile: "legacy" | "invalid" }
+  | { profile: "contained"; available: true; cliVersion: string; versionWarning: string | null; qualifiedCliVersion: string }
+  | { profile: "contained"; available: false; reason: string; guidance: string };
+
 export interface AppStatus {
   claude: { available: boolean };
   imageGeneration: { configured: boolean };
+  designAgent?: DesignAgentStatus;
 }
 
 /** What `/api/status` says about this computer, or null until it answers (#175). */

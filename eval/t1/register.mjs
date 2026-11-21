@@ -3,30 +3,46 @@
 // TypeScript settings require: a relative specifier without an extension
 // resolves to the `.ts` file beside it, and `@/x` (the repository's alias for
 // `src/`, which the shared #224 spend modules use) resolves to `src/x.ts`.
+// Only when the first resolution fails, `@/x` and a relative path also try
+// `x/index.ts`, and a package subpath without an extension (such as Next's
+// `next/server`, which the app's route handlers import, #237) tries `.js`.
 //
 //   node --import ./eval/t1/register.mjs eval/t1/run.ts ...
 import * as nodeModule from "node:module";
 
 const SRC = new URL("../../src/", import.meta.url).href;
 
-function candidate(specifier) {
-  if (specifier.startsWith("@/")) return /\.[cm]?[jt]s$/.test(specifier) ? SRC + specifier.slice(2) : `${SRC}${specifier.slice(2)}.ts`;
-  if ((specifier.startsWith("./") || specifier.startsWith("../")) && !/\.[cm]?[jt]s$/.test(specifier)) return `${specifier}.ts`;
-  return null;
+function candidates(specifier) {
+  const plain = !/\.[cm]?[jt]s$/.test(specifier);
+  if (specifier.startsWith("@/")) {
+    const rest = specifier.slice(2);
+    return plain ? [`${SRC}${rest}.ts`, `${SRC}${rest}/index.ts`] : [SRC + rest];
+  }
+  if ((specifier.startsWith("./") || specifier.startsWith("../")) && plain) return [`${specifier}.ts`, `${specifier}/index.ts`];
+  return [];
 }
+
+/** A package subpath without an extension, tried with `.js` only after the default resolution fails. */
+const packageSubpath = (specifier) =>
+  /^(@[^/]+\/)?[^./@][^/]*\/[^.]+$/.test(specifier) && !specifier.startsWith("@/") && !specifier.startsWith("node:") ? `${specifier}.js` : null;
 
 if (typeof nodeModule.registerHooks === "function") {
   nodeModule.registerHooks({
     resolve(specifier, context, next) {
-      const alt = candidate(specifier);
-      if (alt) {
+      for (const alt of candidates(specifier)) {
         try {
           return next(alt, context);
         } catch {
-          // Fall through to the default resolution.
+          // Try the next candidate, then the default resolution.
         }
       }
-      return next(specifier, context);
+      try {
+        return next(specifier, context);
+      } catch (error) {
+        const alt = packageSubpath(specifier);
+        if (!alt) throw error;
+        return next(alt, context);
+      }
     },
   });
 } else {
