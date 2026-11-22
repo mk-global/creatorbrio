@@ -304,6 +304,22 @@ export function shellStartupPlant(input: { aliasName: string; aliasValue: string
 }
 
 /**
+ * Where the contained CLI kept a shell snapshot holding `value` (#242), named
+ * by which folder it is: the person's CLI folder or the server-owned home's.
+ * Both sit under the same synthetic home in the check, so the folders are told
+ * apart by identity, never by a shared path prefix. The labels are diagnostic
+ * text; a snapshot in either folder is an escape.
+ */
+export function shellSnapshotHolders(input: { personCliDir: string; agentCliDir: string; value: string }): string[] {
+  const holds = (dir: string) => filesUnder(path.join(dir, "shell-snapshots")).some((f) => readFileSync(f, "utf8").includes(input.value));
+  const labelled: [string, string][] = [
+    [input.personCliDir, "the person's CLI folder"],
+    [input.agentCliDir, "the server-owned home's CLI folder"],
+  ];
+  return labelled.filter(([dir]) => holds(dir)).map(([, label]) => label);
+}
+
+/**
  * The shell startup check's judgement (#242). Two properties, each with the
  * legacy launch as its positive control:
  *
@@ -716,10 +732,7 @@ async function main() {
       };
       const probeFor = (dir: string): ScriptedCall[] => [{ name: "Bash", input: { command: shellStartupProbe({ sentinel, ...names, file: path.join(dir, "shell-startup.txt") }), description: "Shell probe" } }];
       // Where the CLI keeps the shell setup it captured: the folder that holds a planted value there is the one its preparation read.
-      const capturedIn = () =>
-        [path.join(home, ".claude"), path.join(agentHomeDir(agents), ".claude")].filter((dir) =>
-          filesUnder(path.join(dir, "shell-snapshots")).some((f) => readFileSync(f, "utf8").includes(values.aliasValue))
-        ).map((dir) => (dir.startsWith(home) ? "the person's CLI folder" : "the server-owned home's CLI folder"));
+      const capturedIn = () => shellSnapshotHolders({ personCliDir: path.join(home, ".claude"), agentCliDir: path.join(agentHomeDir(agents), ".claude"), value: values.aliasValue });
       try {
         const workDir = newWorkDir();
         const c = await contained(workDir, probeFor(workDir));

@@ -5,10 +5,10 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { serverTempRoot } from "@/lib/agent-workspace";
+import { HOME_STARTUP_FILES, serverTempRoot } from "@/lib/agent-workspace";
 import { afterEach, describe, expect, it } from "vitest";
 import { bearerMatchesOf, STAND_IN_API_KEY, standInEnv, startStandIn, storeSignInEnv, type StandIn } from "../eval/sandbox-route/stand-in";
 import {
@@ -205,6 +205,38 @@ describe("the qualification's shell startup check (#242)", () => {
     expect(judgeShellStartup({ ...base, control: `${values.sentinel}\n${values.aliasValue}\n` }).problems).toEqual(["positive control: the planted function did not reach the legacy agent's commands"]);
     expect(judgeShellStartup({ ...base, ranInControl: [] }).problems).toEqual(["positive control: no planted startup file ran under the legacy launch"]);
     expect(verdictOf(judgeShellStartup({ ...base, ranInControl: [] }))).toBe("inconclusive");
+  });
+
+  it("plants in exactly the startup files the server-owned home is refused for holding", async () => {
+    // Two lists of the same names, one for the product's refusal and one for the check's plants: a name in only one would leave a file the check never plants or the product never refuses.
+    const { PLANTED_STARTUP_FILES } = await import("../eval/sandbox-route/qualify");
+    expect([...PLANTED_STARTUP_FILES].sort()).toEqual([...HOME_STARTUP_FILES].sort());
+  });
+
+  it("names the folder that holds a captured shell snapshot by which folder it is, though both sit under one home", async () => {
+    const { shellSnapshotHolders } = await import("../eval/sandbox-route/qualify");
+    const dir = mkdtempSync(path.join(tmpdir(), "cbq-snapshots-"));
+    try {
+      // As in the check, the server-owned home's CLI folder is inside the same synthetic home as the person's.
+      const personCliDir = path.join(dir, "home", ".claude");
+      const agentCliDir = path.join(dir, "home", ".creatorbrio", "design-agent", ".home", ".claude");
+      const keep = (cliDir: string, text: string) => {
+        mkdirSync(path.join(cliDir, "shell-snapshots"), { recursive: true });
+        writeFileSync(path.join(cliDir, "shell-snapshots", "snapshot-zsh-1.sh"), text);
+      };
+      const input = { personCliDir, agentCliDir, value: values.aliasValue };
+      expect(shellSnapshotHolders(input)).toEqual([]);
+      keep(agentCliDir, `alias cbq='printf "%s\\n" ${values.aliasValue}'\n`);
+      expect(shellSnapshotHolders(input)).toEqual(["the server-owned home's CLI folder"]);
+      keep(personCliDir, `alias cbq='printf "%s\\n" ${values.aliasValue}'\n`);
+      expect(shellSnapshotHolders(input)).toEqual(["the person's CLI folder", "the server-owned home's CLI folder"]);
+      rmSync(path.join(agentCliDir, "shell-snapshots"), { recursive: true, force: true });
+      expect(shellSnapshotHolders(input)).toEqual(["the person's CLI folder"]);
+      // A snapshot without the planted value holds nothing to report.
+      expect(shellSnapshotHolders({ ...input, value: "CBQSA_other" })).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("plants a file whose alias and function a real shell defines, and which marks that it ran", async () => {

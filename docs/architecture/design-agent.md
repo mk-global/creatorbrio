@@ -72,6 +72,7 @@ The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent
   The server-owned home holds no shell startup files, so a contained launch runs none of the person's.
   The server creates it owner-only and never follows it through a link; if it exists as a link, with another owner or with group or other access, a design is refused (`start_failed`) and the server log names the folder by its last component.
   A shell startup file found in it is refused the same way and never deleted, since the server never writes one; the empty files the CLI's sandbox leaves in their place on Linux define nothing and are kept.
+  Removing the home folder is the recovery when it is refused, for any reason named here, and doing so discards every contained conversation's CLI transcript, so those conversations start fresh (their slides are kept).
   Startup files the operating system itself reads, outside any home folder, still apply, as they do to the legacy profile.
   The home keeps the CLI's own state between runs, its configuration file and the transcripts that a resumed conversation continues, so it survives server restarts and no sweep or carousel deletion removes it.
   The agent's shell is denied reading it, as it is denied the person's home, and its write attempts, including planting a startup file, are refused.
@@ -80,9 +81,17 @@ The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent
   Measured on 2.1.328: a home without that link does not find the sign-in, including one holding a copy of the CLI's account file or of the person's preferences.
   Any other entry in place of that link is refused.
   On Linux the sign-in is the credentials file in the person's CLI configuration folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` when it is an absolute path), which the CLI reads only from a real file: it refuses a link, and a copy would lose the refreshed sign-in the CLI writes back.
-  So the profile names that folder as the sign-in store's location (`CLAUDE_SECURESTORAGE_CONFIG_DIR`), where the CLI reads and refreshes only that file, and the home holds nothing of the person's.
+  So the profile names that folder as the sign-in store's location (`CLAUDE_SECURESTORAGE_CONFIG_DIR`), where the CLI reads and refreshes its credentials file and keeps its sign-in locks beside it, and the home holds nothing of the person's.
   On macOS the same variable is set only when the person has an absolute `CLAUDE_CONFIG_DIR`, because the CLI derives the keychain entry's name from it.
-  This variable is internal to the CLI and undocumented: a version that drops it makes a contained run fail to sign in on Linux, or with a configuration folder of the person's on macOS, rather than exposing anything, and the stand-in qualification's sign-in store check detects that.
+  This variable is internal to the CLI and undocumented.
+  On Linux, a version that drops it makes a contained run fail to sign in rather than exposing anything, and the stand-in qualification's sign-in store check detects that for the default configuration folder only, because the checks never set `CLAUDE_CONFIG_DIR`.
+  How the profile maps a person's absolute configuration folder, on both platforms, rests on reading the pinned CLI and is untested against the CLI.
+  On macOS, if a CLI version stopped honoring the variable, a contained run with a person's configured folder could sign in with the person's default keychain entry instead of failing; evidence is tracked on #244.
+  On macOS with no configuration folder of the person's, one residual remains.
+  The contained CLI keeps its sign-in refresh and store-write locks in the server-owned home's CLI folder, while the keychain entry is shared with the person's own Claude Code, whose locks live in the person's CLI folder.
+  Refreshes are therefore not serialized between a contained run and the person's own sessions.
+  That can fail a contained run and, in a narrow window, could sign the person out of their own Claude Code.
+  No environment setting avoids it without breaking sign-in; a fix and a concurrent-refresh check are activation items on #237.
   A contained conversation begun before this change kept its transcript in the person's CLI folder, where the CLI no longer looks, so resuming it is reported as not found and the chat starts a fresh conversation; its slides are kept.
 - **A folder per conversation.** The agent works in `~/.creatorbrio/design-agent/<carousel id>/<conversation id>`, outside the repository (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it to another absolute path).
   Each new conversation gets a new folder with a random name; a resumed one reopens its own folder, so the CLI's session continues, and a folder that is gone is never recreated.
