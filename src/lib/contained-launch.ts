@@ -1,9 +1,9 @@
 /**
  * Assembles one contained Design Agent run (#156, #186, #226, #227, #228,
- * #241): the conversation's folder, the run's temporary folder, the images it
- * may view, its listener token, and the exact CLI arguments and environment
- * from the profile. The CLI is started as the leader of its own process group
- * (`src/lib/agent-processes.ts`). `finish` always revokes the token, stops
+ * #241, #242): the conversation's folder, the run's temporary folder, the
+ * CLI's server-owned home folder, the images it may view, its listener token,
+ * and the exact CLI arguments and environment from the profile. The CLI is
+ * started as the leader of its own process group (`src/lib/agent-processes.ts`). `finish` always revokes the token, stops
  * every process the run left, and removes the temporary folder, however the
  * run ends.
  */
@@ -16,6 +16,7 @@ import { getCarousel } from "@/lib/carousels";
 import {
   createRunTempDir,
   openConversation,
+  prepareAgentHome,
   removeRunTempDir,
   serverTempRoot,
   stageUploadsForAgent,
@@ -23,7 +24,7 @@ import {
   startConversation,
 } from "@/lib/agent-workspace";
 import { trackRun, type TrackedRun } from "@/lib/agent-processes";
-import { containedArgs, containedEnv, privateReadDirs, type ContainedLayout } from "@/lib/design-agent-profile";
+import { agentSignInDir, containedArgs, containedEnv, privateReadDirs, type ContainedLayout } from "@/lib/design-agent-profile";
 
 export interface ContainedLaunch {
   args: string[];
@@ -88,8 +89,11 @@ export async function prepareContainedLaunch(options: {
     const issued = issueAgentToken({ carouselId: options.carouselId, appOrigin: options.appOrigin, ttlMs: options.tokenTtlMs });
     revoke = issued.revoke;
     const workspaceRoot = path.dirname(path.dirname(workDir));
+    const env = options.env ?? process.env;
+    const homeDir = await realpath(os.homedir());
+    const agentHome = await prepareAgentHome({ repoDir, personHome: homeDir, root: workspaceRoot, uid });
     const privateDirs = privateReadDirs({
-      env: options.env ?? process.env,
+      env,
       platform: process.platform,
       workspaceRoot,
       userTempDir: await realpath(os.tmpdir()),
@@ -103,7 +107,8 @@ export async function prepareContainedLaunch(options: {
       stagingDir,
       tempDir,
       tempRoot: serverTempRoot(process.platform, uid),
-      homeDir: await realpath(os.homedir()),
+      homeDir,
+      agentHome,
       repoDir,
       dataDir,
       listenerPort: options.listenerPort,
@@ -114,7 +119,7 @@ export async function prepareContainedLaunch(options: {
     const token = issued.token;
     return {
       args: containedArgs({ taskMessage, systemPrompt, resumeSessionId: options.resumeSessionId, budgetUsd: options.budgetUsd, layout }),
-      env: containedEnv(options.env ?? process.env, { tempDir, token }),
+      env: containedEnv(env, { tempDir, token, home: agentHome, signInDir: agentSignInDir({ env, platform: process.platform, personHome: homeDir }) }),
       cwd: workDir,
       conversationId: path.basename(workDir),
       redact: (text) => (text.includes(token) ? text.split(token).join("[redacted]") : text),
