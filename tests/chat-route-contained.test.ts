@@ -13,6 +13,7 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runDirNameLength, serverTempRoot } from "@/lib/agent-workspace";
+import { SIGN_IN_STORE_ENV } from "@/lib/design-agent-profile";
 import type { BrandConfig } from "@/types/brand";
 import { CHAT_ERROR_MESSAGES, createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
 import { boundConversation } from "@/lib/agent-sessions";
@@ -295,6 +296,41 @@ describe("a contained design run", () => {
     expect(path.basename(env.CLAUDE_CODE_TMPDIR)).toHaveLength(runDirNameLength(serverTempRoot(), process.getuid?.() ?? 0));
     // The run's temporary folder is gone once the run has ended.
     await expect(stat(env.CLAUDE_CODE_TMPDIR)).rejects.toThrow();
+  });
+
+  it("runs the CLI with the server-owned home and never the person's home or configuration folder (#242)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const original = process.env.CLAUDE_CONFIG_DIR;
+    const personConfig = path.join(workdir, "person-claude-config");
+    process.env.CLAUDE_CONFIG_DIR = personConfig;
+    try {
+      await postChat({ carouselId: own.id });
+    } finally {
+      if (original === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = original;
+    }
+    const env = await recordedJson<Record<string, string>>("env.json");
+    const home = path.join(agentsRoot, ".home");
+    expect(env.HOME).toBe(home);
+    expect((await stat(home)).mode & 0o777).toBe(0o700);
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    // The person's sign-in is named by the store's own location, never by moving the CLI's state into their folder.
+    expect(env[SIGN_IN_STORE_ENV]).toBe(personConfig);
+    const argv = await recordedJson<string[]>("argv.json");
+    const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]);
+    expect(settings.sandbox.filesystem.denyRead).toContain(home);
+    expect(settings.permissions.deny).toContain(`Read(/${home}/**)`);
+  });
+
+  it("refuses to start, before the agent runs, when the server-owned home holds a shell startup file (#242)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    await mkdir(path.join(agentsRoot, ".home"), { mode: 0o700 });
+    await writeFile(path.join(agentsRoot, ".home", ".zshrc"), "alias ls='echo planted'\n");
+    const { events } = await postChat({ carouselId: own.id });
+    expect(events.find((e) => e.type === "error")).toBeTruthy();
+    await expect(stat(path.join(fakeDir, "argv.json"))).rejects.toThrow();
   });
 
   it("never relays or logs its token, even when the agent repeats it, and the token stops working", async () => {

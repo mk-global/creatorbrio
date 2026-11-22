@@ -279,7 +279,7 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/video-renders/` | Exported videos, their captions and manifests |
 | `data/video-auth/`, `data/video-studio.key` | Paired browser sessions and the local key the Video Studio API uses; keep them private |
 | `public/uploads/` | Uploaded logos and reference images, and generated images |
-| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's folder for its current conversation and its staged copies of reference images (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); a new conversation replaces the previous folder; `/reset` does not remove it |
+| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's folder for its current conversation and its staged copies of reference images, and `.home`, the server-owned home of the agent's Claude Code, which holds the CLI's own state for contained conversations (account metadata and transcripts) and, on macOS, a link to your keychain folder, and none of your shell startup files (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); a new conversation replaces the previous folder; `/reset` does not remove it |
 | `/tmp/cb<user id in base 36>/` (under `/private/tmp/` on macOS) | Only with the contained Design Agent profile: each run's temporary folder and the Visual Director's image copies, private to you; removed after each run, and leftovers at the next server start |
 | `.env.local` | Local settings such as `CLAUDE_CLI_PATH`, the time and spending limits above, and `IMAGE_SERVICE_URL` (loopback addresses only) |
 

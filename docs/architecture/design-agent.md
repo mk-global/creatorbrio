@@ -38,12 +38,12 @@ It curls the app's own API at the origin the request arrived on.
 
 ### Contained
 
-The contained profile (#156, #186, #226, #227, #228, #241) gives the agent one carousel and nothing else.
+The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent one carousel and nothing else.
 
 - **Explicit configuration.** The CLI loads no setting sources, no MCP servers and no slash commands.
   A stand-in check with planted personal and project instructions, rules, skills, agents, hooks, a settings model and MCP servers found none of them reaching the agent.
   Whether a personal plugin or advisor setting is also kept out has not been checked yet (#237).
-  Personal shell startup files are not yet isolated: the CLI copies their functions and aliases into the agent's shell commands (#237).
+  Personal shell startup files are kept out by the server-owned home (below).
   The model (`claude-opus-5-5`), effort (`medium`), tools (`Bash` and `Read`) and permission mode (`dontAsk`) are fixed by the profile, and auto-memory and the auto-updater are off.
   Thinking is the CLI's own adaptive default for the model, recorded in the profile rather than passed.
 - **No web fetch.** The agent has no `WebFetch` or `WebSearch`, so the topic research the legacy agent could do while designing is removed: it works from the request, the plan and the pages linked in the message.
@@ -62,10 +62,37 @@ The contained profile (#156, #186, #226, #227, #228, #241) gives the agent one c
   A CLI configuration folder kept outside home is denied too, by configuration only: no check has probed it yet.
   Other system locations stay readable, as the sandbox reads them by default, including other programs' files in the shared temporary folders.
 - **Read tool.** `Read` is allowed only inside the conversation's folder and its staged images, and refused everywhere else, including the per-user temporary parent.
-- **Environment.** The CLI receives an explicit allowlist of variables (sign-in, locale, proxy and the run's own values); nothing else in the app's environment reaches it.
+- **Environment.** The CLI receives an explicit allowlist of variables (sign-in, locale, proxy and the run's own values), with its home folder set to the server-owned one; nothing else in the app's environment reaches it.
   The CLI's environment scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) keeps its sign-in variables out of the agent's shell.
   Measured on 2.1.328 on macOS and Linux with a synthetic value planted in each sign-in variable: the shell found none in its own environment, its ancestors' environments or the process table, while the legacy profile's shell, running the same probe, found them.
   Residual exposure, measured on 2.1.328 on macOS and Linux: the CLI itself still gives the shell its messaging socket's address, whose connections the sandbox refuses, and the sandbox proxy's own username and password, which reach only that proxy.
+- **Server-owned home.** The CLI runs with its home folder set to one the server owns, `.home` in the agent folders' root (`~/.creatorbrio/design-agent/.home` by default), never the person's home (#242).
+  The CLI prepares each shell command by sourcing the startup files in its home folder, in a shell of its own outside the sandbox.
+  With the person's home, every contained launch ran the person's shell startup files outside the sandbox, though the sandbox kept their aliases and functions out of the agent's commands.
+  The server-owned home holds no shell startup files, so a contained launch runs none of the person's.
+  The server creates it owner-only and never follows it through a link; if it exists as a link, with another owner or with group or other access, a design is refused (`start_failed`) and the server log names the folder by its last component.
+  A shell startup file found in it is refused the same way and never deleted, since the server never writes one; the empty files the CLI's sandbox leaves in their place on Linux define nothing and are kept.
+  Removing the home folder is the recovery when it is refused, for any reason named here, and doing so discards every contained conversation's CLI transcript, so those conversations start fresh (their slides are kept).
+  Startup files the operating system itself reads, outside any home folder, still apply, as they do to the legacy profile.
+  The home keeps the CLI's own state between runs, its configuration file and the transcripts that a resumed conversation continues, so it survives server restarts and no sweep or carousel deletion removes it.
+  The agent's shell is denied reading it, as it is denied the person's home, and its write attempts, including planting a startup file, are refused.
+  The profile never gives the CLI the person's configuration folder (`CLAUDE_CONFIG_DIR`), which would move the CLI's state, and on macOS the name of its keychain entry, into the person's folder.
+  On macOS the CLI finds the person's sign-in in their login keychain, which it locates through its home folder, so the server-owned home holds one link, `Library/Keychains`, to the person's keychain folder, and nothing else of theirs.
+  Measured on 2.1.328: a home without that link does not find the sign-in, including one holding a copy of the CLI's account file or of the person's preferences.
+  Any other entry in place of that link is refused.
+  On Linux the sign-in is the credentials file in the person's CLI configuration folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` when it is an absolute path), which the CLI reads only from a real file: it refuses a link, and a copy would lose the refreshed sign-in the CLI writes back.
+  So the profile names that folder as the sign-in store's location (`CLAUDE_SECURESTORAGE_CONFIG_DIR`), where the CLI reads and refreshes its credentials file and keeps its sign-in locks beside it, and the home holds nothing of the person's.
+  On macOS the same variable is set only when the person has an absolute `CLAUDE_CONFIG_DIR`, because the CLI derives the keychain entry's name from it.
+  This variable is internal to the CLI and undocumented.
+  On Linux, a version that drops it makes a contained run fail to sign in rather than exposing anything, and the stand-in qualification's sign-in store check detects that for the default configuration folder only, because the checks never set `CLAUDE_CONFIG_DIR`.
+  How the profile maps a person's absolute configuration folder, on both platforms, rests on reading the pinned CLI and is untested against the CLI.
+  On macOS, if a CLI version stopped honoring the variable, a contained run with a person's configured folder could sign in with the person's default keychain entry instead of failing; evidence is tracked on #244.
+  On macOS with no configuration folder of the person's, one residual remains.
+  The contained CLI keeps its sign-in refresh and store-write locks in the server-owned home's CLI folder, while the keychain entry is shared with the person's own Claude Code, whose locks live in the person's CLI folder.
+  Refreshes are therefore not serialized between a contained run and the person's own sessions.
+  That can fail a contained run and, in a narrow window, could sign the person out of their own Claude Code.
+  No environment setting avoids it without breaking sign-in; a fix and a concurrent-refresh check are activation items on #237.
+  A contained conversation begun before this change kept its transcript in the person's CLI folder, where the CLI no longer looks, so resuming it is reported as not found and the chat starts a fresh conversation; its slides are kept.
 - **A folder per conversation.** The agent works in `~/.creatorbrio/design-agent/<carousel id>/<conversation id>`, outside the repository (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it to another absolute path).
   Each new conversation gets a new folder with a random name; a resumed one reopens its own folder, so the CLI's session continues, and a folder that is gone is never recreated.
   Starting a new conversation moves every earlier conversation folder of the carousel into the removal folder whole, and forgets their sessions, so a process an earlier run left behind never shares a folder with a later one.

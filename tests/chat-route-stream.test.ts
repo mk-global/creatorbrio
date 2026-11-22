@@ -40,6 +40,7 @@ import path from "node:path";
 const dir = process.env.FAKE_CLAUDE_DIR;
 writeFileSync(path.join(dir, "pid"), String(process.pid));
 writeFileSync(path.join(dir, "argv.json"), JSON.stringify(process.argv.slice(2)));
+writeFileSync(path.join(dir, "env.json"), JSON.stringify(process.env));
 const scenario = readFileSync(path.join(dir, "scenario"), "utf8");
 const resumeAt = process.argv.indexOf("--resume");
 const requested = resumeAt === -1 ? null : process.argv[resumeAt + 1];
@@ -249,6 +250,29 @@ describe("chat errors after streaming starts (#3)", () => {
       "[chat] Claude subprocess exited non-zero",
       expect.objectContaining({ exitCode: 2, errorCode: "agent_failed", stderr: expect.stringContaining("simulated crash") })
     );
+  });
+
+  it("starts the legacy agent with the app's whole environment, the person's home included, and makes no server-owned home (#242)", async () => {
+    await play("success");
+    const agents = path.join(workdir, "agent-folders");
+    const original = { workspaces: process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES, config: process.env.CLAUDE_CONFIG_DIR };
+    process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agents;
+    process.env.CLAUDE_CONFIG_DIR = path.join(workdir, "person-claude-config");
+    try {
+      const carousel = await createCarousel("Legacy", "4:5");
+      await readEvents(await postChat({ carouselId: carousel.id }));
+      const env = JSON.parse(await readFile(path.join(fakeDir, "env.json"), "utf8")) as Record<string, string>;
+      expect(env.HOME).toBe(process.env.HOME);
+      expect(env.CLAUDE_CONFIG_DIR).toBe(process.env.CLAUDE_CONFIG_DIR);
+      expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR);
+      expect(env.CREATORBRIO_DESIGN_AGENT_WORKSPACES).toBe(agents);
+      expect(existsSync(agents)).toBe(false);
+    } finally {
+      for (const [name, value] of [["CREATORBRIO_DESIGN_AGENT_WORKSPACES", original.workspaces], ["CLAUDE_CONFIG_DIR", original.config]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it("reports an error result once, with its own code, and never as a reply", async () => {

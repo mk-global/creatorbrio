@@ -24,6 +24,9 @@
  *   re-allowed, the per-user parent of every run's temporary folder
  *   read-denied with only the run's own folder re-allowed, and the CLI's
  *   shared per-user temporary folder read- and write-denied;
+ * - a server-owned home folder (`prepareAgentHome`) holding no shell startup
+ *   file, so the CLI's shell preparation runs nothing of the person's, and
+ *   exposing only the person's sign-in (#242), read-denied with the rest;
  * - an explicit environment allowlist, plus the run's own short temporary
  *   folder and the listener token.
  *
@@ -116,7 +119,10 @@ export interface ContainedLayout {
    * `tempDir` re-allowed, so a run never reads another run's files.
    */
   tempRoot: string;
+  /** The person's own home folder, read-denied. */
   homeDir: string;
+  /** The CLI's server-owned home folder (#242), read-denied: it holds the CLI's sessions and configuration. */
+  agentHome: string;
   repoDir: string;
   dataDir: string;
   listenerPort: number;
@@ -164,7 +170,7 @@ export function agentTempDirFits(tempDir: string, uid: number): boolean {
 export function containedSettings(layout: ContainedLayout): Record<string, unknown> {
   // The CLI's shared temporary folder holds the person's other sessions'
   // files; the shell is given the run's own folder instead.
-  const denyRead = [layout.homeDir, layout.repoDir, layout.dataDir, ...sharedCliTempFolders(layout.uid), layout.tempRoot, ...layout.privateDirs];
+  const denyRead = [layout.homeDir, layout.agentHome, layout.repoDir, layout.dataDir, ...sharedCliTempFolders(layout.uid), layout.tempRoot, ...layout.privateDirs];
   // The login keychains are read inside the calling process, so the folder is
   // denied by name too, even though the home folder already covers it (#220).
   if (layout.platform === "darwin") denyRead.push(path.join(layout.homeDir, "Library", "Keychains"));
@@ -198,6 +204,7 @@ export function containedSettings(layout: ContainedLayout): Record<string, unkno
         readRule(layout.repoDir),
         readRule(layout.dataDir),
         readRule(layout.tempRoot),
+        readRule(layout.agentHome),
         readRule(path.join(layout.homeDir, ".claude")),
         `Read(/${path.join(layout.homeDir, ".claude.json")})`,
         ...(layout.platform === "darwin" ? [readRule(path.join(layout.homeDir, "Library", "Keychains"))] : []),
@@ -261,7 +268,9 @@ export function containedArgs(options: {
  * The variables the CLI process may inherit: what sign-in, the model
  * endpoint, an operator's outbound proxy and certificates, locale and `PATH`
  * need. Everything else in the app's environment, including its own secrets
- * and settings, stays out of the agent's process.
+ * and settings, stays out of the agent's process. `HOME` is replaced by the
+ * server-owned home, and the CLI's configuration folder is never passed
+ * (`containedEnv`).
  */
 export const INHERITED_ENV = [
   "HOME",
@@ -275,7 +284,6 @@ export const INHERITED_ENV = [
   "TZ",
   "TERM",
   "TMPDIR",
-  "CLAUDE_CONFIG_DIR",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -289,18 +297,40 @@ export const INHERITED_ENV = [
   "NODE_EXTRA_CA_CERTS",
 ] as const;
 
+/**
+ * Where the CLI's sign-in is, for the variable that points the CLI's sign-in
+ * store at it while its home is the server-owned one (#242), or null where
+ * the home folder alone leads to it. On Linux the sign-in is a file in the
+ * person's CLI configuration folder (`CLAUDE_CONFIG_DIR` when it is an
+ * absolute path, otherwise `.claude` in their home). On macOS it is in the
+ * login keychain, which the server-owned home reaches through its
+ * `Library/Keychains` link; the CLI names the keychain entry after a
+ * configuration folder only when the person set one, so then that folder is
+ * named. `CLAUDE_CONFIG_DIR` itself is never passed: on macOS it changes the
+ * entry the CLI looks up, and on both it would move the CLI's own state
+ * into the person's folder.
+ */
+export function agentSignInDir(input: { env: Record<string, string | undefined>; platform: NodeJS.Platform; personHome: string }): string | null {
+  const configured = input.env.CLAUDE_CONFIG_DIR;
+  if (configured && path.isAbsolute(configured)) return configured;
+  return input.platform === "linux" ? path.join(input.personHome, ".claude") : null;
+}
+
+/** The CLI's own variable for where its sign-in store is, measured on 2.1.328 (#242). */
+export const SIGN_IN_STORE_ENV = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
+
 export function containedEnv(
   source: Record<string, string | undefined>,
-  run: { tempDir: string; token: string }
+  run: { tempDir: string; token: string; home: string; signInDir: string | null }
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV) {
     const value = source[name];
     if (typeof value === "string" && value !== "") env[name] = value;
   }
-  // A relative configuration folder would resolve inside the agent's own
-  // folder, which it can write; the CLI's default is used instead.
-  if (env.CLAUDE_CONFIG_DIR !== undefined && !path.isAbsolute(env.CLAUDE_CONFIG_DIR)) delete env.CLAUDE_CONFIG_DIR;
+  // The server-owned home: no shell startup file of the person's, and the CLI's own state kept apart from theirs.
+  env.HOME = run.home;
+  if (run.signInDir !== null) env[SIGN_IN_STORE_ENV] = run.signInDir;
   env.CLAUDE_CODE_TMPDIR = run.tempDir;
   // The pinned CLI must not replace itself with an unqualified version.
   env.DISABLE_AUTOUPDATER = "1";

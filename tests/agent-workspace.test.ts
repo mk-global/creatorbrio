@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync as existsSyncAt, readFileSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   AGENT_WORKSPACES_ENV,
   AgentWorkspaceError,
+  agentHomeDir,
+  HOME_STARTUP_FILES,
+  prepareAgentHome,
   allowOwner,
   ConversationGoneError,
   agentWorkspaceRoot,
@@ -193,6 +196,89 @@ describe("a conversation's folder", () => {
     await expect(stat(path.join(root, ID))).rejects.toThrow();
     expect(await readdir(path.join(root, ".removed"))).toEqual([]);
     await expect(removeCarouselWorkDir(ID, root)).resolves.toBeUndefined();
+  });
+});
+
+describe("the contained CLI's server-owned home (#242)", () => {
+  const person = () => path.join(base, "person");
+  const prepare = (platform: NodeJS.Platform, options: { uid?: number } = {}) =>
+    prepareAgentHome({ repoDir: repo, personHome: person(), root, platform, uid: options.uid ?? uid });
+
+  it("is one owner-only folder under the agent folders' root, named so no carousel can have it, kept between launches", async () => {
+    const dir = await prepare("linux");
+    expect(dir).toBe(agentHomeDir(root));
+    expect(path.dirname(dir)).toBe(root);
+    expect(path.basename(dir)).toBe(".home");
+    expect((await stat(dir)).mode & 0o777).toBe(0o700);
+    // Linux: nothing of the person's in it; the sign-in is named in the environment instead.
+    expect(await readdir(dir)).toEqual([]);
+    await writeFile(path.join(dir, "session-state"), "kept");
+    expect(await prepare("linux")).toBe(dir);
+    expect(await readFile(path.join(dir, "session-state"), "utf8")).toBe("kept");
+  });
+
+  it("holds on macOS only a link to the person's keychain folder, made once and kept", async () => {
+    const dir = await prepare("darwin");
+    expect(await readdir(dir)).toEqual(["Library"]);
+    expect(await readdir(path.join(dir, "Library"))).toEqual(["Keychains"]);
+    expect((await stat(path.join(dir, "Library"))).mode & 0o777).toBe(0o700);
+    const link = path.join(dir, "Library", "Keychains");
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await readlink(link)).toBe(path.join(person(), "Library", "Keychains"));
+    await expect(prepare("darwin")).resolves.toBe(dir);
+  });
+
+  it("refuses a keychain entry that is not exactly the server's link, and never follows or replaces it", async () => {
+    const dir = await prepare("darwin");
+    const link = path.join(dir, "Library", "Keychains");
+    await rm(link);
+    await symlink(path.join(base, "elsewhere"), link);
+    await expect(prepare("darwin")).rejects.toThrow(/Library\/Keychains is not the link the server makes/);
+    expect(await readlink(link)).toBe(path.join(base, "elsewhere"));
+    await rm(link);
+    await mkdir(link);
+    await expect(prepare("darwin")).rejects.toThrow(AgentWorkspaceError);
+  });
+
+  it("refuses a home holding a shell startup file, and keeps only the empty ones the CLI's sandbox leaves on Linux", async () => {
+    const dir = await prepare("linux");
+    for (const name of HOME_STARTUP_FILES) await writeFile(path.join(dir, name), "");
+    await expect(prepare("linux")).resolves.toBe(dir);
+    for (const name of [".zshrc", ".bashrc", ".zshenv", ".profile", ".bash_profile"]) {
+      await writeFile(path.join(dir, name), "alias ls='echo planted'\n");
+      const refused = (await prepare("linux").catch((err: unknown) => err)) as Error;
+      expect(refused).toBeInstanceOf(AgentWorkspaceError);
+      expect(refused.message).toContain(`(${name})`);
+      expect(refused.message).not.toContain(base);
+      // Refused, never deleted: the server never writes one, so one there is reported.
+      expect(await readFile(path.join(dir, name), "utf8")).toContain("planted");
+      await writeFile(path.join(dir, name), "");
+    }
+    await rm(path.join(dir, ".zshrc"));
+    await symlink(path.join(base, "elsewhere"), path.join(dir, ".zshrc"));
+    await expect(prepare("linux")).rejects.toThrow(/\(\.zshrc\)/);
+    await rm(path.join(dir, ".zshrc"));
+    await rm(path.join(dir, ".bashrc"));
+    await mkdir(path.join(dir, ".bashrc"));
+    await expect(prepare("linux")).rejects.toThrow(/\(\.bashrc\)/);
+  });
+
+  it("refuses a home that is a link, open to others or another user's, and never adopts it", async () => {
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await mkdir(path.join(base, "real-home"), { mode: 0o700 });
+    await symlink(path.join(base, "real-home"), agentHomeDir(root));
+    await expect(prepare("linux")).rejects.toThrow(/home folder ".home" is not a private folder/);
+    await rm(agentHomeDir(root));
+    await mkdir(agentHomeDir(root), { mode: 0o755 });
+    await chmod(agentHomeDir(root), 0o755);
+    await expect(prepare("linux")).rejects.toThrow(/not a private folder.*Remove it, or fix its owner and permissions/);
+    await chmod(agentHomeDir(root), 0o700);
+    await expect(prepare("linux", { uid: uid + 1 })).rejects.toThrow(/not a private folder/);
+    await expect(prepare("linux")).resolves.toBe(agentHomeDir(root));
+  });
+
+  it("is refused inside the repository, as every agent folder is", async () => {
+    await expect(prepareAgentHome({ repoDir: repo, personHome: person(), root: path.join(repo, "agents"), platform: "linux", uid })).rejects.toThrow(/outside the repository/);
   });
 });
 

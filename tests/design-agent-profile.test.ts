@@ -7,7 +7,9 @@ import {
   containedArgs,
   containedEnv,
   containedSettings,
+  agentSignInDir,
   designAgentProfileName,
+  SIGN_IN_STORE_ENV,
   privateReadDirs,
   type ContainedLayout,
 } from "@/lib/design-agent-profile";
@@ -20,6 +22,7 @@ const LAYOUT: ContainedLayout = {
   tempDir: "/tmp/cbrs/a1b",
   tempRoot: "/tmp/cbrs",
   homeDir: "/home/designer",
+  agentHome: "/home/designer/.creatorbrio/design-agent/.home",
   repoDir: "/srv/creatorbrio",
   dataDir: "/srv/creatorbrio/data",
   listenerPort: 48211,
@@ -117,9 +120,10 @@ describe("contained profile settings", () => {
     expect(settings.sandbox.network.allowedDomains).not.toContain("localhost");
   });
 
-  it("denies reading the home folder, repository, data folder and server temporary parent, re-allowing only the run's own folders", () => {
+  it("denies reading the home folder, the CLI's server-owned home, repository, data folder and server temporary parent, re-allowing only the run's own folders", () => {
     expect(settings.sandbox.filesystem.denyRead).toEqual([
       "/home/designer",
+      "/home/designer/.creatorbrio/design-agent/.home",
       "/srv/creatorbrio",
       "/srv/creatorbrio/data",
       "/tmp/claude-1000",
@@ -154,6 +158,7 @@ describe("contained profile settings", () => {
       "Read(//srv/creatorbrio/**)",
       "Read(//srv/creatorbrio/data/**)",
       "Read(//tmp/cbrs/**)",
+      "Read(//home/designer/.creatorbrio/design-agent/.home/**)",
       "Read(//home/designer/.claude/**)",
       "Read(//home/designer/.claude.json)",
     ]);
@@ -183,9 +188,11 @@ describe("contained profile environment", () => {
     EMPTY: "",
   };
 
-  it("is an explicit allowlist plus the run's folder and token", () => {
-    expect(containedEnv(source, { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN" })).toEqual({
-      HOME: "/home/designer",
+  const run = { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN", home: "/home/designer/.creatorbrio/design-agent/.home", signInDir: null };
+
+  it("is an explicit allowlist plus the server-owned home, the run's folder and token", () => {
+    expect(containedEnv(source, run)).toEqual({
+      HOME: "/home/designer/.creatorbrio/design-agent/.home",
       PATH: "/usr/bin:/bin",
       LANG: "en_US.UTF-8",
       CLAUDE_CODE_OAUTH_TOKEN: "synthetic-sign-in",
@@ -196,10 +203,25 @@ describe("contained profile environment", () => {
     });
   });
 
-  it("passes an absolute CLI configuration folder and drops a relative one, which would resolve in the agent's folder", () => {
-    const run = { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN" };
-    expect(containedEnv({ CLAUDE_CONFIG_DIR: "/opt/claude-config" }, run).CLAUDE_CONFIG_DIR).toBe("/opt/claude-config");
-    expect(containedEnv({ CLAUDE_CONFIG_DIR: "claude-config" }, run).CLAUDE_CONFIG_DIR).toBeUndefined();
+  it("never gives the CLI the person's home, or their configuration folder, which would move its state into theirs (#242)", () => {
+    const env = containedEnv({ ...source, CLAUDE_CONFIG_DIR: "/opt/claude-config", [SIGN_IN_STORE_ENV]: "/somewhere/else" }, run);
+    expect(env.HOME).toBe(run.home);
+    expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+    // The sign-in store's location comes only from the profile, never from the app's environment.
+    expect(env).not.toHaveProperty(SIGN_IN_STORE_ENV);
+    expect(containedEnv(source, { ...run, signInDir: "/home/designer/.claude" })[SIGN_IN_STORE_ENV]).toBe("/home/designer/.claude");
+  });
+
+  it("names the person's sign-in for the CLI only where the server-owned home cannot lead to it (#242)", () => {
+    // Linux: the credentials file in the person's CLI configuration folder.
+    expect(agentSignInDir({ env: {}, platform: "linux", personHome: "/home/designer" })).toBe("/home/designer/.claude");
+    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "/opt/claude-config" }, platform: "linux", personHome: "/home/designer" })).toBe("/opt/claude-config");
+    // A relative folder would resolve inside the agent's own folder: the default is used.
+    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "claude-config" }, platform: "linux", personHome: "/home/designer" })).toBe("/home/designer/.claude");
+    // macOS: the login keychain, through the home's link; a configured folder names the keychain entry, so it is passed on.
+    expect(agentSignInDir({ env: {}, platform: "darwin", personHome: "/Users/designer" })).toBeNull();
+    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "claude-config" }, platform: "darwin", personHome: "/Users/designer" })).toBeNull();
+    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "/opt/claude-config" }, platform: "darwin", personHome: "/Users/designer" })).toBe("/opt/claude-config");
   });
 });
 

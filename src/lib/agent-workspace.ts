@@ -56,7 +56,7 @@
 import { constants } from "node:fs";
 import { execFile } from "node:child_process";
 import { randomInt, randomUUID } from "node:crypto";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stopStrayProcesses, defaultProbe, type ProcessProbe } from "@/lib/agent-processes";
@@ -363,6 +363,84 @@ async function restoreForRemoval(entry: string, platform: NodeJS.Platform): Prom
   }
 }
 
+/** The server-owned home folder's name in the agent folders' root: a dot-name, which no carousel's identifier can be. */
+const AGENT_HOME = ".home";
+
+/** The contained CLI's server-owned home folder under the agent folders' root (#242). */
+export function agentHomeDir(root: string): string {
+  return path.join(root, AGENT_HOME);
+}
+
+/**
+ * The shell startup files a shell reads from its home folder: the
+ * server-owned home must hold none, or the CLI's shell preparation would run
+ * them before each command (#242).
+ */
+export const HOME_STARTUP_FILES = [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout", ".profile", ".bash_profile", ".bash_login", ".bashrc", ".bash_logout", ".bash_aliases"] as const;
+
+/**
+ * The contained CLI's home folder (#242): one per person, under the agent
+ * folders' root, so it is outside the repository and the data folder, kept
+ * across server restarts (the CLI keeps its sessions under it, which a
+ * resumed conversation needs), and read-denied to the agent's shell with the
+ * rest of that root.
+ *
+ * It is created owner-only and never followed through a link; one that exists
+ * with another owner, wider access or as a link is refused, never adopted. It
+ * holds no shell startup file, so the CLI's shell preparation runs nothing of
+ * the person's: one found there is refused, never deleted, because the server
+ * never writes one. The empty files the CLI's sandbox leaves in their place
+ * on Linux define nothing and are kept.
+ *
+ * It exposes only what the CLI needs to sign in. On macOS the CLI reads its
+ * sign-in from the login keychain, which it finds through the home folder, so
+ * the home holds `Library/Keychains`, a link to the person's own folder, and
+ * nothing else of theirs; an entry there that is not exactly that link is
+ * refused. On Linux the CLI's sign-in is a file in the person's configuration
+ * folder, which the profile names in the environment instead
+ * (`agentSignInDir`), so the home holds nothing of theirs.
+ */
+export async function prepareAgentHome(input: {
+  repoDir: string;
+  /** The person's own home folder, resolved. */
+  personHome: string;
+  root?: string;
+  platform?: NodeJS.Platform;
+  uid?: number;
+}): Promise<string> {
+  const platform = input.platform ?? process.platform;
+  const uid = input.uid ?? currentUid();
+  const realRoot = await resolvedRoot(input.root ?? agentWorkspaceRoot(), input.repoDir);
+  const dir = agentHomeDir(realRoot);
+  await ensurePrivateDir(dir, uid, "The Design Agent's home folder");
+  for (const name of HOME_STARTUP_FILES) {
+    const info = await lstat(path.join(dir, name)).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return null;
+      throw err;
+    });
+    // On Linux the CLI's sandbox leaves an empty file in place of each startup
+    // file it keeps the shell from writing (measured on 2.1.328); an empty
+    // regular file defines nothing. Anything else is refused.
+    if (info !== null && !(info.isFile() && info.size === 0)) {
+      throw new AgentWorkspaceError(`The Design Agent's home folder holds a shell startup file (${name}), which the server never writes. Remove it and try again.`);
+    }
+  }
+  if (platform === "darwin") {
+    const library = path.join(dir, "Library");
+    await ensurePrivateDir(library, uid, "The Design Agent's home folder's Library");
+    const link = path.join(library, "Keychains");
+    const target = path.join(input.personHome, "Library", "Keychains");
+    await symlink(target, link).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== "EEXIST") throw err;
+    });
+    const info = await lstat(link);
+    if (!info.isSymbolicLink() || (await readlink(link)) !== target) {
+      throw new AgentWorkspaceError("The Design Agent's home folder's Library/Keychains is not the link the server makes to your own. Remove it and try again.");
+    }
+  }
+  return dir;
+}
+
 /** Removes a carousel's folder, with every conversation and staged image, if it has one; called when the carousel is deleted. */
 export async function removeCarouselWorkDir(carouselId: string, root = agentWorkspaceRoot()): Promise<void> {
   if (!isServerId(carouselId)) return;
@@ -431,12 +509,12 @@ export function runDirNameLength(root: string, uid: number): number {
  * folder, never a link, owned by `uid`, with no group or other access. One
  * that exists with another owner or wider access is refused, never adopted.
  */
-async function ensurePrivateDir(dir: string, uid: number): Promise<void> {
+async function ensurePrivateDir(dir: string, uid: number, what = "The server temporary folder"): Promise<void> {
   await mkdirPrivate(dir);
   const info = await lstat(dir);
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== uid || (info.mode & 0o077) !== 0 || (await realpath(dir)) !== dir) {
     throw new AgentWorkspaceError(
-      `The server temporary folder "${path.basename(dir)}" is not a private folder of this user (a real folder, owned by this user, with no group or other access). Remove it, or fix its owner and permissions, and try again.`
+      `${what} "${path.basename(dir)}" is not a private folder of this user (a real folder, owned by this user, with no group or other access). Remove it, or fix its owner and permissions, and try again.`
     );
   }
 }

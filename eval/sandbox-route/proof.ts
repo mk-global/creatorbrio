@@ -62,8 +62,8 @@ import { createServer as createNetServer, isIPv6, type Server as NetServer } fro
 import { homedir, hostname, networkInterfaces, platform, release, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createRunTempDir, removeRunTempDir, serverTempRoot, stagingDirFor } from "../../src/lib/agent-workspace";
-import { containedArgs, containedEnv, containedSettings, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
+import { agentHomeDir, createRunTempDir, prepareAgentHome, removeRunTempDir, serverTempRoot, stagingDirFor } from "../../src/lib/agent-workspace";
+import { agentSignInDir, containedArgs, containedEnv, containedSettings, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
 import { standInEnv, startStandIn, type ScriptedCall, type StandIn, type StandInRequest } from "./stand-in";
 
 export const ARMS = ["control", "candidate", "strict-off", "portless", "bypass-mode", "strict-off-bypass", "keychain-deny", "hardened", "read-tool", "read-deny", "product", "product-read"] as const;
@@ -110,10 +110,14 @@ export const isReadArm = (arm: string) => arm === "read-tool" || arm === "read-d
 /** The arms that run under the product's own contained profile. */
 export const isProductArm = (arm: string) => arm === "product" || arm === "product-read";
 
-/** The product profile's layout for one arm: its folder is the arm's work folder, its listener the stand-in listener. */
+/**
+ * The product profile's layout for one arm: its folder is the arm's work
+ * folder, its listener the stand-in listener, and the CLI's server-owned home
+ * the one the product keeps beside the work folders (#242).
+ */
 export function productLayout(workDir: string, tempDir: string, agentPort: number, layout: ProofLayout, home: string, hostPlatform: NodeJS.Platform = platform(), uid: number = process.getuid?.() ?? 0): ContainedLayout {
   const privateDirs = privateReadDirs({ env: {}, platform: hostPlatform, workspaceRoot: path.dirname(workDir), userTempDir: realpathSync(tmpdir()) });
-  return { workDir, stagingDir: stagingDirFor(workDir), tempDir, tempRoot: serverTempRoot(hostPlatform, uid), homeDir: home, repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs };
+  return { workDir, stagingDir: stagingDirFor(workDir), tempDir, tempRoot: serverTempRoot(hostPlatform, uid), homeDir: home, agentHome: agentHomeDir(path.dirname(workDir)), repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs };
 }
 
 /** The extra paths the product's Read tool is aimed at: a link to the data canary in its own folder, and a `..` path out of it. */
@@ -1214,10 +1218,14 @@ async function main() {
         // The product's own run folder, under the per-user parent the profile read-denies.
         const tempDir = await createRunTempDir(process.getuid?.() ?? 0);
         try {
-          const contained = productLayout(workDir, tempDir, agentPort, layout, realpathSync(homedir()));
+          const personHome = realpathSync(homedir());
+          const contained = productLayout(workDir, tempDir, agentPort, layout, personHome);
+          // The product's own server-owned home, made as the product makes it.
+          await prepareAgentHome({ repoDir: layout.repoDir, personHome, root: path.dirname(workDir) });
           settings = containedSettings(contained);
           const args = containedArgs({ taskMessage: armPrompt(arm, workDir, layout), systemPrompt: "CreatorBrio containment qualification.", resumeSessionId: null, budgetUsd: null, layout: contained });
-          const env = containedEnv(envs.cli, { tempDir, token: randomBytes(32).toString("base64url") }) as NodeJS.ProcessEnv;
+          const signInDir = agentSignInDir({ env: envs.cli, platform: platform(), personHome });
+          const env = containedEnv(envs.cli, { tempDir, token: randomBytes(32).toString("base64url"), home: contained.agentHome, signInDir }) as NodeJS.ProcessEnv;
           cli = await runCli(opts.claude, args, workDir, env);
         } finally {
           await removeRunTempDir(tempDir);
