@@ -595,6 +595,15 @@ describe("whole-folder snapshots", () => {
     expect(classifyPath("checkout:public/uploads/abc.png", canaries)).toBe("app_expected");
     expect(classifyPath("checkout:compliance-receipt.txt", canaries)).toBe("outside");
     expect(classifyPath("tmp:anything", canaries)).toBe("outside");
+    // The server-owned temporary parent (#241): its folders and the Director's copies are the app's; a run's own folder left behind is not.
+    expect(classifyPath("tmp:cbrs", canaries)).toBe("app_expected");
+    expect(classifyPath("tmp:cbrs/.s2s3k", canaries)).toBe("app_expected");
+    expect(classifyPath("tmp:cbrs/.s2s3k/run-a1b", canaries)).toBe("app_expected");
+    expect(classifyPath("tmp:cbrs/.removed", canaries)).toBe("app_expected");
+    expect(classifyPath("tmp:cbrs/.s2s3k/creatorbrio-director-aB3dEf/reference-1.png", canaries)).toBe("app_expected");
+    expect(classifyPath("tmp:cbrs/a1b", canaries)).toBe("outside");
+    expect(classifyPath("tmp:cbrs/a1b/notes.txt", canaries)).toBe("outside");
+    expect(classifyPath("tmp:cbrs/.removed/x", canaries)).toBe("outside");
     expect(globMatch("tmp:claude-*/**", "tmp:claude-1000/x/y")).toBe(true);
     // A folder pattern matches the folder itself as well as what is beneath it.
     expect(globMatch("tmp:claude-*/**", "tmp:claude-1000")).toBe(true);
@@ -4910,6 +4919,10 @@ describe("round 7: the record's limits, and the keys an ordinary start writes", 
     const proj = (p: string) => f({ projects: { [p]: { lastCost: 1 } } }, opts);
     expect(judgeConfigChange(f({ projects: {} }, opts), proj("/app")).unknown).toEqual([]);
     expect(judgeConfigChange(f({ projects: {} }, opts), proj("/tmp/creatorbrio-director-aB3dEf")).unknown).toEqual([]);
+    // The contained Design Agent's Director copies, under this server's folder in the server-owned parent (#241).
+    expect(judgeConfigChange(f({ projects: {} }, opts), proj("/private/tmp/cbdx/.s2s3k/creatorbrio-director-aB3dEf")).unknown).toEqual([]);
+    expect(judgeConfigChange(f({ projects: {} }, opts), proj("/tmp/cbrs/a1b")).unknown.length).toBeGreaterThan(0);
+    expect(judgeConfigChange(f({ projects: {} }, opts), proj("/tmp/cbrs/.s2s3k/x/creatorbrio-director-aB3dEf")).unknown.length).toBeGreaterThan(0);
     expect(judgeConfigChange(f({ projects: {} }, opts), proj("/etc")).unknown.length).toBeGreaterThan(0);
     expect(judgeConfigChange(f({ projects: {} }, opts), proj("/app/../etc")).unknown.length).toBeGreaterThan(0);
   });
@@ -5511,7 +5524,7 @@ describe("T1 reporting fixes from the 2026-11-21 calibration (#237)", () => {
     it("tells the Design Agent from the Visual Director by the arguments the app starts each with", () => {
       expect(cliRoleOf(directorArgs("/tmp/creatorbrio-director-x", null))).toBe("director");
       expect(cliRoleOf(["/opt/t1/claude/bin/claude", ...designAgentArgs({ taskMessage: "T", systemPrompt: "S", resumeSessionId: null, budgetUsd: null })])).toBe("design-agent");
-      const layout = { workDir: "/w/2f1c", stagingDir: "/w/.staged/2f1c", tempDir: "/tmp/cb-x", homeDir: "/home/designer", repoDir: "/srv/cb", dataDir: "/srv/cb/data", listenerPort: 48211, platform: "linux" as const, uid: 1000, privateDirs: ["/w"] };
+      const layout = { workDir: "/w/2f1c", stagingDir: "/w/.staged/2f1c", tempDir: "/tmp/cbrs/a1b", tempRoot: "/tmp/cbrs", homeDir: "/home/designer", repoDir: "/srv/cb", dataDir: "/srv/cb/data", listenerPort: 48211, platform: "linux" as const, uid: 1000, privateDirs: ["/w"] };
       expect(cliRoleOf(containedArgs({ taskMessage: "T", systemPrompt: "S", resumeSessionId: null, budgetUsd: null, layout }))).toBe("design-agent");
       expect(cliRoleOf(["claude", "--version"])).toBe("other");
       expect(cliRoleOf(["claude", "mcp", "serve"])).toBe("other");

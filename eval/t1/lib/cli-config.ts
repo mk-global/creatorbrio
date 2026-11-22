@@ -164,9 +164,12 @@ export const PROJECT_SHAPES: Readonly<Record<string, Shape[]>> = {
 const shapeOf = (v: unknown): Shape => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v === "object" ? "object" : typeof v === "number" ? "number" : typeof v === "string" ? "string" : typeof v === "boolean" ? "boolean" : "null");
 const shapeOk = (table: Readonly<Record<string, Shape[]>>, key: string, v: unknown): boolean => (table[key] ?? []).includes(shapeOf(v));
 
-/** The folders the harness starts the CLI in, whose project entries the config may hold: the checkout, and the Visual Director's own temp folder (`creatorbrio-director-` and six characters, under the temp folder). */
+/**
+ * The folders the harness starts the CLI in, whose project entries the config may hold: the checkout, and the Visual Director's own temp folder (`creatorbrio-director-` and six characters, under the
+ * temp folder, or with the contained Design Agent in the server's folder in the per-user parent, #241).
+ */
 export function harnessProject(projectPath: string, key: string): boolean {
-  return key === projectPath || /^\/(?:private\/)?tmp\/creatorbrio-director-[A-Za-z0-9]{6}$/.test(key);
+  return key === projectPath || /^\/(?:private\/)?tmp\/(?:cb[0-9a-z]{1,7}\/\.s[0-9a-z]{1,8}\/)?creatorbrio-director-[A-Za-z0-9]{6}$/.test(key);
 }
 
 /** The defaults of a fresh global file, from the binary's own constructor of it: a key that appears holding exactly this value is the CLI's own entry. */

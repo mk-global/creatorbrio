@@ -1,4 +1,5 @@
-import { bindAgentSession, isAgentSessionBound } from "@/lib/agent-sessions";
+import { bindAgentSession, boundConversation } from "@/lib/agent-sessions";
+import { AgentWorkspaceError, ConversationGoneError, conversationFolderExists } from "@/lib/agent-workspace";
 import { NextRequest, NextResponse } from "next/server";
 import { spawn } from "child_process";
 import crossSpawn from "cross-spawn";
@@ -32,8 +33,10 @@ import { prepareContainedLaunch, type ContainedLaunch } from "@/lib/contained-la
 import { continuationOffer } from "@/lib/assets";
 import {
   beginGeneration,
+  CAROUSEL_BEING_DELETED_ERROR,
   classifyRunExit,
   GENERATION_ALREADY_RUNNING_ERROR,
+  isBeingDeleted,
   type RunOutcome,
 } from "@/lib/generation-status";
 
@@ -135,7 +138,8 @@ export async function POST(request: NextRequest) {
   // request ends must end the run exactly once.
   const run = typeof carouselId === "string" && carouselId ? beginGeneration(carouselId) : null;
   if (typeof carouselId === "string" && carouselId && !run) {
-    return NextResponse.json({ error: GENERATION_ALREADY_RUNNING_ERROR }, { status: 409 });
+    // A contained carousel's deletion holds the same slot (#241).
+    return NextResponse.json({ error: isBeingDeleted(carouselId) ? CAROUSEL_BEING_DELETED_ERROR : GENERATION_ALREADY_RUNNING_ERROR }, { status: 409 });
   }
   const endGeneration = (outcome: RunOutcome): Promise<void> =>
     run ? run.end(outcome) : Promise.resolve();
@@ -212,12 +216,18 @@ export async function POST(request: NextRequest) {
     start(controller) {
       // The contained run's token is redacted from anything relayed, should the agent repeat it.
       let launch: ContainedLaunch | null = null;
+      // The conversation a resumed contained session is bound to, and the one the run works in.
+      let resumeConversationId: string | null = null;
+      let conversationId: string | null = null;
       // Kept for the whole request: output and logs written after the run ends are still redacted.
       let redact = (text: string) => text;
-      const finishLaunch = () => {
-        const current = launch;
-        launch = null;
-        return current ? current.finish() : Promise.resolve();
+      // The first call stops the run's processes and removes its folder; a
+      // later one (the CLI's "error" and "exit" can both end a run) waits for
+      // that same stop, so no path releases the carousel's slot before it ends.
+      let finishing: Promise<void> | null = null;
+      const finishLaunch = (): Promise<void> => {
+        if (!finishing && launch) finishing = launch.finish();
+        return finishing ?? Promise.resolve();
       };
       const send = (event: ChatStreamEvent) => {
         if (event.type === "token" || event.type === "result") event = { ...event, text: redact(event.text) };
@@ -253,22 +263,28 @@ export async function POST(request: NextRequest) {
           return;
         }
         if (!profile.ok || contained) {
+          // A contained run resumes only a session bound to its own carousel (#237),
+          // in the conversation folder it is bound to (#241): the CLI would resume
+          // any session it can find, including the person's own.
+          const sessionRefusal = async () => {
+            if (!resumeSessionId || !carouselId) return null;
+            resumeConversationId = await boundConversation(carouselId, resumeSessionId).catch((error) => {
+              // An unreadable binding is treated as no binding: the chat starts fresh.
+              console.error("[chat] could not read the session bindings", { carouselId, failureCategory: "session_binding", error: String(error) });
+              return null;
+            });
+            // A conversation whose folder is gone cannot be resumed (it is never recreated): refused here, before anything is planned.
+            if (resumeConversationId && !(await conversationFolderExists(carouselId, resumeConversationId))) {
+              console.warn("[chat] a bound conversation's folder no longer exists", { carouselId });
+              resumeConversationId = null;
+            }
+            return resumeConversationId ? null : { code: "session_not_found" as const, message: CHAT_ERROR_MESSAGES.session_not_found };
+          };
           const refusal = !profile.ok
             ? { code: "profile_setting_invalid" as const, message: CHAT_ERROR_MESSAGES.profile_setting_invalid }
             : ((await containedAvailability(claudePath).then((a) =>
                 a.available ? null : { code: "agent_unavailable" as const, message: `${a.reason} ${a.guidance} Nothing was changed.` }
-              )) ??
-              // A contained run resumes only a session bound to its own carousel (#237):
-              // the CLI would resume any session it can find, including the person's own.
-              (resumeSessionId &&
-              carouselId &&
-              !(await isAgentSessionBound(carouselId, resumeSessionId).catch((error) => {
-                // An unreadable binding is treated as no binding: the chat starts fresh.
-                console.error("[chat] could not read the session bindings", { carouselId, failureCategory: "session_binding", error: String(error) });
-                return false;
-              }))
-                ? { code: "session_not_found" as const, message: CHAT_ERROR_MESSAGES.session_not_found }
-                : null));
+              )) ?? (await sessionRefusal()));
           if (refusal) {
             console.warn("[chat] design run refused before it started", { carouselId: carouselId ?? null, stage: "design", failureCategory: refusal.code });
             fail(refusal.code, refusal.message);
@@ -334,15 +350,25 @@ export async function POST(request: NextRequest) {
               taskMessage,
               systemPrompt,
               resumeSessionId,
+              conversationId: resumeConversationId,
               budgetUsd,
               listenerPort: listenerPort!,
               appOrigin: resolveAppOrigin(request),
               tokenTtlMs: settings.timeoutMs + 60_000,
             });
             redact = launch.redact;
+            conversationId = launch.conversationId;
           } catch (err) {
-            console.error("[chat] contained design agent could not be prepared", { carouselId: carouselId ?? null, message: (err as Error)?.message });
-            fail("start_failed");
+            // A bound conversation whose folder is gone cannot be resumed: the chat starts fresh.
+            const gone = err instanceof ConversationGoneError;
+            // The error's name and code, and its text only where it is the app's own and names no path.
+            (gone ? console.warn : console.error)("[chat] contained design agent could not be prepared", {
+              carouselId: carouselId ?? null,
+              error: (err as Error)?.name,
+              code: (err as NodeJS.ErrnoException)?.code ?? null,
+              ...(err instanceof AgentWorkspaceError ? { detail: err.message } : {}),
+            });
+            fail(gone ? "session_not_found" : "start_failed");
             if (creativeRun) await finishCreativeRun(carouselId!, creativeRun.runId, "failed");
             await endGeneration("not-started");
             send({ type: "done", sessionId: null });
@@ -361,12 +387,15 @@ export async function POST(request: NextRequest) {
         process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
       const spawner = isWindowsShim ? crossSpawn : spawn;
 
+      // The contained CLI leads its own process group, so a terminal's Ctrl-C
+      // never reaches it directly and every stop reaches the whole group and
+      // what it started (#241); the legacy agent is started as before.
+      const containedRun = launch;
       try {
-        childProcess = spawner(claudePath, launch ? launch.args : designArgs(taskMessage), {
-          cwd: launch ? launch.cwd : process.cwd(),
+        childProcess = spawner(claudePath, containedRun ? containedRun.args : designArgs(taskMessage), {
+          cwd: containedRun ? containedRun.cwd : process.cwd(),
           // The contained profile's explicit allowlist; the legacy agent inherits everything.
-          ...(launch ? { env: launch.env as NodeJS.ProcessEnv } : {}),
-          signal: abortController.signal,
+          ...(containedRun ? { env: containedRun.env as NodeJS.ProcessEnv, detached: true } : { signal: abortController.signal }),
           stdio: ["pipe", "pipe", "pipe"],
         });
         // Close stdin — we don't send input to the subprocess
@@ -389,6 +418,38 @@ export async function POST(request: NextRequest) {
           .then(() => endGeneration("not-started"))
           .finally(close);
         return;
+      }
+
+      // Stops the CLI: the contained CLI's whole process group and what it
+      // started, the legacy CLI's own process as before.
+      const kill = (signal: NodeJS.Signals = "SIGTERM") => {
+        if (containedRun) containedRun.signal(signal);
+        else childProcess.kill(signal);
+      };
+      if (containedRun && childProcess.pid !== undefined) {
+        // A stop (the Stop button, a reload, a closed tab, the server shutting
+        // down) ends the contained run as the abort signal ends the legacy one.
+        let abortKill: ReturnType<typeof setTimeout> | null = null;
+        const onAbort = () => {
+          kill("SIGTERM");
+          abortKill ??= setTimeout(() => kill("SIGKILL"), FORCE_KILL_AFTER_MS);
+        };
+        const cli = childProcess;
+        containedRun.track(
+          childProcess.pid,
+          () => {
+            cancelled = true;
+            abortController.abort();
+          },
+          // Until Node reaps the CLI, its process id cannot belong to another process.
+          () => cli.exitCode === null && cli.signalCode === null
+        );
+        if (abortController.signal.aborted) onAbort();
+        else abortController.signal.addEventListener("abort", onAbort, { once: true });
+        childProcess.once("exit", () => {
+          if (abortKill) clearTimeout(abortKill);
+          abortController.signal.removeEventListener("abort", onAbort);
+        });
       }
 
       // The subprocess is what writes this carousel's slides, so export stays
@@ -524,8 +585,8 @@ export async function POST(request: NextRequest) {
           elapsedMs: now - designStarted,
           quietMs: now - (lastOutput ?? designStarted),
         });
-        childProcess.kill();
-        limitKill = setTimeout(() => childProcess.kill("SIGKILL"), FORCE_KILL_AFTER_MS);
+        kill();
+        limitKill = setTimeout(() => kill("SIGKILL"), FORCE_KILL_AFTER_MS);
       };
       const deadline = setTimeout(() => stopFor("deadline"), timeoutMs);
       const watchOutput = () => {
@@ -577,19 +638,21 @@ export async function POST(request: NextRequest) {
         // while the subprocess may still be finishing a write. Release here
         // only if it never started or has already gone; otherwise "exit" will.
         // A release made here is saved before the stream closes, as on exit.
-        let released: Promise<void> = Promise.resolve();
-        if (childProcess.pid === undefined) {
-          released = endGeneration("not-started");
-        } else if (
+        const gone =
+          childProcess.pid === undefined ||
           childProcess.exitCode !== null ||
-          childProcess.signalCode !== null
-        ) {
-          released = endGeneration(outcomeFor(childProcess.exitCode));
+          childProcess.signalCode !== null;
+        const goneOutcome: RunOutcome | null = !gone ? null : childProcess.pid === undefined ? "not-started" : outcomeFor(childProcess.exitCode);
+        let released: Promise<void> = Promise.resolve();
+        if (goneOutcome !== null) {
+          // A contained run releases its carousel's slot only after its
+          // processes are stopped, below (#241); the legacy order is unchanged.
+          if (!containedRun) released = endGeneration(goneOutcome);
         } else {
           // Export stays unavailable until the subprocess exits, so one that
           // ignores the termination request is killed outright.
           const forceKill = setTimeout(() => {
-            childProcess.kill("SIGKILL");
+            kill("SIGKILL");
           }, FORCE_KILL_AFTER_MS);
           childProcess.once("exit", () => clearTimeout(forceKill));
         }
@@ -603,11 +666,15 @@ export async function POST(request: NextRequest) {
           message: e?.message,
           stderr: stderrBuf,
         });
-        childProcess.kill();
+        kill();
         fail(childProcess.pid === undefined ? "start_failed" : "agent_failed");
+        if (goneOutcome !== null && containedRun) {
+          await finishLaunch();
+          released = endGeneration(goneOutcome);
+        }
         await released;
         // A process that is still running keeps its token until it exits.
-        if (childProcess.pid === undefined || childProcess.exitCode !== null || childProcess.signalCode !== null) await finishLaunch();
+        if (gone) await finishLaunch();
         close();
       });
 
@@ -647,15 +714,24 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // The agent has exited: its token stops working and its temporary folder goes.
+        // The agent has exited: its token stops working, whatever it left
+        // running is stopped, and its temporary folder goes.
         await finishLaunch();
         // Saved before "done", so the editor's next status check sees it.
         const outcome = outcomeFor(code);
         if (creativeRun) await finishDesign(creativeRun, outcome);
-        await endGeneration(outcome);
-
         // A session that could not be resumed is not offered again.
         const nextSessionId = errorCode === "session_not_found" ? null : resolvedSessionId;
+        // The session a contained run hands back is the one its carousel may
+        // resume. It is bound before the carousel's slot is released, so a
+        // request that follows this one finds it (#241).
+        if (conversationId && carouselId && nextSessionId) {
+          await bindAgentSession(carouselId, nextSessionId, conversationId).catch((error) =>
+            console.error("[chat] could not bind the session to its carousel", { carouselId, failureCategory: "session_binding", error: String(error) })
+          );
+        }
+        await endGeneration(outcome);
+
         // Counts, codes, settings and times only: never the message, the plan or slide copy.
         const offer = carouselId && outcome !== "completed" ? await continuationOffer(carouselId).catch(() => null) : null;
         console.info("[chat] run finished", {
@@ -692,12 +768,6 @@ export async function POST(request: NextRequest) {
           slidesExpected: creativeRun?.plan.execution.slideCount ?? null,
           continuationAvailable: offer !== null,
         });
-        // The session a contained run hands back is the one its carousel may resume.
-        if (contained && carouselId && nextSessionId) {
-          await bindAgentSession(carouselId, nextSessionId).catch((error) =>
-            console.error("[chat] could not bind the session to its carousel", { carouselId, failureCategory: "session_binding", error: String(error) })
-          );
-        }
         send({ type: "done", sessionId: nextSessionId });
         close();
       });

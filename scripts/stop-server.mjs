@@ -22,10 +22,29 @@
 // if it matches, and otherwise says what is there and leaves it running.
 // Nothing is recorded at start, so there is no state to go stale.
 //
+// The contained Design Agent's processes that outlive the server are stopped
+// too (#241): the descendants of each server process actually signalled are
+// listed before it is signalled, and after it has stopped, those still running
+// as the same processes (process id and start time) whose working folder is
+// inside the contained profile's folders (the agent workspace root and the
+// per-user temporary parent), with no controlling terminal, get SIGTERM, then
+// SIGKILL after a bounded wait. Under the contained profile the Visual Director
+// works inside the per-user temporary parent, so a leftover Director that has no
+// controlling terminal is stopped too; one that inherited the server's terminal
+// is skipped and keeps running until its CLI exits (its time limit is a timer
+// in the server, which is gone), and its folder is swept at the next contained
+// start. Every other descendant (the legacy Design Agent, the legacy Visual
+// Director, the export browser) is left as it was before.
+// The server stops its own contained runs when it is signalled; this covers a
+// server that could not. A configured agent workspace root inside the checkout,
+// or around it, is the app's own refusal and is never treated as contained
+// here, because every process of the checkout would then look like one.
+//
 // Usage: node scripts/stop-server.mjs [port]
 // Exit status: 0 stopped or nothing to stop, 1 refused or ambiguous, 2 usage.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,16 +62,28 @@ const NEXT_SERVER_COMMAND =
   /^(next-server(\s|$)|\S*\bnode(\.exe)?\s+\S*[\\/]next\s+(dev|start)(\s|$))/;
 
 const STOP_TIMEOUT_MS = 10_000;
+const DESCENDANT_GRACE_MS = 3_000;
 
 // ---------------------------------------------------------------------------
 // Reading the system. Each probe answers two questions: which processes listen
 // on which TCP ports, and who/what/where a process is.
 
-function run(command, args) {
+/**
+ * `ps` prints a start time in the local time zone and language, so the same
+ * process would have a different start under different settings. Reading start
+ * times (`startTimes`) runs in one fixed time zone and locale, as
+ * src/lib/agent-processes.ts does. Nothing else does: `lsof` prints a working
+ * folder with any non-ASCII letter in it as an escape in the fixed locale,
+ * which would never match the real path.
+ */
+const START_TIME_ENVIRONMENT = { TZ: "UTC0", LC_ALL: "C" };
+
+function run(command, args, startTimes = false) {
   try {
     return execFileSync(command, args, {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
+      ...(startTimes ? { env: { ...process.env, ...START_TIME_ENVIRONMENT } } : {}),
     });
   } catch (err) {
     // lsof exits 1 when it finds nothing, still printing what it found.
@@ -79,6 +110,85 @@ export function parseLsofListeners(output) {
 export function parsePsLine(output) {
   const match = output.trim().match(/^(\d+)\s+(.*)$/);
   return match ? { uid: Number(match[1]), command: match[2].trim() } : null;
+}
+
+/**
+ * Reads `ps -A -o pid=,ppid=,uid=,tty=,lstart=` output; the start time
+ * identifies a process with its id, and a tty of `??` or `?` is none.
+ */
+export function parsePsProcesses(output) {
+  const out = [];
+  for (const line of output.split("\n")) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/);
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), uid: Number(m[3]), tty: m[4] !== "??" && m[4] !== "?", start: m[5] });
+  }
+  return out;
+}
+
+/** Reads one `/proc/<pid>/stat` line: the parent, the controlling terminal and the start time (field 22). */
+export function parseProcStatLine(text) {
+  const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+  const ppid = Number(fields[1]);
+  const ttyNr = Number(fields[4]);
+  return Number.isInteger(ppid) && Number.isInteger(ttyNr) && fields[19] !== undefined ? { ppid, tty: ttyNr !== 0, start: fields[19] } : null;
+}
+
+const AGENT_WORKSPACES_ENV = "CREATORBRIO_DESIGN_AGENT_WORKSPACES";
+
+/** A variable from the environment, or else from the checkout's `.env.local`, where the server reads it. */
+function setting(name, root, env) {
+  const value = env[name]?.trim();
+  if (value) return value;
+  try {
+    const line = fs.readFileSync(path.join(root, ".env.local"), "utf-8").split("\n").find((l) => l.trim().startsWith(`${name}=`));
+    return line?.slice(line.indexOf("=") + 1).trim().replace(/^(["'])(.*)\1$/, "$2") || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The contained profile's folders, as src/lib/agent-workspace.ts names them:
+ * the agent workspace root and the per-user temporary parent, each by its
+ * real path when it exists.
+ * @param {{ root?: string, env?: Record<string, string | undefined>, uid?: number, platform?: NodeJS.Platform, home?: string }} [options]
+ */
+export function containedFolders({ root = ROOT, env = process.env, uid = process.getuid?.(), platform = process.platform, home = os.homedir() } = {}) {
+  const configured = setting(AGENT_WORKSPACES_ENV, root, env);
+  const workspaces = configured && path.isAbsolute(configured) ? path.resolve(configured) : path.join(home, ".creatorbrio", "design-agent");
+  const checkout = realDir(root) ?? root;
+  const workspace = realDir(workspaces) ?? workspaces;
+  // The app refuses a root inside the repository or around it (`resolvedRoot`); so does this.
+  const folders = isNestedOrSame(workspace, checkout) || isNestedOrSame(checkout, workspace) ? [] : [workspace];
+  if (uid !== undefined) {
+    const parent = `${platform === "darwin" ? "/private/tmp" : "/tmp"}/cb${uid.toString(36)}`;
+    folders.push(realDir(parent) ?? parent);
+  }
+  return folders;
+}
+
+const isNestedOrSame = (child, parent) => {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+};
+
+const insideAny = (dir, folders) => typeof dir === "string" && folders.some((f) => dir === f || dir.startsWith(f + path.sep));
+
+/** Every process descended from `root`, from one listing; never `root` itself. */
+export function descendantsOf(root, processes) {
+  const children = new Map();
+  for (const p of processes) children.set(p.ppid, [...(children.get(p.ppid) ?? []), p]);
+  const found = [];
+  const seen = new Set([root]);
+  const queue = [...(children.get(root) ?? [])];
+  while (queue.length > 0) {
+    const p = queue.shift();
+    if (seen.has(p.pid)) continue;
+    seen.add(p.pid);
+    found.push(p);
+    queue.push(...(children.get(p.pid) ?? []));
+  }
+  return found;
 }
 
 /** Reads `lsof -a -p <pid> -d cwd -Fn` output: the `n` line is the directory. */
@@ -125,6 +235,9 @@ export const lsofProbe = {
     if (!ps) return null;
     const cwd = parseLsofCwd(run("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]));
     return { ...ps, cwd: cwd && realDir(cwd) };
+  },
+  listProcesses() {
+    return parsePsProcesses(run("ps", ["-A", "-o", "pid=,ppid=,uid=,tty=,lstart="], true));
   },
 };
 
@@ -180,6 +293,20 @@ export const procProbe = {
     } catch {
       return null;
     }
+  },
+  listProcesses() {
+    const out = [];
+    for (const entry of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = parseProcStatLine(fs.readFileSync(`/proc/${entry}/stat`, "utf-8"));
+        const uid = Number(fs.readFileSync(`/proc/${entry}/status`, "utf-8").match(/^Uid:\s+(\d+)/m)?.[1]);
+        if (stat && Number.isInteger(uid)) out.push({ pid: Number(entry), ...stat, uid });
+      } catch {
+        // Gone, or not ours to inspect.
+      }
+    }
+    return out;
   },
 };
 
@@ -292,17 +419,31 @@ export function parsePortArg(arg) {
   return port >= 1 && port <= 65535 ? port : NaN;
 }
 
+/**
+ * @typedef {{ pid: number, ppid: number, uid: number, tty: boolean, start: string }} ListedProcess
+ * @typedef {{
+ *   listListeners(): { pid: number, port: number }[],
+ *   processInfo(pid: number): { uid: number, command: string, cwd: string | null } | null,
+ *   listProcesses?: () => ListedProcess[],
+ * }} Probe
+ * @param {{
+ *   args?: string[], root?: string, uid?: number, probe?: Probe,
+ *   signal?: (pid: number, sig?: NodeJS.Signals) => void, alive?: (pid: number) => boolean,
+ *   timeoutMs?: number, log?: (line: string) => void, folders?: string[],
+ * }} [options]
+ */
 export async function main({
   args = process.argv.slice(2),
   root = ROOT,
   uid = process.getuid?.(),
   probe = process.platform === "linux" ? procProbe : lsofProbe,
-  signal = (pid) => {
-    process.kill(pid, "SIGTERM");
+  signal = (pid, sig = /** @type {NodeJS.Signals} */ ("SIGTERM")) => {
+    process.kill(pid, sig);
   },
   alive = isAlive,
   timeoutMs = STOP_TIMEOUT_MS,
   log = (line) => console.log(line),
+  folders = undefined,
 } = {}) {
   if (process.platform === "win32" || uid === undefined) {
     log("/stop is not supported on Windows. Stop the server with Ctrl+C in its terminal.");
@@ -327,6 +468,11 @@ export async function main({
     return plan.action === "none" ? 0 : 1;
   }
 
+  // The server's descendants, listed while it still runs: once it exits they
+  // belong to another parent and cannot be told apart.
+  const listing = probe.listProcesses?.() ?? [];
+  const descendants = [];
+
   // Check each process again right before signalling it, so a PID that has
   // exited, or been reused by something else since it was listed, is never hit.
   const signalled = [];
@@ -343,8 +489,10 @@ export async function main({
       continue;
     }
     try {
+      const below = descendantsOf(pid, listing);
       signal(pid);
       signalled.push(pid);
+      descendants.push(...below);
     } catch (err) {
       log(`Could not stop PID ${pid}: ${err?.message ?? err}`);
     }
@@ -357,6 +505,15 @@ export async function main({
   }
   const ports = plan.ports.map((p) => `:${p}`).join(", ");
   const still = signalled.filter(alive);
+  // Only once the server is gone: until then its descendants are its own to stop.
+  if (still.length === 0) {
+    // Only the contained Design Agent's: this user's, with no terminal, working in its folders.
+    const contained = folders ?? containedFolders({ root, uid });
+    const leftovers = descendants.filter((p) => p.uid === uid && !p.tty && insideAny(probe.processInfo(p.pid)?.cwd, contained));
+    const leftover = await stopDescendants(leftovers, { probe, signal, alive });
+    if (leftover.stopped > 0) log(`Stopped ${leftover.stopped} process(es) the server had started that outlived it.`);
+    if (leftover.left > 0) log(`${leftover.left} process(es) the server had started are still running after SIGKILL.`);
+  }
   if (still.length > 0) {
     log(
       `Asked the server on ${ports} to stop (PID ${signalled.join(", ")}), ` +
@@ -366,6 +523,40 @@ export async function main({
   }
   log(`Stopped the CreatorBrio server on ${ports} (PID ${signalled.join(", ")}).${plan.message}`);
   return 0;
+}
+
+/**
+ * Stops the recorded descendants still running as the same processes (same
+ * id and start time): SIGTERM, a bounded wait, then SIGKILL.
+ * @param {ListedProcess[]} recorded
+ * @param {{ probe: Probe, signal: (pid: number, sig?: NodeJS.Signals) => void, alive: (pid: number) => boolean, graceMs?: number }} options
+ */
+export async function stopDescendants(recorded, { probe, signal, alive, graceMs = DESCENDANT_GRACE_MS }) {
+  if (recorded.length === 0) return { stopped: 0, left: 0 };
+  const same = () => {
+    const now = new Map((probe.listProcesses?.() ?? []).map((p) => [p.pid, p.start]));
+    return recorded.filter((p) => now.get(p.pid) === p.start && alive(p.pid));
+  };
+  const targets = same();
+  if (targets.length === 0) return { stopped: 0, left: 0 };
+  for (const p of targets) {
+    try {
+      signal(p.pid, "SIGTERM");
+    } catch {
+      // Gone meanwhile.
+    }
+  }
+  const deadline = Date.now() + graceMs;
+  while (same().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+  for (const p of same()) {
+    try {
+      signal(p.pid, "SIGKILL");
+    } catch {
+      // Gone meanwhile.
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return { stopped: targets.length, left: same().length };
 }
 
 const invokedDirectly =

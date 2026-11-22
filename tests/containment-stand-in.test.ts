@@ -3,7 +3,9 @@
  * the stand-in issues exactly the scripted calls and records no credential,
  * and the product arms run the shipped profile unchanged.
  */
+import { spawn } from "node:child_process";
 import path from "node:path";
+import { serverTempRoot } from "@/lib/agent-workspace";
 import { afterEach, describe, expect, it } from "vitest";
 import { STAND_IN_API_KEY, standInEnv, startStandIn, type StandIn } from "../eval/sandbox-route/stand-in";
 import {
@@ -104,9 +106,9 @@ describe("the product arms", () => {
   });
 
   it("take their settings from the shipped profile, with the stand-in listener and the arm's folder", () => {
-    const layout = productLayout(WORK, "/tmp/cb-abc123", 40123, LAYOUT, "/home/q", "linux", 1000);
-    expect(layout).toEqual({ workDir: WORK, stagingDir: path.join(path.dirname(WORK), ".staged", path.basename(WORK)), tempDir: "/tmp/cb-abc123", homeDir: "/home/q", repoDir: LAYOUT.repoDir, dataDir: LAYOUT.dataDir, listenerPort: 40123, platform: "linux", uid: 1000, privateDirs: [path.dirname(WORK)] });
-    expect(containedSettings(layout)).toMatchObject({ sandbox: { network: { allowedDomains: ["localhost:40123"] }, filesystem: { allowRead: [WORK, path.join(path.dirname(WORK), ".staged", path.basename(WORK))] } } });
+    const layout = productLayout(WORK, "/tmp/cbrs/a1b", 40123, LAYOUT, "/home/q", "linux", 1000);
+    expect(layout).toEqual({ workDir: WORK, stagingDir: path.join(path.dirname(WORK), ".staged", path.basename(WORK)), tempDir: "/tmp/cbrs/a1b", tempRoot: serverTempRoot("linux", 1000), homeDir: "/home/q", repoDir: LAYOUT.repoDir, dataDir: LAYOUT.dataDir, listenerPort: 40123, platform: "linux", uid: 1000, privateDirs: [path.dirname(WORK)] });
+    expect(containedSettings(layout)).toMatchObject({ sandbox: { network: { allowedDomains: ["localhost:40123"] }, filesystem: { allowRead: [WORK, path.join(path.dirname(WORK), ".staged", path.basename(WORK)), "/tmp/cbrs/a1b"] } } });
   });
 
   it("judge the link and traversal reads by whether the data canary came back", () => {
@@ -204,6 +206,147 @@ describe("the qualification's environment check (#227)", () => {
     expect(judgeEnvironment(["CREATORBRIO_AGENT_GRANT", "ANTHROPIC_API_KEY"], "CREATORBRIO_AGENT_GRANT").escapes).toEqual(["the shell sees ANTHROPIC_API_KEY"]);
     expect(judgeEnvironment(["PATH"], "CREATORBRIO_AGENT_GRANT").problems).toHaveLength(1);
   });
+});
+
+describe("the qualification's survivor check (#241 A4)", () => {
+  const jobs = ["plain", "nohup", "setsid"];
+  const arm = (over: Partial<Parameters<typeof import("../eval/sandbox-route/qualify").judgeSurvivors>[0]["ended"]> = {}) => ({
+    started: jobs,
+    survived: [] as string[],
+    evaderSeenBeforeStop: true,
+    evaderAliveAfterStop: true,
+    evaderSeenAfterNext: true,
+    wroteNext: false,
+    ...over,
+  });
+
+  it("is contained on macOS only when the evader was seen alive after the next folder existed and wrote nothing, and records the residual", async () => {
+    const { judgeSurvivors, verdictOf } = await import("../eval/sandbox-route/qualify");
+    const judged = judgeSurvivors({ os: "darwin", ended: arm(), stopped: arm() });
+    expect(verdictOf(judged)).toBe("contained");
+    expect(judged.residuals).toHaveLength(1);
+  });
+
+  it("is inconclusive on macOS when the evader never started, died early or was never seen after the next folder existed, whatever else held", async () => {
+    const { judgeSurvivors, verdictOf } = await import("../eval/sandbox-route/qualify");
+    // The evader was alive after the stop, but not seen once the next conversation's folder existed.
+    const unseen = judgeSurvivors({ os: "darwin", ended: arm(), stopped: arm({ evaderSeenAfterNext: false }) });
+    expect(verdictOf(unseen)).toBe("inconclusive");
+    expect(unseen.problems.join(" ")).toMatch(/not seen alive after the next conversation's folder existed \(the run was stopped\)/);
+    // No evader at all: the product's stop may even have ended it, but the property was not tested against one.
+    const none = judgeSurvivors({ os: "darwin", ended: arm({ evaderAliveAfterStop: false, evaderSeenAfterNext: false }), stopped: arm() });
+    expect(verdictOf(none)).toBe("inconclusive");
+    expect(none.problems.join(" ")).toMatch(/no evader was alive after the product's stop \(the run ended\)/);
+  });
+
+  it("calls a surviving job or a write into the next folder an escape on every platform", async () => {
+    const { judgeSurvivors, verdictOf } = await import("../eval/sandbox-route/qualify");
+    for (const os of ["darwin", "linux"]) {
+      expect(verdictOf(judgeSurvivors({ os, ended: arm({ survived: ["plain"] }), stopped: arm() }))).toBe("escaped");
+      expect(verdictOf(judgeSurvivors({ os, ended: arm(), stopped: arm({ wroteNext: true }) }))).toBe("escaped");
+    }
+    // A job that never started is a problem, not a pass.
+    expect(verdictOf(judgeSurvivors({ os: "linux", ended: arm({ started: ["plain", "nohup"] }), stopped: arm() }))).toBe("inconclusive");
+  });
+
+  it("records, without calling it a problem, that the next-folder property was not exercised where no evader survives (Linux)", async () => {
+    const { judgeSurvivors, verdictOf } = await import("../eval/sandbox-route/qualify");
+    // The evader started (it was seen before the stop) and the run's end took it with it.
+    const quiet = { evaderAliveAfterStop: false, evaderSeenAfterNext: false };
+    const judged = judgeSurvivors({ os: "linux", ended: arm(quiet), stopped: arm(quiet) });
+    expect(verdictOf(judged)).toBe("contained");
+    expect(judged.notes.join(" ")).toMatch(/vacuous/);
+    expect(judged.residuals).toEqual([]);
+    // An evader that does survive on Linux is held to the macOS standard.
+    const unseen = judgeSurvivors({ os: "linux", ended: arm({ evaderSeenAfterNext: false }), stopped: arm(quiet) });
+    expect(verdictOf(unseen)).toBe("inconclusive");
+    expect(unseen.notes).toEqual([]);
+  });
+});
+
+describe("the qualification's survivor check, when the evader never started (#241 B8)", () => {
+  const arm = (over: Record<string, unknown> = {}) => ({
+    started: ["plain", "nohup", "setsid"],
+    survived: [] as string[],
+    evaderSeenBeforeStop: true,
+    evaderAliveAfterStop: false,
+    evaderSeenAfterNext: false,
+    wroteNext: false,
+    ...over,
+  });
+
+  it("is inconclusive on every platform, never contained, and is not mistaken for a vacuous pass", async () => {
+    const { judgeSurvivors, verdictOf } = await import("../eval/sandbox-route/qualify");
+    for (const os of ["linux", "darwin"]) {
+      const never = judgeSurvivors({ os, ended: arm({ evaderSeenBeforeStop: false }), stopped: arm({ evaderSeenBeforeStop: false, evaderAliveAfterStop: os === "darwin", evaderSeenAfterNext: os === "darwin" }) });
+      expect({ os, verdict: verdictOf(never) }).toEqual({ os, verdict: "inconclusive" });
+      expect(never.problems.join(" ")).toMatch(/never seen in the process table before the stop \(the run ended\)/);
+    }
+    // On Linux, where nothing outlives the run, it would otherwise have passed as vacuous.
+    const linux = judgeSurvivors({ os: "linux", ended: arm({ evaderSeenBeforeStop: false }), stopped: arm() });
+    expect(linux.problems).toHaveLength(1);
+    // A background job that never started is a problem too.
+    expect(verdictOf(judgeSurvivors({ os: "linux", ended: arm({ started: ["plain"] }), stopped: arm() }))).toBe("inconclusive");
+  });
+});
+
+describe("the qualification's evidence that the evader started (#241 C2)", () => {
+  const tag = "cbq-evader-0123abcd";
+  const arm = (seen: boolean) => ({
+    started: ["plain", "nohup", "setsid"],
+    survived: [] as string[],
+    evaderSeenBeforeStop: seen,
+    evaderAliveAfterStop: false,
+    evaderSeenAfterNext: false,
+    wroteNext: false,
+  });
+
+  it("is not satisfied by a shell whose command line holds the whole script: the tag is never whole in the command text", async () => {
+    const { evaderLaunch, matchingPids, judgeSurvivors, verdictOf } = await import("../eval/sandbox-route/qualify");
+    const script = "sleep 30";
+    const line = evaderLaunch({ script, tag });
+    expect(line).not.toContain(tag);
+    // The sandboxed CLI runs each command as an argument of its shell, so the shell's own command line carries the whole command text.
+    const shell = { pid: 10, command: `/bin/sh -c eval '${line}' && pwd -P -- /tmp/x` };
+    expect(matchingPids([shell], tag, 0)).toEqual([]);
+    // The evader itself has the tag as its own argument.
+    const evader = { pid: 11, command: `sh -c ${script} ${tag}` };
+    expect(matchingPids([shell, evader], tag, 0)).toEqual([11]);
+    expect(matchingPids([shell, evader], tag, 11)).toEqual([]);
+    // With no evader running, nothing is seen, and the check is inconclusive however the rest went.
+    const seen = matchingPids([shell], tag, 0).length > 0;
+    expect(seen).toBe(false);
+    for (const os of ["linux", "darwin"]) expect(verdictOf(judgeSurvivors({ os, ended: arm(seen), stopped: arm(true) }))).toBe("inconclusive");
+  });
+
+  it("starts an evader whose own arguments hold the whole tag, found in the real process table and nowhere else", async () => {
+    const { evaderLaunch, processesMatching } = await import("../eval/sandbox-route/qualify");
+    const unique = `cbq-evader-${Math.random().toString(16).slice(2, 10)}`;
+    // Not a single command: the shell would replace itself with it, and its arguments with it.
+    const line = evaderLaunch({ script: "sleep 30; true", tag: unique });
+    // A shell that is given the whole command text, as the sandboxed one is, does not match while it runs.
+    const shell = spawn("/bin/sh", ["-c", `${line}; sleep 1`], { stdio: "ignore" });
+    let found: number[] = [];
+    try {
+      for (let i = 0; i < 100 && found.length === 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        found = processesMatching(unique);
+      }
+      expect(found).toHaveLength(1);
+      expect(found).not.toContain(shell.pid);
+    } finally {
+      // It leads a session and group of its own: the group goes, with its sleep, whether or not the test passed.
+      for (const pid of found) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+      shell.kill("SIGKILL");
+    }
+    // Longer than the polling above, so a failure still reaches the cleanup in finally.
+  }, 30_000);
 });
 
 describe("the qualification's sign-in check (#227)", () => {

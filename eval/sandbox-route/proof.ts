@@ -62,8 +62,8 @@ import { createServer as createNetServer, isIPv6, type Server as NetServer } fro
 import { homedir, hostname, networkInterfaces, platform, release, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { stagingDirFor } from "../../src/lib/agent-workspace";
-import { agentTempDirFits, containedArgs, containedEnv, containedSettings, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
+import { createRunTempDir, removeRunTempDir, serverTempRoot, stagingDirFor } from "../../src/lib/agent-workspace";
+import { containedArgs, containedEnv, containedSettings, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
 import { standInEnv, startStandIn, type ScriptedCall, type StandIn, type StandInRequest } from "./stand-in";
 
 export const ARMS = ["control", "candidate", "strict-off", "portless", "bypass-mode", "strict-off-bypass", "keychain-deny", "hardened", "read-tool", "read-deny", "product", "product-read"] as const;
@@ -113,7 +113,7 @@ export const isProductArm = (arm: string) => arm === "product" || arm === "produ
 /** The product profile's layout for one arm: its folder is the arm's work folder, its listener the stand-in listener. */
 export function productLayout(workDir: string, tempDir: string, agentPort: number, layout: ProofLayout, home: string, hostPlatform: NodeJS.Platform = platform(), uid: number = process.getuid?.() ?? 0): ContainedLayout {
   const privateDirs = privateReadDirs({ env: {}, platform: hostPlatform, workspaceRoot: path.dirname(workDir), userTempDir: realpathSync(tmpdir()) });
-  return { workDir, stagingDir: stagingDirFor(workDir), tempDir, homeDir: home, repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs };
+  return { workDir, stagingDir: stagingDirFor(workDir), tempDir, tempRoot: serverTempRoot(hostPlatform, uid), homeDir: home, repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs };
 }
 
 /** The extra paths the product's Read tool is aimed at: a link to the data canary in its own folder, and a `..` path out of it. */
@@ -883,22 +883,54 @@ function parseArgs(argv: string[]) {
   };
 }
 
-export async function runCli(claude: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, stopAfterMs?: number): Promise<CliRun> {
+/**
+ * How the chat route starts and stops a contained CLI (#241): the leader of
+ * its own process group, stopped through the product's own signalling.
+ */
+export interface ProductProcess {
+  /** Called once the CLI has a process id; `unreaped` says Node has not yet reaped it. */
+  started: (pid: number, unreaped: () => boolean) => void;
+  /** Sends a stop signal the way the product does. */
+  signal: (signal: NodeJS.Signals) => void;
+}
+
+export async function runCli(claude: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, stopAfterMs?: number, product?: ProductProcess): Promise<CliRun> {
   return new Promise((resolve) => {
-    const child = spawn(claude, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(claude, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], ...(product ? { detached: true } : {}) });
+    if (product && child.pid !== undefined) product.started(child.pid, () => child.exitCode === null && child.signalCode === null);
+    const kill = (signal: NodeJS.Signals) => (product ? product.signal(signal) : child.kill(signal));
     // Stopped as the chat route stops a run: SIGTERM, then SIGKILL five seconds later.
     if (stopAfterMs !== undefined) {
       setTimeout(() => {
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+        kill("SIGTERM");
+        setTimeout(() => kill("SIGKILL"), 5000).unref();
       }, stopAfterMs).unref();
     }
     let raw = "";
     let stderr = "";
     child.stdout.on("data", (d) => (raw += d));
     child.stderr.on("data", (d) => (stderr += d));
-    const timer = setTimeout(() => child.kill("SIGKILL"), 240_000);
-    child.on("close", (code) => {
+    const timer = setTimeout(() => kill("SIGKILL"), 240_000);
+    // A process the CLI leaves running may hold its output open, so with the
+    // product's lifecycle the run ends at the CLI's exit, once its own output
+    // has ended or two seconds have passed.
+    const ended = new Promise<number | null>((done) => {
+      if (!product) {
+        child.on("close", (code) => done(code));
+        return;
+      }
+      let outEnded = false;
+      child.stdout.on("end", () => (outEnded = true));
+      child.on("exit", (code) => {
+        if (outEnded) return done(code);
+        const wait = setTimeout(() => done(code), 2000);
+        child.stdout.once("end", () => {
+          clearTimeout(wait);
+          done(code);
+        });
+      });
+    });
+    void ended.then((code) => {
       clearTimeout(timer);
       const run: CliRun = { exitCode: code, costUsd: null, isError: null, toolUses: [], toolResults: [], permissionDenials: 0, stderrTail: stderr.slice(-600), raw };
       for (const line of raw.split("\n")) {
@@ -1179,16 +1211,16 @@ async function main() {
         lines = parseProbeLines(text);
       } else if (isProductArm(arm)) {
         // The product's own profile, unchanged: its settings, arguments and environment.
-        const tempDir = mkdtempSync(path.join(os === "darwin" ? "/private/tmp" : "/tmp", "cb-"));
+        // The product's own run folder, under the per-user parent the profile read-denies.
+        const tempDir = await createRunTempDir(process.getuid?.() ?? 0);
         try {
-          if (!agentTempDirFits(tempDir, process.getuid?.() ?? 0)) throw new Error("The run's temporary folder path is too long for the CLI");
           const contained = productLayout(workDir, tempDir, agentPort, layout, realpathSync(homedir()));
           settings = containedSettings(contained);
           const args = containedArgs({ taskMessage: armPrompt(arm, workDir, layout), systemPrompt: "CreatorBrio containment qualification.", resumeSessionId: null, budgetUsd: null, layout: contained });
           const env = containedEnv(envs.cli, { tempDir, token: randomBytes(32).toString("base64url") }) as NodeJS.ProcessEnv;
           cli = await runCli(opts.claude, args, workDir, env);
         } finally {
-          rmSync(tempDir, { recursive: true, force: true });
+          await removeRunTempDir(tempDir);
         }
         const file = path.join(workDir, `probe-${arm}.jsonl`);
         lines = existsSync(file) ? parseProbeLines(readFileSync(file, "utf8")) : parseProbeLines(cli.toolResults.join("\n"));

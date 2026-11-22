@@ -15,9 +15,10 @@ import { designAgentArgs } from "@/lib/design-agent";
 import { DIRECTOR_PROFILE, directorArgs } from "@/lib/visual-director";
 
 const LAYOUT: ContainedLayout = {
-  workDir: "/home/designer/.creatorbrio/design-agent/2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89",
-  stagingDir: "/home/designer/.creatorbrio/design-agent/.staged/2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89",
-  tempDir: "/tmp/cb-Ab12Cd",
+  workDir: "/home/designer/.creatorbrio/design-agent/2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89/7c0d4e1a-5b2f-4c3d-8e9f-0a1b2c3d4e5f",
+  stagingDir: "/home/designer/.creatorbrio/design-agent/2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89/.staged/7c0d4e1a-5b2f-4c3d-8e9f-0a1b2c3d4e5f",
+  tempDir: "/tmp/cbrs/a1b",
+  tempRoot: "/tmp/cbrs",
   homeDir: "/home/designer",
   repoDir: "/srv/creatorbrio",
   dataDir: "/srv/creatorbrio/data",
@@ -116,17 +117,21 @@ describe("contained profile settings", () => {
     expect(settings.sandbox.network.allowedDomains).not.toContain("localhost");
   });
 
-  it("denies reading the home folder, repository and data folder, re-allowing only the carousel's folder", () => {
+  it("denies reading the home folder, repository, data folder and server temporary parent, re-allowing only the run's own folders", () => {
     expect(settings.sandbox.filesystem.denyRead).toEqual([
       "/home/designer",
       "/srv/creatorbrio",
       "/srv/creatorbrio/data",
       "/tmp/claude-1000",
       "/private/tmp/claude-1000",
+      "/tmp/cbrs",
       "/home/designer/.creatorbrio/design-agent",
     ]);
-    // The staged images are readable, never writable.
-    expect(settings.sandbox.filesystem.allowRead).toEqual([LAYOUT.workDir, LAYOUT.stagingDir]);
+    // The staged images are readable, never writable. Of the server-owned
+    // temporary parent, only this run's folder: never another run's, nor the
+    // Visual Director's image copies (#241).
+    expect(settings.sandbox.filesystem.allowRead).toEqual([LAYOUT.workDir, LAYOUT.stagingDir, LAYOUT.tempDir]);
+    expect(settings.sandbox.filesystem.allowRead.some((dir: string) => dir === LAYOUT.tempRoot)).toBe(false);
   });
 
   it("names the private folders outside home: the workspace root, a configuration folder and the macOS per-user temporary folder", () => {
@@ -148,6 +153,7 @@ describe("contained profile settings", () => {
     expect(settings.permissions.deny).toEqual([
       "Read(//srv/creatorbrio/**)",
       "Read(//srv/creatorbrio/data/**)",
+      "Read(//tmp/cbrs/**)",
       "Read(//home/designer/.claude/**)",
       "Read(//home/designer/.claude.json)",
     ]);

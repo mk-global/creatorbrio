@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "incremental": false
+  },
+  "include": [
+    "next-env.d.ts",
+    "eval/sandbox-route/**/*.ts",
+    "eval/t1/**/*.ts"
+  ]
+}

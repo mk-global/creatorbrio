@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { serverTempRoot, systemServerTempRoot } from "@/lib/agent-workspace";
 import sharp from "sharp";
 
 import type { BrandConfig } from "@/types/brand";
@@ -297,6 +298,31 @@ describe("runDirector", () => {
     expect(await readFile(path.join(fakeDir, "seen-asset-1.png"))).toEqual(assetBytes);
     // Removed afterwards.
     await expect(stat(cwd)).rejects.toThrow();
+  });
+
+  it("keeps the legacy location, and with the contained Design Agent works under the per-user parent that agent cannot read (#241)", async () => {
+    await play("plan");
+    await runDirector(await request());
+    const legacy = await recorded("cwd");
+    // Directly in the system temporary folder, as before #241, and not under the per-user parent.
+    expect(path.dirname(legacy)).toBe(await realpath(tmpdir()));
+    expect(path.basename(legacy)).toMatch(/^creatorbrio-director-[A-Za-z0-9]{6}$/);
+    expect(legacy.startsWith(serverTempRoot() + path.sep)).toBe(false);
+    expect(legacy.startsWith(systemServerTempRoot() + path.sep)).toBe(false);
+
+    process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "contained";
+    try {
+      await runDirector(await request());
+    } finally {
+      delete process.env.CREATORBRIO_DESIGN_AGENT_PROFILE;
+    }
+    const contained = await recorded("cwd");
+    if (process.platform === "win32") return;
+    // Under this test file's injected parent, in place of the real per-user one.
+    expect(contained).toMatch(new RegExp(`^${serverTempRoot()}/\\.s[0-9a-z]+/creatorbrio-director-[A-Za-z0-9]{6}$`));
+    expect(JSON.parse(await recorded("files.json"))).toEqual(["asset-1.png", "reference-1.png"]);
+    expect(await readFile(path.join(fakeDir, "seen-reference-1.png"))).toEqual(referenceBytes);
+    await expect(stat(contained)).rejects.toThrow();
   });
 
   it("tells the Director about images by neutral name, never by application path", async () => {

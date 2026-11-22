@@ -75,10 +75,10 @@ const ERROR_BODY_CHARS = 500;
 export class AppClient {
   readonly chatTimeoutMs: number;
 
-  constructor(
-    readonly origin: string,
-    options: AppClientOptions = {}
-  ) {
+  readonly origin: string;
+
+  constructor(origin: string, options: AppClientOptions = {}) {
+    this.origin = origin;
     this.chatTimeoutMs = options.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   }
 

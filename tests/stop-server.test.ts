@@ -2,18 +2,25 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
+import { AGENT_WORKSPACES_ENV, agentWorkspaceRoot, systemServerTempRoot } from "@/lib/agent-workspace";
 import {
   classify,
+  containedFolders,
+  descendantsOf,
+  lsofProbe,
   main,
   parseLsofCwd,
   parseLsofListeners,
   parsePortArg,
   parseProcNetTcp,
+  parseProcStatLine,
   parsePsLine,
+  parsePsProcesses,
   planStop,
   procProbe,
+  stopDescendants,
 } from "../scripts/stop-server.mjs";
 
 const ROOT = "/work/creatorbrio";
@@ -246,6 +253,212 @@ describe("acting on the decision", () => {
     const sys = fakeSystem([{ pid: 10, port: 3010 }], [{ 10: next() }]);
     expect(await main({ ...sys.options, args: ["3010 && kill 1"] })).toBe(2);
     expect(sys.signalled).toEqual([]);
+  });
+});
+
+describe("the server's descendants", () => {
+  // The server 10 started a worker 11, which started a contained Design
+  // Agent run 12; the run started 13. Process 20 is unrelated, and 14 belongs
+  // to another user.
+  const at = (pid: number, ppid: number, start = "t0", uid = UID, tty = false) => ({ pid, ppid, uid, tty, start });
+  const table = [at(1, 0), at(10, 1), at(11, 10), at(12, 11), at(13, 12), at(14, 12, "t0", 0), at(20, 1)];
+
+  it("are every process below the server, read from one listing", () => {
+    expect(descendantsOf(10, table).map((p) => p.pid)).toEqual([11, 12, 13, 14]);
+    expect(descendantsOf(20, table)).toEqual([]);
+  });
+
+  it("parse as ps and /proc print them", () => {
+    expect(parsePsProcesses("  10     1   501 ??       Sun Nov 22 01:02:03 2026\n  11    10   501 ttys002  Sun Nov 22 01:02:04 2026\nbad\n")).toEqual([
+      at(10, 1, "Sun Nov 22 01:02:03 2026"),
+      at(11, 10, "Sun Nov 22 01:02:04 2026", UID, true),
+    ]);
+    expect(parseProcStatLine("13 (sh (x)) S 12 13 13 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 98765 0")).toEqual({ ppid: 12, tty: false, start: "98765" });
+    expect(parseProcStatLine("13 (bash) S 12 13 13 34817 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 98765 0")).toMatchObject({ tty: true });
+  });
+
+  it("name the contained profile's folders as the app does, honouring the workspace setting from the environment or .env.local", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "creatorbrio-stop-folders-"));
+    // The app's own derivation, resolved the way the script resolves what exists.
+    const real = async (folder: string) => realpath(folder).catch(() => folder);
+    try {
+      expect(containedFolders({ root: dir, env: {}, uid: 501, platform: "darwin", home: os.homedir() })).toEqual([await real(agentWorkspaceRoot({})), await real(systemServerTempRoot("darwin", 501))]);
+      const configured = { [AGENT_WORKSPACES_ENV]: "/srv/agents/" };
+      expect(containedFolders({ root: dir, env: configured, uid: 1000, platform: "linux", home: "/home/q" })).toEqual([await real(agentWorkspaceRoot(configured)), await real(systemServerTempRoot("linux", 1000))]);
+      await writeFile(path.join(dir, ".env.local"), 'CLAUDE_CLI_PATH=/x\nCREATORBRIO_DESIGN_AGENT_WORKSPACES="/srv/other"\n');
+      expect(containedFolders({ root: dir, env: {}, uid: 1000, platform: "linux", home: "/home/q" })[0]).toBe(await real(agentWorkspaceRoot({ [AGENT_WORKSPACES_ENV]: "/srv/other" })));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never treat a configured agent folder inside the checkout, or around it, as contained: the app refuses it, and every process of the checkout would look like one (#241 A6)", async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-stop-folders-")));
+    try {
+      const temp = await realpath(systemServerTempRoot("linux", 1000)).catch(() => systemServerTempRoot("linux", 1000));
+      for (const unsafe of [path.join(dir, "data", "agents"), dir, path.dirname(dir), path.join(dir, "..")]) {
+        expect(containedFolders({ root: dir, env: { [AGENT_WORKSPACES_ENV]: unsafe }, uid: 1000, platform: "linux", home: "/home/q" })).toEqual([temp]);
+      }
+      // Beside the checkout is fine.
+      const beside = path.join(path.dirname(dir), "agents-elsewhere");
+      expect(containedFolders({ root: dir, env: { [AGENT_WORKSPACES_ENV]: beside }, uid: 1000, platform: "linux", home: "/home/q" })).toEqual([beside, temp]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  function system(listing: () => ReturnType<typeof at>[], ignoresTerm: number[] = []) {
+    const sent: [number, string][] = [];
+    const dead = new Set<number>();
+    return {
+      sent,
+      probe: { listListeners: () => [], processInfo: () => null, listProcesses: () => listing().filter((p) => !dead.has(p.pid)) },
+      signal: (pid: number, sig: string = "SIGTERM") => {
+        sent.push([pid, sig]);
+        if (sig === "SIGKILL" || !ignoresTerm.includes(pid)) dead.add(pid);
+      },
+      alive: (pid: number) => !dead.has(pid),
+    };
+  }
+
+  it("that outlive the server get SIGTERM, then SIGKILL if they ignore it", async () => {
+    const recorded = descendantsOf(10, table).filter((p) => p.uid === UID);
+    const sys = system(() => table.filter((p) => p.pid !== 10 && p.pid !== 11), [13]);
+    const result = await stopDescendants(recorded, { ...sys, graceMs: 200 });
+    expect(result).toEqual({ stopped: 2, left: 0 });
+    expect(sys.sent).toEqual([
+      [12, "SIGTERM"],
+      [13, "SIGTERM"],
+      [13, "SIGKILL"],
+    ]);
+  });
+
+  it("are never confused with a later process that reused an id", async () => {
+    const recorded = [at(12, 11, "t0")];
+    const sys = system(() => [at(12, 1, "t1")]);
+    expect(await stopDescendants(recorded, { ...sys, graceMs: 100 })).toEqual({ stopped: 0, left: 0 });
+    expect(sys.sent).toEqual([]);
+  });
+
+  it("are stopped by /stop once the server is gone only when they are the contained agent's, and left to a server that is still running", async () => {
+    const AGENTS = "/home/q/.creatorbrio/design-agent";
+    const TEMP = "/tmp/cbrs";
+    // Beside the contained run 12 and 13: the legacy Design Agent 15 working
+    // in the checkout, an export browser 16 elsewhere, the Visual Director 17
+    // in the system temporary folder, a person's terminal 18 in a
+    // conversation folder, and a contained run's process 19 in the per-user
+    // temporary parent.
+    const full = [...table, at(15, 11), at(16, 11), at(17, 11), at(18, 11, "t0", UID, true), at(19, 12)];
+    const cwd: Record<number, string> = { 12: `${AGENTS}/c/conv`, 13: `${AGENTS}/c/conv/sub`, 14: `${AGENTS}/c/conv`, 15: ROOT, 16: "/home/q", 17: "/tmp/creatorbrio-director-Ab12Cd", 18: `${AGENTS}/c/conv`, 19: `${TEMP}/a1b` };
+    const lines: string[] = [];
+    let serverUp = true;
+    const sys = system(() => full.filter((p) => serverUp || (p.pid !== 10 && p.pid !== 11)));
+    const options = {
+      root: ROOT,
+      uid: UID,
+      args: [],
+      timeoutMs: 100,
+      folders: [AGENTS, TEMP],
+      log: (line: string) => lines.push(line),
+      probe: {
+        ...sys.probe,
+        listListeners: () => [{ pid: 10, port: 3010 }],
+        processInfo: (pid: number) => (pid === 10 ? next() : cwd[pid] ? { uid: UID, command: "x", cwd: cwd[pid] } : null),
+      },
+    };
+    // The server ignores the stop: nothing below it is touched.
+    expect(await main({ ...options, alive: () => true, signal: (pid: number, sig?: NodeJS.Signals) => sys.signal(pid, sig) })).toBe(1);
+    expect(sys.sent).toEqual([[10, "SIGTERM"]]);
+    sys.sent.length = 0;
+    // The server stops, its worker with it; only the contained run's processes are stopped.
+    const code = await main({
+      ...options,
+      alive: (pid: number) => (pid === 10 ? serverUp : sys.alive(pid)),
+      signal: (pid: number, sig?: NodeJS.Signals) => (pid === 10 ? (serverUp = false) : sys.signal(pid, sig)),
+    });
+    expect(code).toBe(0);
+    expect(sys.sent).toEqual([
+      [12, "SIGTERM"],
+      [13, "SIGTERM"],
+      [19, "SIGTERM"],
+    ]);
+    for (const pid of [14, 15, 16, 17, 18]) expect(sys.alive(pid)).toBe(true);
+    expect(lines.join("\n")).toMatch(/Stopped 3 process\(es\) the server had started/);
+  });
+
+  it("are collected only below a server process that was actually signalled", async () => {
+    // The listener is this checkout's server when listed, and something else when checked again.
+    let call = 0;
+    const sys = system(() => table);
+    const code = await main({
+      root: ROOT,
+      uid: UID,
+      args: [],
+      timeoutMs: 100,
+      folders: ["/"],
+      log: () => {},
+      probe: {
+        ...sys.probe,
+        listListeners: () => [{ pid: 10, port: 3010 }],
+        processInfo: (pid: number) => (pid === 10 ? (call++ === 0 ? next() : { uid: UID, command: "python3", cwd: "/elsewhere" }) : { uid: UID, command: "x", cwd: "/x" }),
+      },
+      alive: sys.alive,
+      signal: (pid: number, sig?: NodeJS.Signals) => sys.signal(pid, sig),
+    });
+    expect(code).toBe(1);
+    expect(sys.sent).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("the process listing on this system", () => {
+  it("lists this process under its parent, with a start time", () => {
+    const listing = (process.platform === "linux" ? procProbe : lsofProbe).listProcesses();
+    const self = listing.find((p) => p.pid === process.pid);
+    expect(self).toMatchObject({ ppid: process.ppid, uid: process.getuid?.() });
+    expect(self?.start).toBeTruthy();
+    expect(descendantsOf(process.ppid, listing).some((p) => p.pid === process.pid)).toBe(true);
+  });
+
+  it("reports a process's real working folder when its path has a non-ASCII letter, so /stop still recognises this checkout's server (#241 C1)", async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-stop-\u00e9-")));
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: dir, stdio: "ignore" });
+    try {
+      const probe = process.platform === "linux" ? procProbe : lsofProbe;
+      let info = probe.processInfo(child.pid!);
+      for (let i = 0; i < 100 && info?.cwd !== dir; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        info = probe.processInfo(child.pid!);
+      }
+      expect(info?.cwd).toBe(dir);
+      // Its command line is a Next.js server's, as far as the decision goes; the folder is the checkout's.
+      expect(classify({ ...info!, command: "next-server (v16.2.3)" }, { root: dir, uid: process.getuid!() })).toBe("ours");
+    } finally {
+      child.kill("SIGKILL");
+      await rm(dir, { recursive: true, force: true });
+    }
+    // Longer than the polling above, so a failure still reaches the cleanup in finally.
+  }, 30_000);
+
+  it("reads a process's start time the same whatever the time zone and language it runs in (#241 B1)", () => {
+    const saved = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL };
+    const seen = new Set<string | undefined>();
+    try {
+      for (const [tz, lc] of [
+        ["UTC", "C"],
+        ["Asia/Tokyo", "de_DE.UTF-8"],
+        ["America/New_York", "hi_IN.UTF-8"],
+      ]) {
+        process.env.TZ = tz;
+        process.env.LC_ALL = lc;
+        seen.add((process.platform === "linux" ? procProbe : lsofProbe).listProcesses().find((p) => p.pid === process.pid)?.start);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    expect([...seen]).toHaveLength(1);
   });
 });
 
