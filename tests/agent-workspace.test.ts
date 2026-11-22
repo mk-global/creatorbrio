@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { existsSync as existsSyncAt, readFileSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   AGENT_WORKSPACES_ENV,
   AgentWorkspaceError,
+  allowOwner,
   ConversationGoneError,
   agentWorkspaceRoot,
+  conversationFolderExists,
   createRunTempDir,
   createServerTempDir,
   openConversation,
@@ -16,6 +19,7 @@ import {
   removeAgentWritable,
   removeRunTempDir,
   removeServerTempDir,
+  runDirNameLength,
   serverTempDirName,
   serverTempRoot,
   stageUploadsForAgent,
@@ -25,12 +29,18 @@ import {
   SERVER_TEMP_ROOT_OVERRIDE,
   systemServerTempRoot,
 } from "@/lib/agent-workspace";
+import { defaultProbe } from "@/lib/agent-processes";
 import { agentTempDirFits, MAX_AGENT_TEMP_PATH_BYTES } from "@/lib/design-agent-profile";
-import { OVERRIDE_KEY, realParent } from "./helpers/server-temp-parent";
+import { OVERRIDE_KEY, realParent, serverFolderName } from "./helpers/server-temp-parent";
 
 const ID = "2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const uid = process.getuid?.() ?? 0;
+// Real processes and a shared, sometimes slow machine: none of these waits is a measurement.
+vi.setConfig({ testTimeout: 30_000 });
+
+const QUARANTINED = "9e1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89";
+const OTHER_ID = "3d2b8a41-7c6e-4f10-8b95-1a2b3c4d5e6f";
 let base: string;
 let repo: string;
 let root: string;
@@ -41,9 +51,48 @@ beforeEach(async () => {
   root = path.join(base, "agents");
   await mkdir(path.join(repo, "public", "uploads"), { recursive: true });
   vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "info").mockImplementation(() => {});
 });
 
+const strays: ChildProcess[] = [];
+
+/** Running, and not a zombie waiting to be reaped. */
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2)[0] !== "Z";
+    }
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
+}
+
+async function goneWithin(pid: number, ms = 5000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (!isRunning(pid)) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return false;
+}
+
+/** A process of this user with no controlling terminal, working in `cwd`, as an agent's background job is. */
+function stray(cwd: string): number {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd, detached: true, stdio: "ignore" });
+  strays.push(child);
+  return child.pid!;
+}
+
 afterEach(async () => {
+  for (const child of strays.splice(0)) child.kill("SIGKILL");
   vi.restoreAllMocks();
   // Folders a test made unremovable are made removable again first.
   execFileSync("chmod", ["-R", "u+rwx", base]);
@@ -148,20 +197,49 @@ describe("a conversation's folder", () => {
 });
 
 describe("the server temporary folders", () => {
-  it("are named per user, and a run's folder fits the CLI's limit with the longest user id on either platform", () => {
+  it("are named per user, and a run's folder fits the CLI's limit with every user id on either platform, as long as the budget allows", () => {
     expect(systemServerTempRoot("darwin", 501)).toBe("/private/tmp/cbdx");
     expect(systemServerTempRoot("linux", 1000)).toBe("/tmp/cbrs");
     for (const uid of [0, 501, 1000, 65534, 2 ** 31, 4294967295, 9999999999]) {
       for (const platform of ["darwin", "linux"] as const) {
-        // The longest name a run's folder can have: three characters.
-        const run = path.join(systemServerTempRoot(platform, uid), "zzz");
+        const root = systemServerTempRoot(platform, uid);
+        const length = runDirNameLength(root, uid);
+        const run = path.join(root, "z".repeat(length));
         expect({ uid, platform, fits: agentTempDirFits(run, uid) }).toEqual({ uid, platform, fits: true });
+        // One more character would not fit: the name fills what the budget leaves (the longest name, 26, is exactly that for the shortest parent).
+        expect({ uid, platform, longer: agentTempDirFits(path.join(root, "z".repeat(length + 1)), uid) }).toEqual({ uid, platform, longer: false });
       }
     }
     // The worst case is exactly the limit: /private/tmp/cb + 7 + /zzz/claude- + 10 digits.
     const worst = path.join(systemServerTempRoot("darwin", 4294967295), "zzz", "claude-4294967295");
     expect(worst).toBe("/private/tmp/cb1z141z3/zzz/claude-4294967295");
     expect(Buffer.byteLength(worst)).toBe(MAX_AGENT_TEMP_PATH_BYTES);
+  });
+
+  it("give a run's name the length the CLI's budget leaves for this user id and parent, never fewer than three characters (#241 A1)", async () => {
+    expect(runDirNameLength(systemServerTempRoot("darwin", 501), 501)).toBe(15);
+    expect(runDirNameLength(systemServerTempRoot("linux", 1000), 1000)).toBe(22);
+    expect(runDirNameLength(systemServerTempRoot("darwin", 4294967295), 4294967295)).toBe(3);
+    // A longer user id leaves fewer characters, and a longer parent too.
+    expect(runDirNameLength(systemServerTempRoot("darwin", 501), 4294967295)).toBeLessThan(15);
+    expect(runDirNameLength(path.join(systemServerTempRoot("darwin", 501), "w"), 501)).toBe(13);
+    // What is created follows it, in the parent in use.
+    const parent = path.join(serverTempRoot(), "n");
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    await chmod(parent, 0o700);
+    const names = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      const dir = await createRunTempDir(uid, process.platform, parent);
+      try {
+        expect(path.basename(dir)).toHaveLength(runDirNameLength(parent, uid));
+        expect(agentTempDirFits(dir, uid)).toBe(true);
+        names.add(path.basename(dir));
+      } finally {
+        await removeRunTempDir(dir);
+      }
+    }
+    // Names are not drawn twice: this is what stops a later run from reusing a path an earlier run's survivor still holds.
+    expect(names.size).toBe(20);
   });
 
   it("are never the real parent while tests run: each test file has its own", () => {
@@ -177,8 +255,10 @@ describe("the server temporary folders", () => {
     const marker = path.join(root, serverTempDirName(), `run-${path.basename(dir)}`);
     try {
       expect(path.dirname(dir)).toBe(root);
-      expect(path.basename(dir)).toMatch(/^[0-9a-z]{3}$/);
+      expect(path.basename(dir)).toMatch(/^[0-9a-z]{3,26}$/);
+      expect(path.basename(dir)).toHaveLength(runDirNameLength(root, uid));
       expect(serverTempDirName()).toBe(`.s${process.pid.toString(36)}`);
+      expect(serverFolderName(process.pid)).toBe(serverTempDirName());
       for (const d of [dir, root, path.join(root, serverTempDirName())]) expect((await stat(d)).mode & 0o777).toBe(0o700);
       expect((await stat(marker)).isFile()).toBe(true);
       await writeFile(path.join(dir, "x"), "x");
@@ -199,7 +279,11 @@ describe("the server temporary folders", () => {
     const wide = path.join(base, "wide");
     await mkdir(wide, { mode: 0o755 });
     await chmod(wide, 0o755);
-    await expect(createRunTempDir(uid, process.platform, wide)).rejects.toThrow(/not a private folder/);
+    // The refusal names the folder by its last component only, and says what to do.
+    const refused = (await createRunTempDir(uid, process.platform, wide).catch((err: unknown) => err)) as Error;
+    expect(refused).toBeInstanceOf(AgentWorkspaceError);
+    expect(refused.message).toMatch(/"wide" is not a private folder.*Remove it, or fix its owner and permissions/);
+    expect(refused.message).not.toContain(base);
     const link = path.join(base, "link");
     await mkdir(path.join(base, "real"), { mode: 0o700 });
     await symlink(path.join(base, "real"), link);
@@ -251,11 +335,12 @@ describe("the sweep at server start", () => {
     await chmod(path.join(quarantined, "deep"), 0o000);
     await chmod(path.join(root, ".removed"), 0o700);
 
-    const { purged } = await sweepLeftoverFolders({ tempRoot, workspaceRoot: root });
+    const { purged } = await sweepLeftoverFolders({ tempRoot, workspaceRoot: root, stopProcesses: false });
     await purged;
     expect((await readdir(tempRoot)).sort()).toEqual([".removed", serverTempDirName(), path.basename(alive), "cd2", path.basename(live), "not-ours.txt"].sort());
     expect(await readdir(path.join(tempRoot, ".removed"))).toEqual([]);
-    expect((await readdir(own)).sort()).toEqual([path.basename(liveCopy), `run-${path.basename(live)}`].sort());
+    // The server's own start time is kept in its folder (and is not a leftover).
+    expect((await readdir(own)).filter((name) => name !== ".start").sort()).toEqual([path.basename(liveCopy), `run-${path.basename(live)}`].sort());
     expect((await readdir(alive)).sort()).toEqual(["creatorbrio-director-Ef34Gh", "run-cd2"]);
     expect(await readdir(path.join(root, ".removed"))).toEqual([]);
     await removeRunTempDir(live);
@@ -263,31 +348,54 @@ describe("the sweep at server start", () => {
   });
 
   it.skipIf(process.platform !== "darwin")("clears user immutable flags in quarantine before deleting (macOS)", async () => {
-    const bin = path.join(root, ".removed", "entry");
+    const bin = path.join(root, ".removed", QUARANTINED);
     await mkdir(path.join(bin, "d"), { recursive: true });
     await writeFile(path.join(bin, "d", "f"), "x");
     execFileSync("chflags", ["uchg", path.join(bin, "d", "f")]);
     execFileSync("chflags", ["uchg", path.join(bin, "d")]);
     await chmod(path.join(root, ".removed"), 0o700);
-    const { purged } = await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root });
+    const { purged } = await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root, stopProcesses: false });
     await purged;
     expect(await readdir(path.join(root, ".removed"))).toEqual([]);
   });
 
   it("never purges a quarantine folder open to the group or others, or owned by another user", async () => {
     const bin = path.join(root, ".removed");
-    await mkdir(path.join(bin, "entry"), { recursive: true });
+    await mkdir(path.join(bin, QUARANTINED), { recursive: true });
     await chmod(bin, 0o770);
-    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root })).purged;
-    expect(await readdir(bin)).toEqual(["entry"]);
+    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root, stopProcesses: false })).purged;
+    expect(await readdir(bin)).toEqual([QUARANTINED]);
     expect(vi.mocked(console.error).mock.calls.some(([message]) => String(message).includes("not purged"))).toBe(true);
     // Private, but not this user's: the sweep runs as another user id.
     await chmod(bin, 0o700);
-    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root, uid: uid + 1 })).purged;
-    expect(await readdir(bin)).toEqual(["entry"]);
+    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root, uid: uid + 1, stopProcesses: false })).purged;
+    expect(await readdir(bin)).toEqual([QUARANTINED]);
     // The same folder as this user's own private folder is purged.
-    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root })).purged;
+    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root, stopProcesses: false })).purged;
     expect(await readdir(bin)).toEqual([]);
+  });
+
+  it("deletes only what the removal itself names, and reports anything else instead of deleting it (#241 A6)", async () => {
+    const bin = path.join(root, ".removed");
+    await mkdir(path.join(bin, QUARANTINED), { recursive: true });
+    await mkdir(path.join(bin, "planted-by-someone"), { recursive: true });
+    await writeFile(path.join(bin, "planted-by-someone", "keep"), "keep");
+    await chmod(bin, 0o700);
+    await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: root, stopProcesses: false })).purged;
+    expect(await readdir(bin)).toEqual(["planted-by-someone"]);
+    expect(await readFile(path.join(bin, "planted-by-someone", "keep"), "utf8")).toBe("keep");
+    expect(vi.mocked(console.warn).mock.calls.some(([message]) => String(message).includes("unexpected entry"))).toBe(true);
+  });
+
+  it("never sweeps an agent folder setting inside the repository or around it (#241 A6)", async () => {
+    for (const unsafe of [path.join(repo, "data", "agents"), base]) {
+      const bin = path.join(unsafe, ".removed", QUARANTINED);
+      await mkdir(bin, { recursive: true });
+      await chmod(path.join(unsafe, ".removed"), 0o700);
+      await (await sweepLeftoverFolders({ tempRoot: path.join(base, "none"), workspaceRoot: unsafe, repoDir: repo, stopProcesses: false })).purged;
+      expect((await lstat(bin)).isDirectory()).toBe(true);
+    }
+    expect(vi.mocked(console.error).mock.calls.some(([message]) => String(message).includes("inside or around the repository"))).toBe(true);
   });
 
   it("never moves anything into a quarantine folder open to the group or others", async () => {
@@ -300,15 +408,248 @@ describe("the sweep at server start", () => {
 
   it("creates nothing where nothing was left, and leaves a parent that is not this user's private folder alone", async () => {
     const tempRoot = path.join(base, "absent");
-    const { purged } = await sweepLeftoverFolders({ tempRoot, workspaceRoot: root });
+    const { purged } = await sweepLeftoverFolders({ tempRoot, workspaceRoot: root, stopProcesses: false });
     await purged;
     await expect(lstat(tempRoot)).rejects.toThrow();
     await expect(lstat(root)).rejects.toThrow();
     const shared = path.join(base, "shared");
     await mkdir(path.join(shared, serverTempDirName(await deadPid())), { recursive: true });
     await chmod(shared, 0o755);
-    await (await sweepLeftoverFolders({ tempRoot: shared, workspaceRoot: null })).purged;
+    await (await sweepLeftoverFolders({ tempRoot: shared, workspaceRoot: null, stopProcesses: false })).purged;
     expect((await readdir(shared)).length).toBe(1);
+  });
+});
+
+describe("the sweep's look for leftover processes at server start (#241 A2)", () => {
+  /** The folders a sweep judges: a workspace with one conversation, and a temporary parent with one run folder. */
+  async function layout() {
+    const dir = await startConversation(ID, repo, root);
+    const tempRoot = path.join(serverTempRoot(), "s");
+    await mkdir(tempRoot, { recursive: true, mode: 0o700 });
+    for (const d of [serverTempRoot(), tempRoot]) await chmod(d, 0o700);
+    const run = await createRunTempDir(uid, process.platform, tempRoot);
+    return { dir, tempRoot, run };
+  }
+  const sweep = async (tempRoot: string, extra: Record<string, unknown> = {}) => (await sweepLeftoverFolders({ tempRoot, workspaceRoot: root, ...extra })).purged;
+
+  it("stops a process with no terminal left working in a conversation folder, its staging folder or a run's folder, and nothing else of the user's", async () => {
+    const { dir, tempRoot, run } = await layout();
+    await mkdir(stagingDirFor(dir), { recursive: true });
+    const inConversation = stray(dir);
+    const inStaging = stray(stagingDirFor(dir));
+    const inRun = stray(run);
+    // Under the configured folder, but not a folder the server makes; the carousel's own folder is one; a person's own folder.
+    await mkdir(path.join(root, "notes"));
+    const elsewhere = stray(path.join(root, "notes"));
+    const unrelated = stray(base);
+    await sweep(tempRoot);
+    for (const pid of [inConversation, inStaging, inRun]) expect({ pid, gone: await goneWithin(pid) }).toEqual({ pid, gone: true });
+    expect(isRunning(elsewhere)).toBe(true);
+    expect(isRunning(unrelated)).toBe(true);
+    await removeRunTempDir(run).catch(() => {});
+  });
+
+  it("is told apart from the person's own processes and other users', and never stops them", async () => {
+    const { dir, tempRoot } = await layout();
+    const real = defaultProbe();
+    const mine = stray(dir);
+    const shell = stray(dir);
+    const theirs = stray(dir);
+    // The same table with a terminal on one process and another owner on another.
+    const probe = {
+      ...real,
+      list: async () => (await real.list()).map((p) => (p.pid === shell ? { ...p, tty: true } : p.pid === theirs ? { ...p, uid: uid + 1 } : p)),
+      listSync: () => real.listSync(),
+    };
+    await sweep(tempRoot, { probe });
+    expect(await goneWithin(mine)).toBe(true);
+    expect(isRunning(shell)).toBe(true);
+    expect(isRunning(theirs)).toBe(true);
+  });
+
+  it("stops nothing while another contained server of this user is running, and says so", async () => {
+    const { dir, tempRoot } = await layout();
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    strays.push(child);
+    // Another running server: its folder is in the parent and its process id is alive, with no recorded start time to contradict that.
+    await mkdir(path.join(tempRoot, serverTempDirName(child.pid!)), { mode: 0o700 });
+    const mine = stray(dir);
+    await sweep(tempRoot);
+    expect(isRunning(mine)).toBe(true);
+    expect(vi.mocked(console.info).mock.calls.some(([message]) => String(message).includes("another server is running"))).toBe(true);
+    // Once that server is gone, the next start stops them.
+    child.kill("SIGKILL");
+    await once(child, "exit");
+    await sweep(tempRoot);
+    expect(await goneWithin(mine)).toBe(true);
+  });
+
+  it("takes a server folder whose process id a later process reuses for a dead server's, by its recorded start time", async () => {
+    const { dir, tempRoot } = await layout();
+    const reused = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    strays.push(reused);
+    const folder = path.join(tempRoot, serverTempDirName(reused.pid!));
+    await mkdir(folder, { mode: 0o700 });
+    await writeFile(path.join(folder, ".start"), "a start time this process does not have");
+    await mkdir(path.join(tempRoot, "abc"), { mode: 0o700 });
+    await writeFile(path.join(folder, "run-abc"), "");
+    const mine = stray(dir);
+    await sweep(tempRoot);
+    // It was a dead server's: its folder and run are gone, and the look for leftovers went ahead.
+    await expect(lstat(folder)).rejects.toThrow();
+    await expect(lstat(path.join(tempRoot, "abc"))).rejects.toThrow();
+    expect(await goneWithin(mine)).toBe(true);
+    expect(isRunning(reused.pid!)).toBe(true);
+  });
+
+  it("abandons the stop, with nothing signalled, when another server starts while the processes are being read (#241 B4)", async () => {
+    const { dir, tempRoot } = await layout();
+    const mine = stray(dir);
+    const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    strays.push(other);
+    const real = defaultProbe();
+    // Another server's first run starts while this sweep reads the system: its folder exists before its CLI does.
+    const probe = {
+      ...real,
+      cwds: async (user: number) => {
+        const found = await real.cwds(user);
+        await mkdir(path.join(tempRoot, serverTempDirName(other.pid!)), { mode: 0o700 });
+        return found;
+      },
+    };
+    await sweep(tempRoot, { probe });
+    expect(isRunning(mine)).toBe(true);
+    expect(vi.mocked(console.info).mock.calls.some(([message]) => String(message).includes("another server started"))).toBe(true);
+  });
+
+  it("says that SIGTERM had already been sent when another server starts after it, and sends no SIGKILL (#241 C3)", async () => {
+    const { dir, tempRoot } = await layout();
+    const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    strays.push(other);
+    const folder = path.join(tempRoot, serverTempDirName(other.pid!));
+    const ready = path.join(base, "late-ready");
+    // The leftover ignores SIGTERM, except that its receiving it is when the other server's folder appears.
+    const child = spawn(
+      process.execPath,
+      ["-e", `process.on('SIGTERM', () => { try { require('node:fs').mkdirSync(${JSON.stringify(folder)}, { mode: 0o700 }); } catch {} }); require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'x'); setInterval(() => {}, 1000)`],
+      { cwd: dir, detached: true, stdio: "ignore" }
+    );
+    strays.push(child);
+    for (let i = 0; i < 400 && !existsSyncAt(ready); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    await sweep(tempRoot);
+    expect(isRunning(child.pid!)).toBe(true);
+    const said = vi.mocked(console.info).mock.calls.map(([message]) => String(message));
+    expect(said.some((message) => message.includes("SIGTERM had already been sent to them, and none was sent SIGKILL"))).toBe(true);
+    expect(said.some((message) => message.includes("none was signalled"))).toBe(false);
+  });
+
+  it("keeps a server folder whatever time zone and language the sweep runs in, since its start time is read in one fixed zone (#241 B1)", async () => {
+    const { tempRoot } = await layout();
+    const alive = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    strays.push(alive);
+    // As the server that started it recorded it, under its own settings.
+    const start = defaultProbe().listSync().find((p) => p.pid === alive.pid)?.start;
+    expect(start).toBeTruthy();
+    const folder = path.join(tempRoot, serverTempDirName(alive.pid!));
+    await mkdir(folder, { mode: 0o700 });
+    await writeFile(path.join(folder, ".start"), start!);
+    const saved = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL };
+    try {
+      process.env.TZ = "Asia/Tokyo";
+      process.env.LC_ALL = "de_DE.UTF-8";
+      await sweep(tempRoot, { stopProcesses: false });
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    expect((await lstat(folder)).isDirectory()).toBe(true);
+  });
+
+  it("keeps a server folder whose recorded start time is still the process's", async () => {
+    const { tempRoot } = await layout();
+    const alive = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    strays.push(alive);
+    const start = defaultProbe().listSync().find((p) => p.pid === alive.pid)?.start;
+    expect(start).toBeTruthy();
+    const folder = path.join(tempRoot, serverTempDirName(alive.pid!));
+    await mkdir(folder, { mode: 0o700 });
+    await writeFile(path.join(folder, ".start"), start!);
+    await sweep(tempRoot, { stopProcesses: false });
+    expect((await lstat(folder)).isDirectory()).toBe(true);
+  });
+
+  it("records this server's start time in its own folder, as the process table prints it", async () => {
+    const dir = await createRunTempDir(uid);
+    try {
+      const recorded = await readFile(path.join(serverTempRoot(), serverTempDirName(), ".start"), "utf8");
+      expect(recorded).toBe(defaultProbe().listSync().find((p) => p.pid === process.pid)?.start);
+    } finally {
+      await removeRunTempDir(dir);
+    }
+  });
+});
+
+describe("a conversation's folder that may be gone", () => {
+  it("is found missing only when it is known to be gone", async () => {
+    const dir = await startConversation(ID, repo, root);
+    expect(await conversationFolderExists(ID, path.basename(dir), root)).toBe(true);
+    expect(await conversationFolderExists(ID, OTHER_ID, root)).toBe(false);
+    expect(await conversationFolderExists("not-an-id", OTHER_ID, root)).toBe(false);
+  });
+});
+
+describe("restoring access to what the agent locked", () => {
+  it("adds owner access to a folder and keeps its other bits", async () => {
+    const dir = path.join(base, "f");
+    await mkdir(dir, { mode: 0o700 });
+    await chmod(dir, 0o050);
+    await allowOwner(dir);
+    expect((await stat(dir)).mode & 0o7777).toBe(0o750);
+    await chmod(dir, 0o000);
+    await allowOwner(dir);
+    expect((await stat(dir)).mode & 0o7777).toBe(0o700);
+  });
+
+  it("through the fallback for a folder it cannot open, never follows a link, restores a real folder, and never fails on what it cannot look at (#241 B6)", async () => {
+    const target = path.join(base, "fallback-target");
+    await mkdir(target, { mode: 0o700 });
+    await chmod(target, 0o500);
+    const link = path.join(base, "fallback-link");
+    await symlink(target, link);
+    await allowOwner(link, process.platform, { skipOpen: true });
+    expect((await stat(target)).mode & 0o7777).toBe(0o500);
+    const locked = path.join(base, "fallback-locked");
+    await mkdir(locked, { mode: 0o700 });
+    await chmod(locked, 0o000);
+    await allowOwner(locked, process.platform, { skipOpen: true });
+    expect((await stat(locked)).mode & 0o7777).toBe(0o700);
+    // Gone, or not to be looked at: nothing is changed and nothing is thrown, so a purge goes on to the next entry.
+    await expect(allowOwner(path.join(base, "fallback-missing"), process.platform, { skipOpen: true })).resolves.toBeUndefined();
+    await expect(allowOwner(path.join(base, "fallback-missing"))).resolves.toBeUndefined();
+  });
+
+  it("never follows a link: what a link points to keeps its mode", async () => {
+    const target = path.join(base, "target");
+    await mkdir(target, { mode: 0o700 });
+    await chmod(target, 0o500);
+    const link = path.join(base, "link");
+    await symlink(target, link);
+    await allowOwner(link);
+    expect((await stat(target)).mode & 0o7777).toBe(0o500);
+  });
+});
+
+describe.skipIf(process.platform !== "darwin")("a folder the agent made user-immutable (macOS)", () => {
+  it("is still moved into quarantine, once its flags are cleared, and removed", async () => {
+    const dir = await startConversation(ID, repo, root);
+    await writeFile(path.join(dir, "f"), "x");
+    execFileSync("chflags", ["uchg", path.join(dir, "f")]);
+    execFileSync("chflags", ["uchg", dir]);
+    await removeAgentWritable(dir, root);
+    await expect(lstat(dir)).rejects.toThrow();
+    expect(await readdir(path.join(root, ".removed"))).toEqual([]);
   });
 });
 

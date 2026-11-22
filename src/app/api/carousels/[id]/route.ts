@@ -83,7 +83,8 @@ export async function DELETE(
     }
     // The contained Design Agent's folders go with their carousel (#227).
     await removeCarouselWorkDir(id).catch((err) => {
-      console.error("[carousels] could not remove the design agent's folder", { carouselId: id, message: (err as Error)?.message });
+      // The carousel's folder is named by its id; the error's text can hold absolute paths, so only its name and code are logged.
+      console.error("[carousels] could not remove the design agent's folder", { carouselId: id, error: (err as Error)?.name, code: (err as NodeJS.ErrnoException)?.code ?? null });
     });
     // So are the sessions its contained runs may resume (#237).
     await forgetAgentSessions(id).catch((err) => {

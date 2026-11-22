@@ -17,7 +17,7 @@
     "build": "next build",
     "start": "next start -H 127.0.0.1",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eval.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "doctor": "node scripts/doctor.mjs",

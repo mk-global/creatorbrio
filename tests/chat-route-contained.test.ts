@@ -12,11 +12,14 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { serverTempRoot } from "@/lib/agent-workspace";
+import { runDirNameLength, serverTempRoot } from "@/lib/agent-workspace";
 import type { BrandConfig } from "@/types/brand";
 import { CHAT_ERROR_MESSAGES, createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
 import { boundConversation } from "@/lib/agent-sessions";
-import { CAROUSEL_BEING_DELETED_ERROR, reserveForDeletion } from "@/lib/generation-status";
+import { CAROUSEL_BEING_DELETED_ERROR, isGenerating, reserveForDeletion } from "@/lib/generation-status";
+import * as agentProcesses from "@/lib/agent-processes";
+import * as agentSessions from "@/lib/agent-sessions";
+import * as agentWorkspace from "@/lib/agent-workspace";
 import { stubDirector } from "./helpers/stub-director";
 import { startAppRoutesServer, type AppRoutesServer } from "./helpers/app-routes-server";
 import net from "node:net";
@@ -287,9 +290,9 @@ describe("a contained design run", () => {
     expect(env.CREATORBRIO_DESIGN_AGENT_PROFILE).toBeUndefined();
     expect(env.CREATORBRIO_AGENT_GRANT).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(env.DISABLE_AUTOUPDATER).toBe("1");
-    // Directly in the per-user parent (here this test file's injected one), named with three characters.
+    // Directly in the per-user parent (here this test file's injected one), named as long as the CLI's path budget allows (#241 A1).
     expect(path.dirname(env.CLAUDE_CODE_TMPDIR)).toBe(serverTempRoot());
-    expect(path.basename(env.CLAUDE_CODE_TMPDIR)).toMatch(/^[0-9a-z]{3}$/);
+    expect(path.basename(env.CLAUDE_CODE_TMPDIR)).toHaveLength(runDirNameLength(serverTempRoot(), process.getuid?.() ?? 0));
     // The run's temporary folder is gone once the run has ended.
     await expect(stat(env.CLAUDE_CODE_TMPDIR)).rejects.toThrow();
   });
@@ -403,10 +406,75 @@ describe("a contained design run", () => {
     const folder = await recorded("cwd");
     await rm(folder, { recursive: true });
     await rm(path.join(fakeDir, "pid"), { force: true });
+    const planned = director.requests.length;
     const { events } = await postChat({ carouselId: own.id, sessionId: SESSION });
     expect(events).toContainEqual({ type: "error", code: "session_not_found", message: CHAT_ERROR_MESSAGES.session_not_found });
     await expect(recorded("pid")).rejects.toThrow();
     await expect(stat(folder)).rejects.toThrow();
+    // Refused before anything was planned, not after the plan and its images were paid for (#241 A6).
+    expect(director.requests.length).toBe(planned);
+  });
+
+  it("binds the session before it releases the carousel's slot, so a request that follows finds it (#241 A6)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const original = agentSessions.bindAgentSession;
+    const held: boolean[] = [];
+    vi.spyOn(agentSessions, "bindAgentSession").mockImplementation(async (...args) => {
+      held.push(isGenerating(own.id));
+      return original(...args);
+    });
+    await postChat({ carouselId: own.id });
+    expect(held).toEqual([true]);
+    expect(isGenerating(own.id)).toBe(false);
+  });
+
+  it("stops the run's processes and removes its folder before it releases the carousel's slot when the CLI cannot start (#241 A6)", async () => {
+    const { own } = await newCarousels();
+    claudePath = path.join(fakeDir, "no-such-claude");
+    const original = agentWorkspace.removeRunTempDir;
+    const held: boolean[] = [];
+    vi.spyOn(agentWorkspace, "removeRunTempDir").mockImplementation(async (...args) => {
+      held.push(isGenerating(own.id));
+      return original(...args);
+    });
+    const { events } = await postChat({ carouselId: own.id });
+    expect(events).toContainEqual(expect.objectContaining({ type: "error", code: "start_failed" }));
+    expect(held).toEqual([true]);
+    expect(isGenerating(own.id)).toBe(false);
+  });
+
+  it("logs a folder that could not be prepared by the error's name and code, never by a path (#241 A6)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    // A file where the agent folders' parent should be: the failure's own text names a path.
+    await writeFile(path.join(agentsRoot, "afile"), "x");
+    process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = path.join(agentsRoot, "afile", "sub");
+    const { events } = await postChat({ carouselId: own.id });
+    expect(events).toContainEqual(expect.objectContaining({ type: "error", code: "start_failed" }));
+    const logged = vi.mocked(console.error).mock.calls.filter(([message]) => String(message).includes("could not be prepared"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0][1]).toMatchObject({ carouselId: own.id, code: expect.any(String) });
+    expect(JSON.stringify(logged[0])).not.toContain(agentsRoot);
+  });
+
+  it("reports a stop that could not look at the system, with the carousel and the run's folder name, not its path (#241 A5)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const real = agentProcesses.trackRun;
+    vi.spyOn(agentProcesses, "trackRun").mockImplementation((input) => {
+      const tracked = real(input);
+      return {
+        signal: (signal) => tracked.signal(signal),
+        stop: async () => ({ ...(await tracked.stop()), found: 2, left: 1, probeFailures: ["ps: timed out"] }),
+      };
+    });
+    await postChat({ carouselId: own.id });
+    const warned = vi.mocked(console.error).mock.calls.find(([message]) => String(message).includes("a look at the system failed"));
+    expect(warned?.[1]).toMatchObject({ carouselId: own.id, failures: ["ps: timed out"] });
+    const failed = vi.mocked(console.error).mock.calls.find(([message]) => String(message).includes("could not be stopped"));
+    expect(failed?.[1]).toMatchObject({ carouselId: own.id, remaining: 1, run: expect.stringMatching(/^[0-9a-z]{3,26}$/) });
+    expect(JSON.stringify([warned, failed])).not.toContain(serverTempRoot());
   });
 
   it("does not start while the carousel is being deleted, and starts once the deletion has let go (#241)", async () => {
@@ -470,6 +538,21 @@ describe("a contained design run", () => {
     expect(await readdir(path.join(agentsRoot, ".removed"))).toEqual([]);
     // Its sessions are forgotten with it.
     expect(await boundConversation(own.id, SESSION)).toBeNull();
+  });
+
+  it("logs a folder that could not be removed with the carousel by its id and the error's code, never a path (#241 A6)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    await postChat({ carouselId: own.id });
+    // A file where the removal folder belongs, so nothing can be moved into it.
+    await rm(path.join(agentsRoot, ".removed"), { recursive: true, force: true });
+    await writeFile(path.join(agentsRoot, ".removed"), "x");
+    const res = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), { params: Promise.resolve({ id: own.id }) });
+    expect(res.status).toBe(200);
+    const logged = vi.mocked(console.error).mock.calls.filter(([message]) => String(message).includes("could not remove the design agent's folder"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0][1]).toMatchObject({ carouselId: own.id, code: expect.any(String) });
+    expect(JSON.stringify(logged[0])).not.toContain(agentsRoot);
   });
 
   it("creates nothing outside the data folder when the legacy profile deletes a carousel", async () => {

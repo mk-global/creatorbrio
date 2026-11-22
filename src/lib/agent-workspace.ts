@@ -16,13 +16,19 @@
  * `MAX_AGENT_TEMP_PATH_BYTES`). Run folders live directly under one parent
  * per user (`serverTempRoot`), so the contained profile can read-deny the
  * parent and re-allow only the run's own folder. The path must fit the CLI's
- * limit for any user id, so a run folder's name is three characters and its
- * owner is recorded beside it: each server process has a folder in the parent
- * (`.s<process id>`) holding a marker per run it owns, written before the run
- * folder exists and removed after it is gone, so a later server can tell a
- * dead server's leftovers from a live one's. The Visual Director's image
- * copies for a contained design live in the server's folder, out of the
- * shell's reach.
+ * limit, so a run folder's random name fills what the budget leaves for this
+ * parent and user id (`runDirNameLength`): at about ten characters or more a
+ * name is not drawn twice in practice, which matters because on macOS a
+ * surviving process keeps its sandbox's access to the path it was given. With
+ * the shorter names that larger user ids leave (five characters or fewer from
+ * about 100 million on macOS, and a floor of three, all that fits for the
+ * longest user ids) a later run can draw a name an earlier run held. Each
+ * run's owner is recorded beside it: each server process has a folder in the
+ * parent (`.s<process id>`) holding the server's start time and a marker per
+ * run it owns, written before the run folder exists and removed after it is
+ * gone, so a later server can tell a dead server's leftovers from a live
+ * one's. The Visual Director's image copies for a contained design live in
+ * the server's folder, out of the shell's reach.
  *
  * The images the agent is told to view are copied (never linked: a link would
  * be a writable second name for an upload) into a staging folder beside the
@@ -41,15 +47,17 @@
  * process's access; on Linux nothing the agent started survives its run, and
  * a folder is never removed while its run is live (see the carousel delete
  * route). What could not be deleted stays in quarantine for the sweep at the
- * next server start (`sweepLeftoverFolders`).
+ * next server start (`sweepLeftoverFolders`), which first stops the processes
+ * earlier servers' runs left working in these folders.
  */
 import { constants } from "node:fs";
 import { execFile } from "node:child_process";
 import { randomInt, randomUUID } from "node:crypto";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { agentTempDirFits } from "@/lib/design-agent-profile";
+import { stopStrayProcesses, defaultProbe, type ProcessProbe } from "@/lib/agent-processes";
+import { agentTempDirFits, MAX_AGENT_TEMP_PATH_BYTES } from "@/lib/design-agent-profile";
 
 export const AGENT_WORKSPACES_ENV = "CREATORBRIO_DESIGN_AGENT_WORKSPACES";
 
@@ -128,7 +136,7 @@ export async function startConversation(carouselId: string, repoDir: string, roo
   if (earlier.includes(conversationId)) throw new AgentWorkspaceError("That conversation folder was used before.");
   for (const name of earlier) {
     if (name === STAGING) continue;
-    await removeAgentWritable(path.join(carouselDir, name), realRoot).catch(logLeftBehind(name, "a previous conversation's folder"));
+    await removeAgentWritable(path.join(carouselDir, name), realRoot).catch(logLeftBehind(name, "a previous conversation's folder", { carouselId }));
   }
   // Only the server writes the staging folder, so it is deleted directly.
   await rm(path.join(carouselDir, STAGING), { recursive: true, force: true });
@@ -158,6 +166,22 @@ export async function openConversation(carouselId: string, conversationId: strin
   await assertPlainDir(carouselDir, "The carousel's folder");
   await assertPlainDir(dir, "The conversation's folder");
   return dir;
+}
+
+/**
+ * Whether a conversation's folder still exists, for a resume to be refused
+ * before anything is planned when it does not. Only a folder known to be gone
+ * counts as missing: when this cannot tell (an unusable setting, a folder it
+ * may not look at) it says yes, and the launch reports the cause.
+ */
+export async function conversationFolderExists(carouselId: string, conversationId: string, root?: string): Promise<boolean> {
+  if (!isServerId(carouselId) || !isServerId(conversationId)) return false;
+  try {
+    await lstat(path.join(root ?? agentWorkspaceRoot(), carouselId, conversationId));
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ENOENT";
+  }
 }
 
 /** The server-only folder of the images a conversation's agent may view, beside its working folder. */
@@ -194,7 +218,16 @@ async function quarantine(target: string, root: string, platform: NodeJS.Platfor
   if (!isPrivateDir(await lstat(bin).catch(() => null), currentUid())) throw new AgentWorkspaceError("The quarantine folder is not a private folder of this user.");
   const moved = path.join(bin, randomUUID());
   try {
-    await rename(target, moved);
+    try {
+      await rename(target, moved);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EPERM" || platform !== "darwin") throw err;
+      // The agent can make its own folder user-immutable, which cannot be renamed. The
+      // folder's parent is the server's, so the flags are cleared (`-h`: never through a
+      // link) and the move is tried once more.
+      await clearUserFlags([target]);
+      await rename(target, moved);
+    }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return null;
@@ -239,6 +272,69 @@ async function clearUserFlags(paths: string[]): Promise<void> {
   }
 }
 
+/**
+ * Linux's O_PATH (the same on x86-64, arm64 and the other common architectures):
+ * a handle on a folder that needs no permission on it, which Node does not name.
+ */
+const O_PATH = 0o10000000;
+
+/**
+ * Adds owner read, write and search to a real folder without ever following a
+ * link, keeping every other bit it has.
+ *
+ * The folder is opened with O_NOFOLLOW and changed through the handle. A
+ * folder without read permission cannot be opened that way, so then: on macOS
+ * `chmod -h` changes it by path without following a link; on Linux it is opened
+ * with O_PATH (which needs no permission on it) and changed through that
+ * handle's own entry in `/proc/self/fd`, so a link swapped in meanwhile is not
+ * followed either. Where neither is available it is changed by path only after
+ * it has been seen to be a real folder, and nothing is changed when it cannot
+ * be looked at. Never throws: a folder that cannot be restored is deleted, or
+ * reported, by the caller. `skipOpen` goes straight to the second way, for tests.
+ */
+export async function allowOwner(entry: string, platform: NodeJS.Platform = process.platform, options: { skipOpen?: boolean } = {}): Promise<void> {
+  try {
+    if (!options.skipOpen) {
+      const handle = await open(entry, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try {
+        await handle.chmod(((await handle.stat()).mode & 0o7777) | 0o700);
+      } finally {
+        await handle.close().catch(() => {});
+      }
+      return;
+    }
+  } catch (err) {
+    // Gone, replaced by a link or no longer a folder: nothing to restore. Only a folder without read permission takes the other way.
+    if ((err as NodeJS.ErrnoException).code !== "EACCES") return;
+  }
+  try {
+    if (platform === "darwin") {
+      await new Promise<void>((resolve) => execFile("chmod", ["-h", "u+rwx", entry], { timeout: 10_000 }, () => resolve()));
+      return;
+    }
+    if (platform === "linux" && ["x64", "arm64", "riscv64"].includes(process.arch)) {
+      try {
+        const handle = await open(entry, O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try {
+          await chmod(`/proc/self/fd/${handle.fd}`, ((await handle.stat()).mode & 0o7777) | 0o700);
+        } finally {
+          await handle.close().catch(() => {});
+        }
+        return;
+      } catch (err) {
+        // A link or something gone is not a folder to restore; anything else (no O_PATH here) is left to the check below.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") return;
+      }
+    }
+    const info = await lstat(entry);
+    if (!info.isDirectory() || info.isSymbolicLink()) return;
+    await chmod(entry, (info.mode & 0o7777) | 0o700);
+  } catch {
+    // Cannot be looked at or changed: left as it is.
+  }
+}
+
 async function restoreForRemoval(entry: string, platform: NodeJS.Platform): Promise<void> {
   let info;
   try {
@@ -248,7 +344,7 @@ async function restoreForRemoval(entry: string, platform: NodeJS.Platform): Prom
   }
   if (platform === "darwin") await clearUserFlags([entry]);
   if (!info.isDirectory() || info.isSymbolicLink()) return;
-  await chmod(entry, (info.mode & 0o7777) | 0o700).catch(() => {});
+  await allowOwner(entry, platform);
   let names: string[];
   try {
     names = await readdir(entry);
@@ -306,10 +402,26 @@ export function serverTempDirName(pid: number = process.pid): string {
 }
 
 const SERVER_DIR_NAME = /^\.s([0-9a-z]{1,8})$/;
-/** A run's temporary folder: three characters, so the longest user id still fits the CLI's limit. */
-const RUN_DIR_NAME = /^[0-9a-z]{3}$/;
-const RUN_MARKER = /^run-([0-9a-z]{3})$/;
+/** The shortest a run folder's name is: all that fits for the longest user ids on macOS (ten digits). */
+const RUN_NAME_MIN = 3;
+/** The longest: all that fits for user id 0 under Linux's `/tmp/cb0`, the shortest parent there is. */
+const RUN_NAME_MAX = 26;
+const RUN_DIR_NAME = /^[0-9a-z]{3,26}$/;
+const RUN_MARKER = /^run-([0-9a-z]{3,26})$/;
 const runMarker = (name: string) => `run-${name}`;
+/** The file in a server's folder that holds the server's start time, which tells it from a later process that reuses its id. */
+const SERVER_START_FILE = ".start";
+
+/**
+ * How many characters a run folder's name has under `root` for this user id:
+ * what is left of the CLI's temporary path budget once the parent, the
+ * separators and `claude-<user id>` are counted, never fewer than three. Every
+ * 32-bit user id keeps at least three on both platforms.
+ */
+export function runDirNameLength(root: string, uid: number): number {
+  const fixed = Buffer.byteLength(path.join(root, "x", `claude-${uid}`)) - 1;
+  return Math.min(RUN_NAME_MAX, Math.max(RUN_NAME_MIN, MAX_AGENT_TEMP_PATH_BYTES - fixed));
+}
 
 /**
  * Creates (or verifies) a folder that must belong to this user alone: a real
@@ -320,7 +432,9 @@ async function ensurePrivateDir(dir: string, uid: number): Promise<void> {
   await mkdirPrivate(dir);
   const info = await lstat(dir);
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== uid || (info.mode & 0o077) !== 0 || (await realpath(dir)) !== dir) {
-    throw new AgentWorkspaceError("A server temporary folder is not a private folder of this user.");
+    throw new AgentWorkspaceError(
+      `The server temporary folder "${path.basename(dir)}" is not a private folder of this user (a real folder, owned by this user, with no group or other access). Remove it, or fix its owner and permissions, and try again.`
+    );
   }
 }
 
@@ -333,12 +447,47 @@ function liveTemp(): Set<string> {
   return store[LIVE_KEY];
 }
 
+const START_KEY = Symbol.for("creatorbrio.server-temp-start");
+
+interface StartRecord {
+  /** This process's own start time, as the process table prints it, read once; null when it cannot be read. */
+  start: Promise<string | null>;
+  /** The folders it has written that time into. */
+  written: Set<string>;
+}
+
+function startRecord(): StartRecord {
+  const store = globalThis as typeof globalThis & { [START_KEY]?: StartRecord };
+  store[START_KEY] ??= {
+    start: defaultProbe()
+      .list()
+      .then((table) => table.find((p) => p.pid === process.pid)?.start ?? null)
+      .catch(() => null),
+    written: new Set(),
+  };
+  return store[START_KEY];
+}
+
+/** Records this process's start time in its folder, once, so a later server can tell it from a process that reuses its id. */
+async function recordServerStart(own: string): Promise<void> {
+  const record = startRecord();
+  const file = path.join(own, SERVER_START_FILE);
+  if (record.written.has(own) && (await lstat(file).then(() => true, () => false))) return;
+  const start = await record.start;
+  if (start === null) return;
+  // Never through a link: the folder is verified private, and the name is never followed.
+  await writeFile(file, start, { mode: 0o600, flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW });
+  record.written.add(own);
+}
+
 /** The verified parent and this server's verified folder in it. */
 async function serverDirs(uid: number, platform: NodeJS.Platform, parent?: string): Promise<{ root: string; own: string }> {
   const root = parent ?? serverTempRoot(platform, uid);
   await ensurePrivateDir(root, uid);
   const own = path.join(root, serverTempDirName());
   await ensurePrivateDir(own, uid);
+  // Best effort: without it a later server treats this one as running while its process id is alive, as before.
+  await recordServerStart(own).catch(() => {});
   return { root, own };
 }
 
@@ -368,7 +517,7 @@ export async function removeServerTempDir(dir: string): Promise<void> {
 export async function createRunTempDir(uid: number, platform: NodeJS.Platform = process.platform, parent?: string): Promise<string> {
   const { root, own } = await serverDirs(uid, platform, parent);
   for (let attempt = 0; attempt < 64; attempt++) {
-    const name = randomRunName();
+    const name = randomRunName(runDirNameLength(root, uid));
     const marker = path.join(own, runMarker(name));
     try {
       await (await open(marker, "wx", 0o600)).close();
@@ -394,9 +543,9 @@ export async function createRunTempDir(uid: number, platform: NodeJS.Platform = 
   throw new AgentWorkspaceError("No free name for the run's temporary folder.");
 }
 
-function randomRunName(): string {
+function randomRunName(length: number): string {
   const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
-  return Array.from({ length: 3 }, () => alphabet[randomInt(alphabet.length)]).join("");
+  return Array.from({ length }, () => alphabet[randomInt(alphabet.length)]).join("");
 }
 
 /**
@@ -432,6 +581,56 @@ async function runOwners(root: string, serverNames: string[]): Promise<Map<strin
 }
 
 /**
+ * Whether a working folder is one the contained profile's server makes: under
+ * the agent folders, `<carousel id>/<conversation id>`, `<carousel id>/.staged`
+ * or the removal folder; under the temporary parent, a run folder, a server
+ * folder or its removal folder. Anything else under a configured folder, such
+ * as a person's own files, is never taken for a run's.
+ */
+function isContainedWorkingFolder(cwd: string, roots: { workspace: string | null; temp: string | null }): boolean {
+  const below = (root: string | null): string[] | null => {
+    if (root === null) return null;
+    const rel = path.relative(root, cwd);
+    return rel === "" || rel.startsWith("..") || path.isAbsolute(rel) ? null : rel.split(path.sep);
+  };
+  const work = below(roots.workspace);
+  if (work) {
+    const [first, second] = work;
+    if (first === QUARANTINE) return true;
+    if (SERVER_ID.test(first) && (second === undefined || second === STAGING || SERVER_ID.test(second))) return true;
+  }
+  const temp = below(roots.temp);
+  if (temp) {
+    const [first] = temp;
+    if (first === QUARANTINE || RUN_DIR_NAME.test(first) || SERVER_DIR_NAME.test(first)) return true;
+  }
+  return false;
+}
+
+/**
+ * The agent folders' root as the sweep may use it: absolute and outside the
+ * repository, as `resolvedRoot` requires, and real. Null (with a log) for a
+ * setting it refuses, or one that does not exist yet.
+ */
+async function sweepableWorkspaceRoot(configured: string | undefined, repoDir: string): Promise<string | null> {
+  let root: string;
+  try {
+    root = configured ?? agentWorkspaceRoot();
+  } catch {
+    // No usable agent folder setting: the chat reports it when a design starts.
+    return null;
+  }
+  const real = await realpath(root).catch(() => null);
+  if (real === null) return null;
+  const realRepo = await realpath(repoDir).catch(() => path.resolve(repoDir));
+  if (isInside(real, realRepo) || isInside(realRepo, real)) {
+    console.error("[design-agent] the agent folders' setting is inside or around the repository; it was not swept", { folder: path.basename(real) });
+    return null;
+  }
+  return real;
+}
+
+/**
  * Removes what earlier servers and runs left behind: in the parent, the run
  * folders and server folder of every server process that is no longer
  * running, the entries of this process's own folder that no live run or plan
@@ -440,6 +639,15 @@ async function runOwners(root: string, serverNames: string[]): Promise<Map<strin
  * keeps its folder and runs. Nothing is created, a parent that is not this
  * user's private folder is left alone, and what cannot be removed is logged by
  * name and retried at the next start.
+ *
+ * First, with no other contained server running, it stops this user's
+ * leftover processes with no controlling terminal that work in those folders
+ * (`stopStrayProcesses`), which is what stops a process the last server's
+ * shutdown window missed. While another server of this user is running it
+ * cannot tell that server's background processes from leftovers, so it
+ * stops none. A server counts as running while its process id is alive and,
+ * when the start time it recorded is known, still has that start time: an id a
+ * later process has reused is a dead server's.
  *
  * It resolves once every leftover is moved into quarantine, which is quick,
  * with `purged` settling when the quarantines are deleted; the server awaits
@@ -452,14 +660,21 @@ export async function sweepLeftoverFolders(options: {
   pid?: number;
   alive?: (pid: number) => boolean;
   platform?: NodeJS.Platform;
+  /** The repository, which the agent folders must be outside of; the current directory by default. */
+  repoDir?: string;
+  probe?: ProcessProbe;
+  /** Whether to stop leftover processes first; on unless a test has no use for it. */
+  stopProcesses?: boolean;
 } = {}): Promise<{ purged: Promise<void> }> {
   const platform = options.platform ?? process.platform;
   const uid = options.uid ?? currentUid();
   const tempRoot = options.tempRoot ?? serverTempRoot(platform, uid);
   const ownPid = options.pid ?? process.pid;
   const alive = options.alive ?? isAlive;
+  const probe = options.probe ?? defaultProbe();
   const live = liveTemp();
   const bins: string[] = [];
+  const workspaceRoot = options.workspaceRoot === null ? null : await sweepableWorkspaceRoot(options.workspaceRoot, options.repoDir ?? process.cwd());
 
   const tempInfo = await lstat(tempRoot).catch(() => null);
   if (tempInfo) {
@@ -476,13 +691,46 @@ export async function sweepLeftoverFolders(options: {
       const servers = entries.filter((name) => SERVER_DIR_NAME.test(name));
       const runs = entries.filter((name) => RUN_DIR_NAME.test(name));
       const owners = await runOwners(tempRoot, servers);
+      // Which servers are running: the id is alive and is still the process that recorded its start.
+      const startsIn = async () => new Map((await probe.list().catch(() => [])).map((p) => [p.pid, p.start]));
+      const running = async (server: string, pid: number, starts: Map<number, string>): Promise<boolean> => {
+        if (!alive(pid)) return false;
+        const recorded = await readFile(path.join(/*turbopackIgnore: true*/ tempRoot, server, SERVER_START_FILE), "utf8").catch(() => null);
+        const current = starts.get(pid);
+        return !(recorded !== null && current !== undefined && recorded.trim() !== current);
+      };
+      const serverPid = (server: string) => parseInt(SERVER_DIR_NAME.exec(server)![1], 36);
+      const starts = await startsIn();
+      const state = new Map<string, boolean>();
+      for (const server of servers) state.set(server, serverPid(server) === ownPid ? true : await running(server, serverPid(server), starts));
+      const others = servers.filter((server) => serverPid(server) !== ownPid && state.get(server) === true);
+      /** Other servers running now, from the folders as they are now: one whose first run starts during this sweep has its folder before its CLI exists. */
+      const othersNow = async (): Promise<number> => {
+        const now = (await readdir(/*turbopackIgnore: true*/ tempRoot).catch(() => [] as string[])).filter((name) => SERVER_DIR_NAME.test(name) && serverPid(name) !== ownPid);
+        const fresh = await startsIn();
+        let live = 0;
+        for (const server of now) if (await running(server, serverPid(server), fresh)) live++;
+        return live;
+      };
+      if (options.stopProcesses !== false) {
+        if (others.length > 0) {
+          console.info("[design-agent] another server is running its own design runs; leftover processes were not looked for", { servers: others.length });
+        } else {
+          const realTemp = await realpath(tempRoot).catch(() => tempRoot);
+          await stopLeftoverProcesses({ roots: { workspace: workspaceRoot, temp: realTemp }, probe, uid, proceed: async () => (await othersNow()) === 0 });
+        }
+      }
       for (const server of servers) {
-        const pid = parseInt(SERVER_DIR_NAME.exec(server)![1], 36);
+        const pid = serverPid(server);
         const serverDir = at(server);
         if (pid === ownPid) {
           // This process's own folder can hold leftovers only from an earlier
-          // server that had the same process id; what it now runs is kept.
+          // server that had the same process id; what it now runs is kept. Its
+          // start time is this process's from now on, so another server never
+          // takes the folder for a dead server's.
+          await recordServerStart(serverDir).catch(() => {});
           for (const child of await readdir(/*turbopackIgnore: true*/ serverDir).catch(() => [] as string[])) {
+            if (child === SERVER_START_FILE) continue;
             const run = RUN_MARKER.exec(child)?.[1];
             if (run !== undefined) {
               if (live.has(at(run))) continue;
@@ -492,7 +740,7 @@ export async function sweepLeftoverFolders(options: {
               await move(path.join(/*turbopackIgnore: true*/ serverDir, child), child);
             }
           }
-        } else if (!alive(pid)) {
+        } else if (state.get(server) === false) {
           for (const [run, owner] of owners) if (owner === server) await move(at(run), run);
           await move(serverDir, server);
         }
@@ -508,17 +756,31 @@ export async function sweepLeftoverFolders(options: {
     }
   }
 
-  if (options.workspaceRoot !== null) {
-    try {
-      bins.push(path.join(options.workspaceRoot ?? agentWorkspaceRoot(), QUARANTINE));
-    } catch {
-      // No usable agent folder setting: the chat reports it when a design starts.
-    }
-  }
+  if (workspaceRoot !== null) bins.push(path.join(workspaceRoot, QUARANTINE));
   const purged = (async () => {
     for (const bin of bins) await purgeChildren(bin, uid, platform);
   })().catch((err) => logLeftBehind(QUARANTINE, "the quarantine")(err));
   return { purged };
+}
+
+/** Stops what earlier servers' runs left working in the contained profile's folders, and says what it did. */
+async function stopLeftoverProcesses(input: {
+  roots: { workspace: string | null; temp: string | null };
+  probe: ProcessProbe;
+  uid: number;
+  proceed: () => Promise<boolean>;
+}): Promise<void> {
+  const report = await stopStrayProcesses({ belongs: (cwd) => isContainedWorkingFolder(cwd, input.roots), probe: input.probe, uid: input.uid, proceed: input.proceed });
+  if (report.probeFailures.length > 0) console.error("[design-agent] a look at the system failed while looking for leftover processes", { failures: report.probeFailures });
+  if (report.abandoned) {
+    console.info(
+      report.sigtermSent
+        ? "[design-agent] another server started while leftover processes were being looked for; SIGTERM had already been sent to them, and none was sent SIGKILL"
+        : "[design-agent] another server started while leftover processes were being looked for; none was signalled"
+    );
+  }
+  else if (report.left > 0) console.error("[design-agent] leftover processes of earlier design runs could not be stopped", { remaining: report.left });
+  else if (report.found > 0) console.warn("[design-agent] stopped processes earlier design runs left running", { stopped: report.found });
 }
 
 /** A real folder (never a link) owned by `uid` with no group or other access. */
@@ -538,13 +800,20 @@ async function purgeChildren(bin: string, uid: number, platform: NodeJS.Platform
     console.error("[design-agent] a quarantine folder is not a private folder of this user; it was not purged", { folder: path.basename(bin), parent: path.basename(path.dirname(bin)) });
     return;
   }
-  for (const name of await readdir(bin).catch(() => [] as string[])) await purgeQuarantined(path.join(bin, name), platform);
+  for (const name of await readdir(bin).catch(() => [] as string[])) {
+    // Only what `quarantine` itself names: anything else was put there by something else, and is reported, never deleted.
+    if (!SERVER_ID.test(name)) {
+      console.warn("[design-agent] an unexpected entry in a quarantine folder was left alone", { folder: name, parent: path.basename(path.dirname(bin)) });
+      continue;
+    }
+    await purgeQuarantined(path.join(bin, name), platform);
+  }
 }
 
 /** A folder that could not be removed stays on disk; it is reported by name, never silently left. */
-function logLeftBehind(name: string, what: string) {
+function logLeftBehind(name: string, what: string, extra: Record<string, string> = {}) {
   return (err: unknown) => {
-    console.error(`[design-agent] could not remove ${what}`, { folder: name, code: (err as NodeJS.ErrnoException)?.code ?? null });
+    console.error(`[design-agent] could not remove ${what}`, { ...extra, folder: name, code: (err as NodeJS.ErrnoException)?.code ?? null });
   };
 }
 

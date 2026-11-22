@@ -28,10 +28,14 @@
 // as the same processes (process id and start time) whose working folder is
 // inside the contained profile's folders (the agent workspace root and the
 // per-user temporary parent), with no controlling terminal, get SIGTERM, then
-// SIGKILL after a bounded wait. Every other descendant (the legacy Design
-// Agent, the Visual Director, the export browser) is left as it was before.
+// SIGKILL after a bounded wait. Under the contained profile the Visual Director
+// works inside the per-user temporary parent, so a leftover Director is stopped
+// too. Every other descendant (the legacy Design Agent, the legacy Visual
+// Director, the export browser) is left as it was before.
 // The server stops its own contained runs when it is signalled; this covers a
-// server that could not.
+// server that could not. A configured agent workspace root inside the checkout,
+// or around it, is the app's own refusal and is never treated as contained
+// here, because every process of the checkout would then look like one.
 //
 // Usage: node scripts/stop-server.mjs [port]
 // Exit status: 0 stopped or nothing to stop, 1 refused or ambiguous, 2 usage.
@@ -61,11 +65,22 @@ const DESCENDANT_GRACE_MS = 3_000;
 // Reading the system. Each probe answers two questions: which processes listen
 // on which TCP ports, and who/what/where a process is.
 
-function run(command, args) {
+/**
+ * `ps` prints a start time in the local time zone and language, so the same
+ * process would have a different start under different settings. Reading start
+ * times (`startTimes`) runs in one fixed time zone and locale, as
+ * src/lib/agent-processes.ts does. Nothing else does: `lsof` prints a working
+ * folder with any non-ASCII letter in it as an escape in the fixed locale,
+ * which would never match the real path.
+ */
+const START_TIME_ENVIRONMENT = { TZ: "UTC0", LC_ALL: "C" };
+
+function run(command, args, startTimes = false) {
   try {
     return execFileSync(command, args, {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
+      ...(startTimes ? { env: { ...process.env, ...START_TIME_ENVIRONMENT } } : {}),
     });
   } catch (err) {
     // lsof exits 1 when it finds nothing, still printing what it found.
@@ -138,10 +153,21 @@ function setting(name, root, env) {
 export function containedFolders({ root = ROOT, env = process.env, uid = process.getuid?.(), platform = process.platform, home = os.homedir() } = {}) {
   const configured = setting(AGENT_WORKSPACES_ENV, root, env);
   const workspaces = configured && path.isAbsolute(configured) ? path.resolve(configured) : path.join(home, ".creatorbrio", "design-agent");
-  const folders = [workspaces];
-  if (uid !== undefined) folders.push(`${platform === "darwin" ? "/private/tmp" : "/tmp"}/cb${uid.toString(36)}`);
-  return folders.map((dir) => realDir(dir) ?? dir);
+  const checkout = realDir(root) ?? root;
+  const workspace = realDir(workspaces) ?? workspaces;
+  // The app refuses a root inside the repository or around it (`resolvedRoot`); so does this.
+  const folders = isNestedOrSame(workspace, checkout) || isNestedOrSame(checkout, workspace) ? [] : [workspace];
+  if (uid !== undefined) {
+    const parent = `${platform === "darwin" ? "/private/tmp" : "/tmp"}/cb${uid.toString(36)}`;
+    folders.push(realDir(parent) ?? parent);
+  }
+  return folders;
 }
+
+const isNestedOrSame = (child, parent) => {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+};
 
 const insideAny = (dir, folders) => typeof dir === "string" && folders.some((f) => dir === f || dir.startsWith(f + path.sep));
 
@@ -208,7 +234,7 @@ export const lsofProbe = {
     return { ...ps, cwd: cwd && realDir(cwd) };
   },
   listProcesses() {
-    return parsePsProcesses(run("ps", ["-A", "-o", "pid=,ppid=,uid=,tty=,lstart="]));
+    return parsePsProcesses(run("ps", ["-A", "-o", "pid=,ppid=,uid=,tty=,lstart="], true));
   },
 };
 

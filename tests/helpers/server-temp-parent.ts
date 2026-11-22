@@ -8,3 +8,6 @@ export const OVERRIDE_KEY = Symbol.for("creatorbrio.server-temp-root");
 
 /** The real per-user parent, as `systemServerTempRoot` names it. */
 export const realParent = (platform: NodeJS.Platform, uid: number) => `${platform === "darwin" ? "/private/tmp" : "/tmp"}/cb${uid.toString(36)}`;
+
+/** A server process's own folder in the parent, as `serverTempDirName` names it. */
+export const serverFolderName = (pid: number) => `.s${pid.toString(36)}`;

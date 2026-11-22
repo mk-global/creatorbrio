@@ -286,7 +286,8 @@ Evidence recorded on 2026-11-21 (#237), with the final profile, all with a stand
 - A process the agent starts in the background outlives its run on macOS, whether the run ends or is stopped as the chat route stops it, and on Linux it does not.
   So the server moves anything the agent could write into a removal folder the agent cannot write before deleting it, and refuses to delete a carousel while its contained run is live (pinned by tests).
   On macOS, with a leftover process interfering while the server removes the agent's folder, a plain delete (the positive control) reached files outside the folder in each of three trials, and the product's removal in none; the product's move alone ended the leftover process's writes to the moved folder in each of three trials.
-  Since #241 the server stops what a run leaves when the run ends, is stopped or times out, and at server shutdown; on macOS a process that leaves the run's folder and process groups is not found (the residual below).
+  #241 adds to the server a stop of what a run leaves when the run ends, is stopped or times out, and at server shutdown, as `docs/architecture/design-agent.md` describes; a process the server never saw and that does not work in the run's folders is not found (the residual below).
+  The stand-in evidence for #241 is listed below as it was measured with the stand-in on CLI 2.1.328.
 - The shell is also denied reading the CLI's shared temporary folder, the folder of every carousel's folder, a configuration folder kept outside home and, on macOS, the per-user temporary folder; the checks above were rerun with these denials.
   A canary in the shared temporary folder, in another carousel's folder and, on macOS, in the per-user temporary folder is unreadable by the contained shell and read by the legacy one; the configuration-folder denial is configured but not separately probed.
 - Stand-in evidence for #241 on CLI 2.1.328:

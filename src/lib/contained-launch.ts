@@ -77,7 +77,9 @@ export async function prepareContainedLaunch(options: {
   const tempDir = await createRunTempDir(uid);
   let revoke: (() => void) | null = null;
   let tracked: TrackedRun | null = null;
-  const removeTemp = () => removeRunTempDir(tempDir).catch(logLeftBehind(tempDir));
+  // What every log line about this run carries: the carousel and the run's folder name, never a path.
+  const ids = { carouselId: options.carouselId, run: path.basename(tempDir) };
+  const removeTemp = () => removeRunTempDir(tempDir).catch(logLeftBehind(ids));
   try {
     // The prompt and the task name uploads by absolute path; the agent cannot
     // read the repository, so both name the copies staged for it instead.
@@ -124,9 +126,14 @@ export async function prepareContainedLaunch(options: {
         revoke?.();
         revoke = null;
         // Before the folders go, so nothing the run started can still use them.
-        const report = await tracked?.stop().catch(() => null);
-        if (report && report.left > 0) console.error("[design-agent] processes a run started could not be stopped", { remaining: report.left });
-        else if (report && report.found > 0) console.info("[design-agent] stopped processes a run left running", { stopped: report.found });
+        const report = await tracked?.stop().catch((err) => {
+          console.error("[design-agent] could not stop the processes a run started", { ...ids, code: (err as NodeJS.ErrnoException)?.code ?? null });
+          return null;
+        });
+        // A look at the system that failed finds nothing, so it is reported rather than taken for a clean stop.
+        if (report && report.probeFailures.length > 0) console.error("[design-agent] a look at the system failed while stopping a run's processes", { ...ids, failures: report.probeFailures });
+        if (report && report.left > 0) console.error("[design-agent] processes a run started could not be stopped", { ...ids, remaining: report.left });
+        else if (report && report.found > 0) console.info("[design-agent] stopped processes a run left running", { ...ids, stopped: report.found });
         await removeTemp();
       },
     };
@@ -138,8 +145,8 @@ export async function prepareContainedLaunch(options: {
 }
 
 /** A run's temporary folder that could not be removed stays on disk; it is reported, never silently left. */
-function logLeftBehind(dir: string) {
+function logLeftBehind(ids: { carouselId: string; run: string }) {
   return (err: unknown) => {
-    console.error("[design-agent] could not remove a run's temporary folder", { folder: path.basename(dir), code: (err as NodeJS.ErrnoException)?.code ?? null });
+    console.error("[design-agent] could not remove a run's temporary folder", { ...ids, code: (err as NodeJS.ErrnoException)?.code ?? null });
   };
 }

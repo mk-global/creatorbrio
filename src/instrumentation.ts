@@ -1,10 +1,11 @@
 /**
  * Runs once when a server starts (Next.js instrumentation). Only with the
  * contained Design Agent profile (#241): stops live contained runs and their
- * processes when the server receives SIGTERM or SIGINT, and removes what
- * earlier servers and runs left behind (`sweepLeftoverFolders`) before any
- * request is served. With the legacy profile, or a profile setting that is
- * neither name, it does nothing.
+ * processes when the server receives SIGTERM, SIGINT or SIGHUP, and, before any
+ * request is served, stops the processes earlier servers' runs left working in
+ * the profile's folders and removes the folders earlier servers and runs left
+ * behind (`sweepLeftoverFolders`). With the legacy profile, or a profile
+ * setting that is neither name, it does nothing.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;

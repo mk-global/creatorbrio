@@ -137,6 +137,84 @@ export function judgeEnvironment(names: readonly string[], grantName: string): {
   return { escapes, problems, residuals: CLI_RESIDUAL_VARIABLES.filter((n) => names.includes(n)) };
 }
 
+/** What one arm of the survivor check observed. */
+export interface SurvivorMeasure {
+  /** The plain, ignoring-hangup and new-session background jobs that started. */
+  started: readonly string[];
+  /** Those still running after the product's stop. */
+  survived: readonly string[];
+  /** The evader was seen in the process table, by the tag in its command line, while the run was live and before the stop: it started. */
+  evaderSeenBeforeStop: boolean;
+  /** The evader, which also left the run's folder, was alive when the product's stop had finished. */
+  evaderAliveAfterStop: boolean;
+  /**
+   * The same evader process was seen alive in at least two samples of the
+   * process table, taken after the next conversation's folder existed. The
+   * sandbox lets the evader write nowhere the host can read once the run's
+   * folders are moved away, so the process table, by the tag in its command
+   * line, is the host's heartbeat.
+   */
+  evaderSeenAfterNext: boolean;
+  /** The evader wrote into the next conversation's folder. */
+  wroteNext: boolean;
+}
+
+/**
+ * The survivor check's judgement from both arms (the run ended by itself, and
+ * the run stopped). A background job alive after the stop, or a write into the
+ * next conversation's folder, is an escape. On every platform an evader that
+ * was never seen in the process table before the stop did not start, so
+ * nothing was tested against it: that is a problem (inconclusive), never a
+ * pass. The next-conversation property is tested only by an evader that is
+ * alive when it could write: on macOS an evader not seen alive after the next
+ * folder existed leaves the check inconclusive, never contained. Where an
+ * evader started but no evader outlives the run (Linux's process namespace
+ * ends everything with it) the property is vacuous, which is recorded in the
+ * reasons and is not a problem.
+ */
+export function judgeSurvivors(input: { os: string; ended: SurvivorMeasure; stopped: SurvivorMeasure }): { escapes: string[]; problems: string[]; residuals: string[]; notes: string[] } {
+  const { ended, stopped } = input;
+  const arms = [
+    { name: "the run ended", m: ended },
+    { name: "the run was stopped", m: stopped },
+  ];
+  const names = ["plain", "nohup", "setsid"];
+  const escapes = [
+    ...ended.survived.map((n) => `a ${n} background process kept running after the run ended and the product's stop`),
+    ...stopped.survived.map((n) => `a ${n} background process kept running after the run was stopped`),
+    ...(ended.wroteNext || stopped.wroteNext ? ["a process an earlier run started wrote into the next conversation's folder"] : []),
+  ];
+  const problems = arms.flatMap(({ name, m }) => names.filter((n) => !m.started.includes(n)).map((n) => `no ${n} background process started (${name})`));
+  // Whatever the platform, a check against an evader that never started proves nothing.
+  for (const { name, m } of arms) {
+    if (!m.evaderSeenBeforeStop) problems.push(`the evader was never seen in the process table before the stop (${name}), so it did not start and nothing was tested against it`);
+  }
+  const notes: string[] = [];
+  const residuals: string[] = [];
+  if (arms.some(({ m }) => m.evaderAliveAfterStop)) residuals.push("residual: a process that left the run's folder and process groups kept running after the stop");
+  if (input.os === "darwin") {
+    // The platform where a process can outlive its run: an evader that was never alive to try proves nothing.
+    for (const { name, m } of arms) {
+      // An evader that never started is already a problem above.
+      if (!m.evaderSeenAfterNext && m.evaderSeenBeforeStop) {
+        problems.push(
+          m.evaderAliveAfterStop
+            ? `the evader was not seen alive after the next conversation's folder existed (${name}), so its writes into that folder were not exercised`
+            : `no evader was alive after the product's stop (${name}), so the next conversation's folder was not tested against one`
+        );
+      }
+    }
+  } else if (!arms.some(({ m }) => m.evaderAliveAfterStop)) {
+    notes.push("vacuous on this platform: no process outlived the run, so a leftover process writing into the next conversation's folder was not exercised");
+  } else {
+    // An evader that survived anywhere else is held to the same standard as on macOS.
+    for (const { name, m } of arms) {
+      if (m.evaderAliveAfterStop && !m.evaderSeenAfterNext) problems.push(`the evader was not seen alive after the next conversation's folder existed (${name}), so its writes into that folder were not exercised`);
+    }
+  }
+  return { escapes, problems, residuals, notes };
+}
+
 /**
  * Prints, per place the shell can look, the planted sign-in values it finds
  * there. The pattern is written so that it never matches its own text in a
@@ -241,19 +319,42 @@ const sessionIdOf = (cli: CliRun) => {
   return null;
 };
 
-/** This user's processes whose command line holds `needle`, never this process. */
-function processesMatching(needle: string): number[] {
+/** The processes whose command line holds `needle`, never `exclude`. Pure, so what counts as a match is testable. */
+export function matchingPids(table: readonly { pid: number; command: string }[], needle: string, exclude: number): number[] {
+  return table.filter((p) => p.pid !== exclude && p.command.includes(needle)).map((p) => p.pid);
+}
+
+/**
+ * The evader's launch, for the survivor check: the one-line command that starts
+ * it detached in a session of its own, working in `/`, running `script` with
+ * `tag` as the shell's `$0`. The tag is joined from two parts inside perl, so it
+ * never appears whole in the command text. A shell that runs this command (the
+ * CLI runs each command as an argument of its shell) carries the whole command
+ * text in its own command line; with the tag whole in the text, a missing
+ * evader would still be "seen" in that shell's command line.
+ */
+export function evaderLaunch(input: { script: string; tag: string }): string {
+  const cut = Math.ceil(input.tag.length / 2);
+  const parts = [input.tag.slice(0, cut), input.tag.slice(cut)];
+  return `(cd / && perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "sh", "-c", q{${input.script}}, q{${parts[0]}} . q{${parts[1]}}' >/dev/null 2>&1 &)`;
+}
+
+/** The processes on this computer whose command line holds `needle` (the host's own process excluded). */
+export function processesMatching(needle: string): number[] {
   if (platform() === "linux") {
-    return readdirSync("/proc")
-      .filter((name) => /^\d+$/.test(name) && Number(name) !== process.pid)
-      .filter((name) => {
-        try {
-          return readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").join(" ").includes(needle);
-        } catch {
-          return false;
-        }
-      })
-      .map(Number);
+    return matchingPids(
+      readdirSync("/proc")
+        .filter((name) => /^\d+$/.test(name))
+        .flatMap((name) => {
+          try {
+            return [{ pid: Number(name), command: readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").join(" ") }];
+          } catch {
+            return [];
+          }
+        }),
+      needle,
+      process.pid
+    );
   }
   let out = "";
   try {
@@ -261,11 +362,15 @@ function processesMatching(needle: string): number[] {
   } catch {
     return [];
   }
-  return out
-    .split("\n")
-    .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
-    .filter((m): m is RegExpExecArray => m !== null && m[2].includes(needle) && Number(m[1]) !== process.pid)
-    .map((m) => Number(m[1]));
+  return matchingPids(
+    out
+      .split("\n")
+      .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => ({ pid: Number(m[1]), command: m[2] })),
+    needle,
+    process.pid
+  );
 }
 
 function parseArgs(argv: string[]) {
@@ -675,21 +780,35 @@ async function main() {
           `(sh -c '${loop("plain")}' >/dev/null 2>&1 &)`,
           `(trap '' HUP; exec sh -c '${loop("nohup")}') >/dev/null 2>&1 &`,
           `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "sh", "-c", q{${loop("setsid")}}' >/dev/null 2>&1 &`,
-          `(cd / && perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "sh", "-c", q{${evade}}, q{${tag}}' >/dev/null 2>&1 &)`,
+          evaderLaunch({ script: evade, tag }),
           "sleep 2; ls *.beat",
         ].join("\n");
         const script = stopped ? `${command}\nsleep 60` : command;
-        const c = await contained(workDir, [{ name: "Bash", input: { command: script, description: "Start background work" } }], null, {}, stopped ? 8000 : undefined);
+        // The evader as the host sees it while the run is live: in the process table, by its tag.
+        let evaderSeenBeforeStop = false;
+        const watching = setInterval(() => {
+          if (!evaderSeenBeforeStop && processesMatching(tag).length > 0) evaderSeenBeforeStop = true;
+        }, 200);
+        const c = await contained(workDir, [{ name: "Bash", input: { command: script, description: "Start background work" } }], null, {}, stopped ? 8000 : undefined).finally(() => clearInterval(watching));
         // contained() returns once the product's stop has run.
         const beat = (n: string) => (existsSync(path.join(workDir, `${n}.beat`)) ? readFileSync(path.join(workDir, `${n}.beat`), "utf8").trim() : null);
         const first = Object.fromEntries(names.map((n) => [n, beat(n)]));
         await sleep(3000);
         const started = names.filter((n) => first[n] !== null);
         const survived = started.filter((n) => beat(n) !== first[n]);
+        // Whether the evader outlived the product's stop, before the next conversation starts.
+        const evaderAliveAfterStop = processesMatching(tag).length > 0;
         // The person starts a new conversation: the product moves this one into quarantine and starts the next.
         await startConversation(carouselId, repo, agents, next);
-        await sleep(3000);
-        const evaderAlive = processesMatching(tag).length > 0;
+        // The host's heartbeat: the evader's process, by its tag, sampled in the process table over the next
+        // seconds, only while the next conversation's folder exists. The sandbox lets it write nowhere the
+        // host can read, so this is the only evidence that it was alive to try the folder.
+        const samples: number[][] = [];
+        for (let i = 0; i < 4; i++) {
+          await sleep(750);
+          if (existsSync(nextDir)) samples.push(processesMatching(tag));
+        }
+        const evaderSeenAfterNext = samples.length >= 2 && samples[0].length > 0 && samples.at(-1)!.some((pid) => samples[0].includes(pid));
         const wroteNext = existsSync(path.join(nextDir, "evaded.txt"));
         for (const pid of processesMatching(tag)) {
           try {
@@ -698,24 +817,16 @@ async function main() {
             // Gone.
           }
         }
-        return { cliExit: c.cli.exitCode, stopReport: c.stopped, started, survived, evaderAlive, wroteNext };
+        return { cliExit: c.cli.exitCode, stopReport: c.stopped, started, survived, evaderSeenBeforeStop, evaderAliveAfterStop, evaderSeenAfterNext, wroteNext };
       };
       const ended = await measure(false);
       const stopped = await measure(true);
       await removeCarouselWorkDir(carouselId, agents);
-      const escapes = [
-        ...ended.survived.map((n) => `a ${n} background process kept running after the run ended and the product's stop`),
-        ...stopped.survived.map((n) => `a ${n} background process kept running after the run was stopped`),
-        ...(ended.wroteNext || stopped.wroteNext ? ["a process an earlier run started wrote into the next conversation's folder"] : []),
-      ];
-      const problems = [ended, stopped].flatMap((m, i) => names.filter((n) => !m.started.includes(n)).map((n) => `no ${n} background process started (${i === 0 ? "run ended" : "run stopped"})`));
-      const residuals = [ended, stopped].some((m) => m.evaderAlive)
-        ? ["residual: a process that left the run's folder and process groups kept running after the stop"]
-        : [];
+      const judged = judgeSurvivors({ os, ended, stopped });
       results.push({
         check: "survivor",
-        verdict: verdictOf({ escapes, problems }),
-        reasons: [...escapes, ...problems, ...residuals],
+        verdict: verdictOf({ escapes: judged.escapes, problems: judged.problems }),
+        reasons: [...judged.escapes, ...judged.problems, ...judged.residuals, ...judged.notes],
         facts: { ended, stopped },
       });
     }
