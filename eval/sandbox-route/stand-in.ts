@@ -11,7 +11,7 @@
  * It records facts about each request, never a credential: the model asked
  * for, the tools offered, the effort and thinking settings, which marker
  * strings appear anywhere in the request, the kind of credential header,
- * whether a bearer matches the hash the harness expects (#242), and
+ * which of the hashes the harness expects a bearer matches (#242, #246), and
  * the tool results the CLI sent back (the CLI's own report of what a tool
  * did, which the harness checks against host-side evidence, never trusts).
  *
@@ -35,11 +35,14 @@ export interface StandInRequest {
   path: string;
   credential: "dummy-key" | "other-key" | "bearer" | "none";
   /**
-   * Whether the request's bearer is the one whose SHA-256 the harness said to
-   * expect (`expectBearer`); null when none is expected or there is no
-   * bearer. Only the comparison is kept, never the bearer.
+   * Which of the bearers the harness said to expect (`expectBearers`) the
+   * request's bearer is, by the label it was given: "unknown" for a bearer
+   * matching none of them, null when the request has no bearer. Only the
+   * label is kept, never the bearer.
    */
-  bearerMatches: boolean | null;
+  bearer: string | null;
+  /** Whether the request carried an API key at all, whatever else it carried. */
+  apiKey: boolean;
   model: string | null;
   mainLoop: boolean;
   tools: string[];
@@ -58,16 +61,17 @@ export interface StandIn {
   requests: StandInRequest[];
   /** The calls the next main-loop conversation is answered with. */
   setScript: (calls: ScriptedCall[]) => void;
-  /** The SHA-256, in hex, of the bearer later requests are compared with; null to compare none. */
-  expectBearer: (sha256Hex: string | null) => void;
+  /** The bearers later requests are compared with, as a label for each SHA-256 in hex. */
+  expectBearers: (labels: Record<string, string>) => void;
   close: () => Promise<void>;
 }
 
-/** Whether a request's bearer hashes to `expected`; null when nothing is expected or there is no bearer. */
-export function bearerMatchesOf(headers: Record<string, string | string[] | undefined>, expected: string | null): boolean | null {
+/** The label of the expected bearer a request carries: "unknown" when it matches none, null when there is no bearer. */
+export function bearerLabelOf(headers: Record<string, string | string[] | undefined>, expected: Record<string, string>): string | null {
   const auth = headers.authorization;
-  if (expected === null || typeof auth !== "string" || !auth.startsWith("Bearer ")) return null;
-  return createHash("sha256").update(auth.slice("Bearer ".length)).digest("hex") === expected.toLowerCase();
+  if (typeof auth !== "string" || !auth.startsWith("Bearer ")) return null;
+  const hash = createHash("sha256").update(auth.slice("Bearer ".length)).digest("hex");
+  return Object.entries(expected).find(([, sha]) => sha.toLowerCase() === hash)?.[0] ?? "unknown";
 }
 
 function credentialOf(headers: Record<string, string | string[] | undefined>): StandInRequest["credential"] {
@@ -118,7 +122,7 @@ export async function startStandIn(markers: readonly string[] = []): Promise<Sta
   let script: ScriptedCall[] = [];
   let generation = 0;
   let answered = 0;
-  let expectedBearer: string | null = null;
+  let expectedBearers: Record<string, string> = {};
   const server: Server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -126,7 +130,7 @@ export async function startStandIn(markers: readonly string[] = []): Promise<Sta
       const url = req.url ?? "/";
       const pathOnly = url.split("?")[0];
       if (!pathOnly.startsWith("/v1/messages") || pathOnly.includes("count_tokens")) {
-        requests.push({ path: pathOnly, credential: credentialOf(req.headers), bearerMatches: bearerMatchesOf(req.headers, expectedBearer), model: null, mainLoop: false, tools: [], effort: null, thinking: null, markers: [], assistantTurns: 0, shape: [], toolResults: [] });
+        requests.push({ path: pathOnly, credential: credentialOf(req.headers), bearer: bearerLabelOf(req.headers, expectedBearers), apiKey: Boolean(req.headers["x-api-key"]), model: null, mainLoop: false, tools: [], effort: null, thinking: null, markers: [], assistantTurns: 0, shape: [], toolResults: [] });
         const counting = pathOnly.includes("count_tokens");
         res.writeHead(counting ? 200 : 404, { "content-type": "application/json" });
         res.end(counting ? '{"input_tokens":10}' : "{}");
@@ -151,7 +155,8 @@ export async function startStandIn(markers: readonly string[] = []): Promise<Sta
       requests.push({
         path: pathOnly,
         credential: credentialOf(req.headers),
-        bearerMatches: bearerMatchesOf(req.headers, expectedBearer),
+        bearer: bearerLabelOf(req.headers, expectedBearers),
+        apiKey: Boolean(req.headers["x-api-key"]),
         model,
         mainLoop,
         tools,
@@ -196,8 +201,8 @@ export async function startStandIn(markers: readonly string[] = []): Promise<Sta
       generation++;
       answered = 0;
     },
-    expectBearer: (sha256Hex) => {
-      expectedBearer = sha256Hex;
+    expectBearers: (labels) => {
+      expectedBearers = { ...labels };
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
@@ -212,12 +217,12 @@ export function standInEnv(env: NodeJS.ProcessEnv, port: number): NodeJS.Process
 }
 
 /**
- * The CLI's environment for a run that signs in from the platform's sign-in
- * store (#242): the loopback address, and no API key or sign-in variable, so
- * the CLI uses only what the store holds.
+ * Refuses an environment whose model API address is not a loopback stand-in
+ * (#246): every contained launch carries its sign-in token, synthetic in the
+ * qualification, and must never send it anywhere but the stand-in.
  */
-export function storeSignInEnv(env: NodeJS.ProcessEnv, port: number): NodeJS.ProcessEnv {
-  const next: NodeJS.ProcessEnv = { ...env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
-  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]) delete next[name];
-  return next;
+export function assertStandInModelApi(env: Record<string, string | undefined>): void {
+  if (!/^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(env.ANTHROPIC_BASE_URL ?? "")) {
+    throw new Error("Refusing to start the CLI: its model API address is not the loopback stand-in.");
+  }
 }

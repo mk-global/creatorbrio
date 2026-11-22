@@ -268,6 +268,15 @@ The criteria "T1 baseline recorded before the change" above and in #221 are repl
 - Representative real functionality: generation, editing, continuation and export.
 - A creative-quality comparison against the recorded baseline, with its version attribution; a material regression goes to the founder.
 
+**Platforms for activation (founder decision, AD-48, #246).**
+macOS is the first activation platform.
+Linux is unsupported for the contained Design Agent while the pinned CLI's sandbox leaves its shared temporary folders writable there, and the profile is not weakened to make Linux pass.
+The platform-specific criteria above are adjusted openly as follows, and their text is left as it was written:
+- "on macOS and Linux", "on each platform" and "on every supported platform" in the acceptance criteria and the composite qualification mean macOS for activation; the actual publishing host is a macOS machine.
+- On Linux the stand-in checks keep running where they say something useful, and their results, including the known shared-temporary-folder failure, are reported; no Linux result is required for activation, and no Linux failure is hidden.
+- The Linux prerequisite criterion (bubblewrap, socat and the seccomp filter) still holds for how the profile reports itself on Linux, where it still runs; the doctor command also states there that the contained profile is unsupported.
+- Linux becomes a qualification target again only through its own decision, once the CLI's sandbox or a stronger boundary closes the shared temporary folders.
+
 Evidence recorded on 2026-11-21 (#237), with the final profile, all with a stand-in for the model API (no model, no spend, no credential) and the real Claude CLI 2.1.328 under the shipped contained profile, on macOS 27.2 (Apple Silicon, a disposable virtual machine) and on Linux (Debian 12 in Docker Desktop's Linux VM):
 
 - The #220 network proof passes for the product profile on both platforms, with a working positive control: the agent reaches only its listener through the sandbox proxy; direct, DNS, SOCKS and proxied requests to an external host are refused, as are other local ports and Unix sockets.
@@ -307,10 +316,19 @@ Evidence recorded on 2026-11-21 (#237), with the final profile, all with a stand
   - The contained CLI signs in with the synthetic credential planted in the platform's own store (the login keychain on macOS, the CLI's credentials file on Linux), as the legacy launch does, and a launch with an empty home does not.
   - The agent's shell cannot read that credential from the store, through the server-owned home or directly, while the legacy shell can; it cannot read the server-owned home, and its attempts to write or replace the CLI's files there, or to plant a startup file in it, are refused.
   - Conversation continuation, the CLI's own session records and the rest of the qualification hold with the server-owned home, and the network route still reaches only the run's listener.
+- Stand-in evidence for #246 on CLI 2.1.328, measured on 2026-11-22 on this change's content, on macOS (a disposable virtual machine) and Linux (the tested container), with synthetic credentials only:
+  - The model API received the contained CLI's own token, read from its file, and no credential planted in the server's environment; an absent token file and one other accounts can read each refused the launch before the CLI started.
+  - On macOS a different credential planted in the person's login keychain was neither presented nor changed by the contained launch, and its shell could not read it; the legacy launch, the positive control, presented it and its shell read it.
+  - The agent's shell found the token, and the values planted in the server's sign-in variables, nowhere it looked: its own environment, its ancestors' environments, the process table and the token file; the legacy shell found the token in its ancestors' environments and the file, and a planted canary in its own environment, because the CLI never passes its sign-in variable to commands.
+  - The server-owned home holds nothing of the person's, and the rest of the qualification, the cleanup and survivor checks included, holds as before on both platforms.
+  - The network proof's product arms still reach only the run's listener on both platforms; on Linux the shell's write to the shared temporary folder is still found, the known failure that keeps Linux unsupported (AD-48).
+  - A second contained server, a crashed server's records and servers starting at once are covered by deterministic tests across real processes, not by the stand-in.
 
 Still open before M1 is qualified: T1 after the change, representative real-model runs (generation, editing, continuation and export, under `npm run dev` and `npm start`, with a real sign-in, including a check that the agent's replies no longer follow personal instructions), and the creative-quality comparison.
 These are paid runs, and each tested platform first needs a working route to the model API.
-Still open before the contained profile is activated (#227, #237): the doctor's self-test of the sandbox's refusals, the Unix socket included, on macOS and Linux, with the Design Agent reported unavailable when it fails; the seccomp filter check on Linux; a warning on Linux environments other than the tested one; direct tests of memory-mapped and alternate-path writes; a stand-in check that a personal plugin and advisor setting do not reach the agent (#186); a probe of the configuration-folder denial; a positive control for external HTTPS on macOS; closing the shell's writes to the shared temporary folders on Linux, which needs a change in the CLI's sandbox or a stronger boundary; a check that stops the real server with a run live (#237); the exclusion between a run and its carousel's deletion across more than one server process (#237); a fix for, and a concurrent-refresh check of, the macOS sign-in refresh locks that a contained run and the person's own Claude Code do not share (#237); and the run's identifier in refused listener requests' log entries (#226).
+Still open before the contained profile is activated (#227, #237): the doctor's self-test of the sandbox's refusals, the Unix socket included, on macOS and Linux, with the Design Agent reported unavailable when it fails; direct tests of memory-mapped and alternate-path writes; a stand-in check that a personal plugin and advisor setting do not reach the agent (#186); a probe of the configuration-folder denial; a positive control for external HTTPS on macOS; a check that stops the real server with a run live (#237); and the run's identifier in refused listener requests' log entries (#226).
+#246 closed two of those items, the sign-in shared with the person's own Claude Code and more than one contained server over the same folders, as the evidence above records.
+Not required for macOS activation (AD-48), and open for a later Linux decision: the seccomp filter check on Linux, a warning on Linux environments other than the tested one, and closing the shell's writes to the shared temporary folders on Linux, which needs a change in the CLI's sandbox or a stronger boundary.
 The contained profile ships dark (AD-47) until that qualification is met.
 
 **Risks.**

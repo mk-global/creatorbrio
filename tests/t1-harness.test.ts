@@ -5524,7 +5524,7 @@ describe("T1 reporting fixes from the 2026-11-21 calibration (#237)", () => {
     it("tells the Design Agent from the Visual Director by the arguments the app starts each with", () => {
       expect(cliRoleOf(directorArgs("/tmp/creatorbrio-director-x", null))).toBe("director");
       expect(cliRoleOf(["/opt/t1/claude/bin/claude", ...designAgentArgs({ taskMessage: "T", systemPrompt: "S", resumeSessionId: null, budgetUsd: null })])).toBe("design-agent");
-      const layout = { workDir: "/w/2f1c", stagingDir: "/w/.staged/2f1c", tempDir: "/tmp/cbrs/a1b", tempRoot: "/tmp/cbrs", homeDir: "/home/designer", agentHome: "/w/.home", repoDir: "/srv/cb", dataDir: "/srv/cb/data", listenerPort: 48211, platform: "linux" as const, uid: 1000, privateDirs: ["/w"] };
+      const layout = { workDir: "/w/2f1c", stagingDir: "/w/.staged/2f1c", tempDir: "/tmp/cbrs/a1b", tempRoot: "/tmp/cbrs", homeDir: "/home/designer", agentHome: "/w/.home", signInTokenFile: "/home/designer/.creatorbrio/design-agent-token", repoDir: "/srv/cb", dataDir: "/srv/cb/data", listenerPort: 48211, platform: "linux" as const, uid: 1000, privateDirs: ["/w"] };
       expect(cliRoleOf(containedArgs({ taskMessage: "T", systemPrompt: "S", resumeSessionId: null, budgetUsd: null, layout }))).toBe("design-agent");
       expect(cliRoleOf(["claude", "--version"])).toBe("other");
       expect(cliRoleOf(["claude", "mcp", "serve"])).toBe("other");

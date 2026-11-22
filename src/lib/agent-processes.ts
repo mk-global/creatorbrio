@@ -842,11 +842,41 @@ export interface HookedProcess {
 }
 
 const HOOKED = Symbol.for("creatorbrio.agent-processes.hooked");
+const SHUTDOWN_TASKS = Symbol.for("creatorbrio.agent-processes.shutdown-tasks");
+
+/** The tasks the shutdown hook runs once, after it has stopped the live runs. */
+function shutdownTasks(): Set<() => void> {
+  const g = globalThis as typeof globalThis & { [SHUTDOWN_TASKS]?: Set<() => void> };
+  g[SHUTDOWN_TASKS] ??= new Set();
+  return g[SHUTDOWN_TASKS];
+}
+
+/**
+ * Has the shutdown hook run `task` once when the server stops, by signal or
+ * any other exit, after the live runs are stopped; for the contained server's
+ * ownership records (#246). The task must be synchronous and must not throw.
+ */
+export function onServerShutdown(task: () => void): void {
+  shutdownTasks().add(task);
+}
+
+function runShutdownTasks(): void {
+  const tasks = [...shutdownTasks()];
+  shutdownTasks().clear();
+  for (const task of tasks) {
+    try {
+      task();
+    } catch {
+      // The rest still run.
+    }
+  }
+}
 
 /**
  * Stops live contained runs when the server receives SIGTERM, SIGINT or
  * SIGHUP (a closed terminal), and kills their groups if the process exits any
- * other way. Installed once per process. Next.js has its own handlers for
+ * other way; either way it then runs the tasks given to `onServerShutdown`,
+ * once. Installed once per process. Next.js has its own handlers for
  * SIGINT and SIGTERM, which end the server; where none is installed (SIGHUP),
  * this handler re-raises the signal after its work so the default termination
  * still happens, as it did before the handler existed.
@@ -859,6 +889,7 @@ export function installShutdownHook(proc: HookedProcess = process as unknown as 
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
     const handler = () => {
       const ended = shutdownLiveRuns(probe);
+      runShutdownTasks();
       // An expected end of the server, not a fault.
       if (ended > 0) console.warn("[design-agent] the server is stopping; its live design runs were stopped", { runs: ended, signal });
       if (proc.listenerCount(signal) === 1) {
@@ -873,5 +904,6 @@ export function installShutdownHook(proc: HookedProcess = process as unknown as 
       // No process table here: only the CLI's own group, and only while the CLI is unreaped, so its id is still its own.
       if (!live.shutDown && live.run.leaderPid > 1 && live.leaderUnreaped()) send(-live.run.leaderPid, "SIGKILL");
     }
+    runShutdownTasks();
   });
 }

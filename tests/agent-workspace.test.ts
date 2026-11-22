@@ -201,52 +201,69 @@ describe("a conversation's folder", () => {
 
 describe("the contained CLI's server-owned home (#242)", () => {
   const person = () => path.join(base, "person");
-  const prepare = (platform: NodeJS.Platform, options: { uid?: number } = {}) =>
-    prepareAgentHome({ repoDir: repo, personHome: person(), root, platform, uid: options.uid ?? uid });
+  const prepare = (options: { uid?: number } = {}) => prepareAgentHome({ repoDir: repo, personHome: person(), root, uid: options.uid ?? uid });
 
   it("is one owner-only folder under the agent folders' root, named so no carousel can have it, kept between launches", async () => {
-    const dir = await prepare("linux");
+    const dir = await prepare();
     expect(dir).toBe(agentHomeDir(root));
     expect(path.dirname(dir)).toBe(root);
     expect(path.basename(dir)).toBe(".home");
     expect((await stat(dir)).mode & 0o777).toBe(0o700);
-    // Linux: nothing of the person's in it; the sign-in is named in the environment instead.
+    // Nothing of the person's in it (#246).
     expect(await readdir(dir)).toEqual([]);
     await writeFile(path.join(dir, "session-state"), "kept");
-    expect(await prepare("linux")).toBe(dir);
+    expect(await prepare()).toBe(dir);
     expect(await readFile(path.join(dir, "session-state"), "utf8")).toBe("kept");
   });
 
-  it("holds on macOS only a link to the person's keychain folder, made once and kept", async () => {
-    const dir = await prepare("darwin");
-    expect(await readdir(dir)).toEqual(["Library"]);
-    expect(await readdir(path.join(dir, "Library"))).toEqual(["Keychains"]);
-    expect((await stat(path.join(dir, "Library"))).mode & 0o777).toBe(0o700);
-    const link = path.join(dir, "Library", "Keychains");
-    expect((await lstat(link)).isSymbolicLink()).toBe(true);
-    expect(await readlink(link)).toBe(path.join(person(), "Library", "Keychains"));
-    await expect(prepare("darwin")).resolves.toBe(dir);
+  it("holds nothing of the person's on macOS either: the contained CLI signs in with its own token (#246)", async () => {
+    const dir = await prepare();
+    expect(await readdir(dir)).toEqual([]);
   });
 
-  it("refuses a keychain entry that is not exactly the server's link, and never follows or replaces it", async () => {
-    const dir = await prepare("darwin");
-    const link = path.join(dir, "Library", "Keychains");
-    await rm(link);
+  it("removes the keychain link a home made under #242 holds, never following it or touching what it points to (#246)", async () => {
+    const dir = await prepare();
+    const keychains = path.join(person(), "Library", "Keychains");
+    await mkdir(keychains, { recursive: true });
+    await writeFile(path.join(keychains, "login.keychain-db"), "synthetic keychain");
+    await mkdir(path.join(dir, "Library"), { mode: 0o700 });
+    await symlink(keychains, path.join(dir, "Library", "Keychains"));
+    await expect(prepare()).resolves.toBe(dir);
+    expect(await readdir(dir)).toEqual([]);
+    expect(await readFile(path.join(keychains, "login.keychain-db"), "utf8")).toBe("synthetic keychain");
+    // A Library the CLI has put something else in keeps it; only the server's link goes.
+    await mkdir(path.join(dir, "Library", "Caches"), { recursive: true, mode: 0o700 });
+    await chmod(path.join(dir, "Library"), 0o700);
+    await symlink(keychains, path.join(dir, "Library", "Keychains"));
+    await expect(prepare()).resolves.toBe(dir);
+    expect(await readdir(path.join(dir, "Library"))).toEqual(["Caches"]);
+  });
+
+  it("refuses any other entry in the keychain link's place, and never follows, replaces or removes it", async () => {
+    const dir = await prepare();
+    const library = path.join(dir, "Library");
+    const link = path.join(library, "Keychains");
+    await mkdir(library, { mode: 0o700 });
     await symlink(path.join(base, "elsewhere"), link);
-    await expect(prepare("darwin")).rejects.toThrow(/Library\/Keychains is not the link the server makes/);
+    await expect(prepare()).rejects.toThrow(/Library\/Keychains is not the link the server made/);
     expect(await readlink(link)).toBe(path.join(base, "elsewhere"));
     await rm(link);
     await mkdir(link);
-    await expect(prepare("darwin")).rejects.toThrow(AgentWorkspaceError);
+    await expect(prepare()).rejects.toThrow(AgentWorkspaceError);
+    expect((await stat(link)).isDirectory()).toBe(true);
+    await rm(library, { recursive: true });
+    await mkdir(path.join(base, "other-library"), { mode: 0o700 });
+    await symlink(path.join(base, "other-library"), library);
+    await expect(prepare()).rejects.toThrow(/Library is not a folder the server made/);
   });
 
   it("refuses a home holding a shell startup file, and keeps only the empty ones the CLI's sandbox leaves on Linux", async () => {
-    const dir = await prepare("linux");
+    const dir = await prepare();
     for (const name of HOME_STARTUP_FILES) await writeFile(path.join(dir, name), "");
-    await expect(prepare("linux")).resolves.toBe(dir);
+    await expect(prepare()).resolves.toBe(dir);
     for (const name of [".zshrc", ".bashrc", ".zshenv", ".profile", ".bash_profile"]) {
       await writeFile(path.join(dir, name), "alias ls='echo planted'\n");
-      const refused = (await prepare("linux").catch((err: unknown) => err)) as Error;
+      const refused = (await prepare().catch((err: unknown) => err)) as Error;
       expect(refused).toBeInstanceOf(AgentWorkspaceError);
       expect(refused.message).toContain(`(${name})`);
       expect(refused.message).not.toContain(base);
@@ -256,29 +273,29 @@ describe("the contained CLI's server-owned home (#242)", () => {
     }
     await rm(path.join(dir, ".zshrc"));
     await symlink(path.join(base, "elsewhere"), path.join(dir, ".zshrc"));
-    await expect(prepare("linux")).rejects.toThrow(/\(\.zshrc\)/);
+    await expect(prepare()).rejects.toThrow(/\(\.zshrc\)/);
     await rm(path.join(dir, ".zshrc"));
     await rm(path.join(dir, ".bashrc"));
     await mkdir(path.join(dir, ".bashrc"));
-    await expect(prepare("linux")).rejects.toThrow(/\(\.bashrc\)/);
+    await expect(prepare()).rejects.toThrow(/\(\.bashrc\)/);
   });
 
   it("refuses a home that is a link, open to others or another user's, and never adopts it", async () => {
     await mkdir(root, { recursive: true, mode: 0o700 });
     await mkdir(path.join(base, "real-home"), { mode: 0o700 });
     await symlink(path.join(base, "real-home"), agentHomeDir(root));
-    await expect(prepare("linux")).rejects.toThrow(/home folder ".home" is not a private folder/);
+    await expect(prepare()).rejects.toThrow(/home folder ".home" is not a private folder/);
     await rm(agentHomeDir(root));
     await mkdir(agentHomeDir(root), { mode: 0o755 });
     await chmod(agentHomeDir(root), 0o755);
-    await expect(prepare("linux")).rejects.toThrow(/not a private folder.*Remove it, or fix its owner and permissions/);
+    await expect(prepare()).rejects.toThrow(/not a private folder.*Remove it, or fix its owner and permissions/);
     await chmod(agentHomeDir(root), 0o700);
-    await expect(prepare("linux", { uid: uid + 1 })).rejects.toThrow(/not a private folder/);
-    await expect(prepare("linux")).resolves.toBe(agentHomeDir(root));
+    await expect(prepare({ uid: uid + 1 })).rejects.toThrow(/not a private folder/);
+    await expect(prepare()).resolves.toBe(agentHomeDir(root));
   });
 
   it("is refused inside the repository, as every agent folder is", async () => {
-    await expect(prepareAgentHome({ repoDir: repo, personHome: person(), root: path.join(repo, "agents"), platform: "linux", uid })).rejects.toThrow(/outside the repository/);
+    await expect(prepareAgentHome({ repoDir: repo, personHome: person(), root: path.join(repo, "agents"), uid })).rejects.toThrow(/outside the repository/);
   });
 });
 

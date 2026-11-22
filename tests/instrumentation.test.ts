@@ -1,13 +1,21 @@
 /**
- * What the server does at start (#241): only with the contained Design Agent
- * profile does it install the shutdown hook and sweep leftover folders.
+ * What the server does at start (#241, #246): only with the contained Design
+ * Agent profile, and only once it owns the data folder and the agent folders,
+ * does it install the shutdown hook and sweep leftover folders.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const installShutdownHook = vi.fn();
 const sweepLeftoverFolders = vi.fn(async () => ({ purged: Promise.resolve() }));
+const order: string[] = [];
+let owns = true;
+const claimContainedServer = vi.fn(async () => {
+  order.push("claim");
+  return { owned: owns };
+});
 vi.mock("@/lib/agent-processes", () => ({ installShutdownHook }));
 vi.mock("@/lib/agent-workspace", () => ({ sweepLeftoverFolders }));
+vi.mock("@/lib/contained-server", () => ({ claimContainedServer, containedServerClaimLog: () => ({ folder: "data", holder: 4242 }) }));
 
 const { register } = await import("@/instrumentation");
 
@@ -15,7 +23,11 @@ const saved = { runtime: process.env.NEXT_RUNTIME, profile: process.env.CREATORB
 
 beforeEach(() => {
   installShutdownHook.mockClear();
+  installShutdownHook.mockImplementation(() => void order.push("hook"));
   sweepLeftoverFolders.mockClear();
+  claimContainedServer.mockClear();
+  order.length = 0;
+  owns = true;
   process.env.NEXT_RUNTIME = "nodejs";
 });
 
@@ -38,6 +50,7 @@ describe("the server start", () => {
     }
     expect(installShutdownHook).not.toHaveBeenCalled();
     expect(sweepLeftoverFolders).not.toHaveBeenCalled();
+    expect(claimContainedServer).not.toHaveBeenCalled();
   });
 
   it("does nothing outside the Node.js runtime", async () => {
@@ -48,10 +61,23 @@ describe("the server start", () => {
     expect(sweepLeftoverFolders).not.toHaveBeenCalled();
   });
 
-  it("installs the hook and sweeps with the contained profile", async () => {
+  it("takes ownership of its folders first, then installs the hook and sweeps, with the contained profile", async () => {
     process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "contained";
     await register();
+    expect(order).toEqual(["claim", "hook"]);
     expect(installShutdownHook).toHaveBeenCalledTimes(1);
     expect(sweepLeftoverFolders).toHaveBeenCalledTimes(1);
+  });
+
+  it("neither sweeps, stops leftover processes nor installs the hook when another contained server owns the folders (#246)", async () => {
+    process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "contained";
+    owns = false;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    await register();
+    expect(claimContainedServer).toHaveBeenCalledTimes(1);
+    expect(installShutdownHook).not.toHaveBeenCalled();
+    expect(sweepLeftoverFolders).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(expect.stringMatching(/does not own the contained Design Agent's folders/), { folder: "data", holder: 4242 });
+    logged.mockRestore();
   });
 });

@@ -3,10 +3,10 @@
 // Pure Node, no dependencies, safe to run pre-`npm install`.
 // Exit 0 if everything required is OK; exit 1 on any required failure.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir, platform } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 const CHECK = "✓";
 const FAIL = "✗";
@@ -68,6 +68,8 @@ if (claudePath) {
 // own, in src/lib/design-agent-profile.ts; a test keeps them equal.
 const QUALIFIED_CLI_VERSION = "2.1.328";
 const MINIMUM_CLI_VERSION = "2.1.219";
+// The setting naming the contained Design Agent's token file (src/lib/agent-sign-in.ts); a test keeps it equal.
+const TOKEN_FILE_SETTING = "CREATORBRIO_DESIGN_AGENT_TOKEN_FILE";
 
 function envLocalValue(name) {
   if (process.env[name] !== undefined) return process.env[name];
@@ -117,6 +119,36 @@ if (profile === "legacy") {
   } else {
     add(CHECK, "Design Agent", `contained, on Claude Code ${version}`);
   }
+  // #246: macOS is the first activation platform. On Linux the contained
+  // profile still runs, but the CLI's sandbox leaves the shared temporary
+  // folders writable there, so it is unsupported.
+  if (platform() === "linux") {
+    add(WARN, "Design Agent platform", "the contained profile is unsupported on Linux (its sandbox leaves the shared temporary folders writable); macOS is the platform it is qualified on");
+  }
+  add(...tokenFileCheck());
+}
+
+// 2c. The contained Design Agent's own sign-in token file (#246), as
+// src/lib/agent-sign-in.ts reads it: present, a regular file (not a link) of
+// this account with no group or other access. Its content is never read here.
+function tokenFileCheck() {
+  const configured = (envLocalValue(TOKEN_FILE_SETTING) ?? "").trim();
+  const make = "run `claude setup-token`, save the token it prints, alone, in that file, then `chmod 600` it; the token lasts a year, so replace it the same way before it expires";
+  if (configured && !isAbsolute(configured)) return [FAIL, "Design Agent sign-in", `${TOKEN_FILE_SETTING} must be an absolute path`, true];
+  const file = configured ? resolve(configured) : join(homedir(), ".creatorbrio", "design-agent-token");
+  const shown = configured ? file : "~/.creatorbrio/design-agent-token";
+  let info;
+  try {
+    info = lstatSync(file);
+  } catch {
+    return [FAIL, "Design Agent sign-in", `no token file at ${shown}: ${make}`, true];
+  }
+  if (info.isSymbolicLink()) return [FAIL, "Design Agent sign-in", `${shown} is a link; replace it with the file itself`, true];
+  if (!info.isFile()) return [FAIL, "Design Agent sign-in", `${shown} is not a regular file`, true];
+  if (typeof process.getuid === "function" && info.uid !== process.getuid()) return [FAIL, "Design Agent sign-in", `${shown} belongs to another account`, true];
+  if ((info.mode & 0o077) !== 0) return [FAIL, "Design Agent sign-in", `${shown} is present but not private: \`chmod 600\` it`, true];
+  if (info.size === 0) return [FAIL, "Design Agent sign-in", `${shown} is empty: ${make}`, true];
+  return [CHECK, "Design Agent sign-in", `token file present and private (${shown})`];
 }
 
 // 3. Dependencies

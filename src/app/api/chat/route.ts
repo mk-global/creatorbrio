@@ -30,6 +30,7 @@ import { designAgentProfileName } from "@/lib/design-agent-profile";
 import { containedAvailability } from "@/lib/design-agent-availability";
 import { agentListenerPort } from "@/lib/agent-listener";
 import { prepareContainedLaunch, type ContainedLaunch } from "@/lib/contained-launch";
+import { AgentSignInError } from "@/lib/agent-sign-in";
 import { continuationOffer } from "@/lib/assets";
 import {
   beginGeneration,
@@ -366,9 +367,11 @@ export async function POST(request: NextRequest) {
               carouselId: carouselId ?? null,
               error: (err as Error)?.name,
               code: (err as NodeJS.ErrnoException)?.code ?? null,
-              ...(err instanceof AgentWorkspaceError ? { detail: err.message } : {}),
+              ...(err instanceof AgentWorkspaceError || err instanceof AgentSignInError ? { detail: err.message } : {}),
             });
-            fail(gone ? "session_not_found" : "start_failed");
+            // A sign-in token that went missing after the availability check says what to do, as that check would have (#246).
+            if (err instanceof AgentSignInError) fail("agent_unavailable", `${err.reason} ${err.guidance} The slides were not changed.`);
+            else fail(gone ? "session_not_found" : "start_failed");
             if (creativeRun) await finishCreativeRun(carouselId!, creativeRun.runId, "failed");
             await endGeneration("not-started");
             send({ type: "done", sessionId: null });

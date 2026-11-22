@@ -7,9 +7,9 @@ import {
   containedArgs,
   containedEnv,
   containedSettings,
-  agentSignInDir,
   designAgentProfileName,
-  SIGN_IN_STORE_ENV,
+  INHERITED_ENV,
+  SIGN_IN_TOKEN_ENV,
   privateReadDirs,
   type ContainedLayout,
 } from "@/lib/design-agent-profile";
@@ -23,6 +23,8 @@ const LAYOUT: ContainedLayout = {
   tempRoot: "/tmp/cbrs",
   homeDir: "/home/designer",
   agentHome: "/home/designer/.creatorbrio/design-agent/.home",
+  // A configured token file outside every denied folder, so only its own rule covers it.
+  signInTokenFile: "/srv/secrets/design-agent-token",
   repoDir: "/srv/creatorbrio",
   dataDir: "/srv/creatorbrio/data",
   listenerPort: 48211,
@@ -130,6 +132,7 @@ describe("contained profile settings", () => {
       "/private/tmp/claude-1000",
       "/tmp/cbrs",
       "/home/designer/.creatorbrio/design-agent",
+      "/srv/secrets/design-agent-token",
     ]);
     // The staged images are readable, never writable. Of the server-owned
     // temporary parent, only this run's folder: never another run's, nor the
@@ -161,6 +164,7 @@ describe("contained profile settings", () => {
       "Read(//home/designer/.creatorbrio/design-agent/.home/**)",
       "Read(//home/designer/.claude/**)",
       "Read(//home/designer/.claude.json)",
+      "Read(//srv/secrets/design-agent-token)",
     ]);
   });
 
@@ -176,26 +180,31 @@ describe("contained profile environment", () => {
     HOME: "/home/designer",
     PATH: "/usr/bin:/bin",
     LANG: "en_US.UTF-8",
-    CLAUDE_CODE_OAUTH_TOKEN: "synthetic-sign-in",
+    ANTHROPIC_BASE_URL: "http://127.0.0.1:4321",
+    CLAUDE_CODE_OAUTH_TOKEN: "synthetic-server-sign-in",
+    ANTHROPIC_API_KEY: "synthetic-server-key",
+    ANTHROPIC_AUTH_TOKEN: "synthetic-server-auth",
     OPENAI_API_KEY: "synthetic-app-secret",
     CREATORBRIO_IMAGE_KEY: "synthetic",
     CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/synthetic.sock",
     CLAUDE_CODE_MESSAGING_TOKEN: "synthetic",
     CLOUDSDK_PROXY_PASSWORD: "synthetic",
     AWS_SECRET_ACCESS_KEY: "synthetic",
+    CLAUDE_CODE_USE_BEDROCK: "1",
     NODE_OPTIONS: "--require /tmp/evil.js",
     CREATORBRIO_DESIGN_AGENT_PROFILE: "contained",
     EMPTY: "",
   };
 
-  const run = { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN", home: "/home/designer/.creatorbrio/design-agent/.home", signInDir: null };
+  const run = { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN", home: "/home/designer/.creatorbrio/design-agent/.home", signInToken: "synthetic-dedicated-token" };
 
-  it("is an explicit allowlist plus the server-owned home, the run's folder and token", () => {
+  it("is an explicit allowlist plus the server-owned home, its own sign-in token, the run's folder and grant", () => {
     expect(containedEnv(source, run)).toEqual({
       HOME: "/home/designer/.creatorbrio/design-agent/.home",
       PATH: "/usr/bin:/bin",
       LANG: "en_US.UTF-8",
-      CLAUDE_CODE_OAUTH_TOKEN: "synthetic-sign-in",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:4321",
+      CLAUDE_CODE_OAUTH_TOKEN: "synthetic-dedicated-token",
       CLAUDE_CODE_TMPDIR: "/tmp/cb-Ab12Cd",
       DISABLE_AUTOUPDATER: "1",
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
@@ -203,25 +212,20 @@ describe("contained profile environment", () => {
     });
   });
 
-  it("never gives the CLI the person's home, or their configuration folder, which would move its state into theirs (#242)", () => {
-    const env = containedEnv({ ...source, CLAUDE_CONFIG_DIR: "/opt/claude-config", [SIGN_IN_STORE_ENV]: "/somewhere/else" }, run);
-    expect(env.HOME).toBe(run.home);
-    expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
-    // The sign-in store's location comes only from the profile, never from the app's environment.
-    expect(env).not.toHaveProperty(SIGN_IN_STORE_ENV);
-    expect(containedEnv(source, { ...run, signInDir: "/home/designer/.claude" })[SIGN_IN_STORE_ENV]).toBe("/home/designer/.claude");
+  it("signs the CLI in only with its own token, never with a credential the server holds (#246)", () => {
+    const env = containedEnv(source, run);
+    expect(env[SIGN_IN_TOKEN_ENV]).toBe(run.signInToken);
+    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY"]) expect(env).not.toHaveProperty(name);
+    expect(JSON.stringify(env)).not.toMatch(/synthetic-server-/);
+    // No credential variable is inherited at all.
+    expect(INHERITED_ENV.filter((name) => /TOKEN|KEY|SECRET|PASS|AUTH/.test(name))).toEqual([]);
   });
 
-  it("names the person's sign-in for the CLI only where the server-owned home cannot lead to it (#242)", () => {
-    // Linux: the credentials file in the person's CLI configuration folder.
-    expect(agentSignInDir({ env: {}, platform: "linux", personHome: "/home/designer" })).toBe("/home/designer/.claude");
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "/opt/claude-config" }, platform: "linux", personHome: "/home/designer" })).toBe("/opt/claude-config");
-    // A relative folder would resolve inside the agent's own folder: the default is used.
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "claude-config" }, platform: "linux", personHome: "/home/designer" })).toBe("/home/designer/.claude");
-    // macOS: the login keychain, through the home's link; a configured folder names the keychain entry, so it is passed on.
-    expect(agentSignInDir({ env: {}, platform: "darwin", personHome: "/Users/designer" })).toBeNull();
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "claude-config" }, platform: "darwin", personHome: "/Users/designer" })).toBeNull();
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "/opt/claude-config" }, platform: "darwin", personHome: "/Users/designer" })).toBe("/opt/claude-config");
+  it("never gives the CLI the person's home, their configuration folder or the location of their sign-in store (#242, #246)", () => {
+    const env = containedEnv({ ...source, CLAUDE_CONFIG_DIR: "/opt/claude-config", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/somewhere/else" }, run);
+    expect(env.HOME).toBe(run.home);
+    expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+    expect(env).not.toHaveProperty("CLAUDE_SECURESTORAGE_CONFIG_DIR");
   });
 });
 

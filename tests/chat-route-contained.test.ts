@@ -13,7 +13,8 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runDirNameLength, serverTempRoot } from "@/lib/agent-workspace";
-import { SIGN_IN_STORE_ENV } from "@/lib/design-agent-profile";
+import { AGENT_TOKEN_FILE_ENV } from "@/lib/agent-sign-in";
+import { claimContainedServer, releaseContainedServer, resetContainedServerForTests } from "@/lib/contained-server";
 import type { BrandConfig } from "@/types/brand";
 import { CHAT_ERROR_MESSAGES, createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
 import { boundConversation } from "@/lib/agent-sessions";
@@ -124,6 +125,9 @@ let app: AppRoutesServer;
 let workdir: string;
 let agentsRoot: string;
 let fakeDir: string;
+let secretsDir: string;
+let tokenFile: string;
+const SIGN_IN_TOKEN = "sk-ant-oat01-synthetic-dedicated-token-for-tests";
 let originalCwd: string;
 let director: ReturnType<typeof stubDirector>;
 const originalRetrieve = creativeRunDeps.retrieveSources;
@@ -144,6 +148,10 @@ beforeEach(async () => {
   originalCwd = process.cwd();
   workdir = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-contained-")));
   agentsRoot = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-agents-")));
+  // The contained CLI's own sign-in (#246): a synthetic token in a private file outside the repository and the agent folders.
+  secretsDir = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-secrets-")));
+  tokenFile = path.join(secretsDir, "design-agent-token");
+  await writeFile(tokenFile, `${SIGN_IN_TOKEN}\n`, { mode: 0o600 });
   await mkdir(path.join(workdir, "data"), { recursive: true });
   await mkdir(path.join(workdir, "public", "uploads"), { recursive: true });
   await writeFile(path.join(workdir, "data", "brand.json"), JSON.stringify(BRAND));
@@ -155,7 +163,11 @@ beforeEach(async () => {
   process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "contained";
   process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agentsRoot;
   process.env.SYNTHETIC_APP_SECRET = "synthetic-secret-value";
+  process.env[AGENT_TOKEN_FILE_ENV] = tokenFile;
   process.chdir(workdir);
+  // This server owns the data folder and the agent folders, as the contained server's start makes it (#246).
+  resetContainedServerForTests();
+  expect(await claimContainedServer({ dataDir: path.join(workdir, "data"), agentsRoot, repoDir: workdir })).toEqual({ owned: true });
   app.received.length = 0;
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -173,12 +185,16 @@ afterEach(async () => {
       // Already exited, or never started.
     }
   }
+  releaseContainedServer();
+  resetContainedServerForTests();
   process.chdir(originalCwd);
   delete process.env.CREATORBRIO_DESIGN_AGENT_PROFILE;
   delete process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES;
   delete process.env.SYNTHETIC_APP_SECRET;
+  delete process.env[AGENT_TOKEN_FILE_ENV];
   await rm(workdir, { recursive: true, force: true });
   await rm(agentsRoot, { recursive: true, force: true });
+  await rm(secretsDir, { recursive: true, force: true });
 });
 
 const play = (scenario: string) => writeFile(path.join(fakeDir, "scenario"), scenario);
@@ -315,12 +331,73 @@ describe("a contained design run", () => {
     expect(env.HOME).toBe(home);
     expect((await stat(home)).mode & 0o777).toBe(0o700);
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
-    // The person's sign-in is named by the store's own location, never by moving the CLI's state into their folder.
-    expect(env[SIGN_IN_STORE_ENV]).toBe(personConfig);
+    // Nothing points the CLI at the person's sign-in store any more (#246).
+    expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
+    expect(await readdir(home)).toEqual([]);
     const argv = await recordedJson<string[]>("argv.json");
     const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]);
     expect(settings.sandbox.filesystem.denyRead).toContain(home);
     expect(settings.permissions.deny).toContain(`Read(/${home}/**)`);
+  });
+
+  it("signs the CLI in with its own token from its file, and with no credential the server holds (#246)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const saved = { key: process.env.ANTHROPIC_API_KEY, auth: process.env.ANTHROPIC_AUTH_TOKEN, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN };
+    Object.assign(process.env, { ANTHROPIC_API_KEY: "synthetic-server-key", ANTHROPIC_AUTH_TOKEN: "synthetic-server-auth", CLAUDE_CODE_OAUTH_TOKEN: "synthetic-server-oauth" });
+    let raw = "";
+    try {
+      ({ raw } = await postChat({ carouselId: own.id }));
+    } finally {
+      for (const [name, value] of [["ANTHROPIC_API_KEY", saved.key], ["ANTHROPIC_AUTH_TOKEN", saved.auth], ["CLAUDE_CODE_OAUTH_TOKEN", saved.oauth]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    const env = await recordedJson<Record<string, string>>("env.json");
+    // The one trailing newline is dropped.
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SIGN_IN_TOKEN);
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe("1");
+    expect(JSON.stringify(env)).not.toMatch(/synthetic-server-/);
+    // The file is denied to the shell and the Read tool by name, and the token appears in no argument, chat event or log line.
+    const argv = await recordedJson<string[]>("argv.json");
+    const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]);
+    expect(settings.sandbox.filesystem.denyRead).toContain(tokenFile);
+    expect(settings.permissions.deny).toContain(`Read(/${tokenFile})`);
+    expect(argv.join(" ")).not.toContain(SIGN_IN_TOKEN);
+    expect(raw).not.toContain(SIGN_IN_TOKEN);
+    const logged = [console.error, console.warn, console.info].flatMap((fn) => vi.mocked(fn).mock.calls).map((call) => JSON.stringify(call));
+    expect(logged.join("\n")).not.toContain(SIGN_IN_TOKEN);
+  });
+
+  it("refuses to start, before the agent runs or a conversation folder is made, without a usable token file (#246)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const refusedWith = async () => {
+      await rm(path.join(fakeDir, "argv.json"), { force: true });
+      const { events, raw } = await postChat({ carouselId: own.id });
+      await expect(stat(path.join(fakeDir, "argv.json"))).rejects.toThrow();
+      await expect(stat(path.join(agentsRoot, own.id))).rejects.toThrow();
+      expect(raw).not.toContain(secretsDir);
+      return events.find((e) => e.type === "error") as { code: string; message: string };
+    };
+    await chmod(tokenFile, 0o644);
+    expect(await refusedWith()).toMatchObject({ code: "agent_unavailable", message: expect.stringMatching(/can be read or changed by other accounts.*chmod 600/) });
+    await rm(tokenFile);
+    expect(await refusedWith()).toMatchObject({ code: "agent_unavailable", message: expect.stringMatching(/no sign-in token of its own.*claude setup-token.*CREATORBRIO_DESIGN_AGENT_TOKEN_FILE names/) });
+  });
+
+  it("refuses to delete a carousel while another contained server owns the folders (#246)", async () => {
+    const { own } = await newCarousels();
+    // As if another server held the records: this one never claimed them.
+    releaseContainedServer();
+    resetContainedServerForTests();
+    const res = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), { params: Promise.resolve({ id: own.id }) });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/did not take charge of the contained Design Agent's folders/);
+    expect(await getCarousel(own.id)).toBeTruthy();
   });
 
   it("refuses to start, before the agent runs, when the server-owned home holds a shell startup file (#242)", async () => {
