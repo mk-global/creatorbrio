@@ -97,6 +97,7 @@ The contained profile (#156, #186, #226, #227, #228, #241) gives the agent one c
   When a run ends by itself, is stopped or times out, the server sends SIGTERM and then, after a bounded wait, SIGKILL to the CLI's group, every recorded group and process, what is descended from them, the CLI's other descendants, and every process of the same user without a controlling terminal working in the run's folders (`src/lib/agent-processes.ts`).
   What the stop acts on is confirmed by process id and start time again before the SIGKILL.
   A process found only by its working folder brings its process group only when the run recorded that group or the process leads it; a process with a controlling terminal, such as a person's own shell opened in a conversation folder, is never taken for the run's.
+  The run's stop and the start sweep (below) do take a person's own detached process, one without a controlling terminal, that works inside the hidden conversation or run folders; this is rare, because those folders are server-owned and not meant for people.
   The CLI's process id is the run's only while it is the same process, checked by the start time recorded when it was spawned, or by the server not having reaped it yet.
   The server, its own process group and its ancestors are never signalled.
   A look at the system that fails (the process table or the working folders cannot be read) is reported in the log with the carousel and run, because a failed look finds nothing and is not a clean stop.
@@ -108,9 +109,10 @@ The contained profile (#156, #186, #226, #227, #228, #241) gives the agent one c
   Then it reads the process table once, sends SIGKILL to what older records name that is still the same process (by start time) and to what is descended from them, and aborts the runs, which sends no further signal and reads nothing more.
   It lists no working folders at shutdown.
   So at shutdown the server stops the CLI's group, what its periodic look had recorded and what is descended from those at that moment.
-  It cannot stop, within that window, a process it never saw: one that works in the run's folders is stopped by the next start (below), and one that does not is the residual below.
+  It cannot stop, within that window, a process it never saw: one that works in the run's folders and has no controlling terminal is stopped by the next start (below), and any other is the residual below.
   The `/stop` command (`scripts/stop-server.mjs`) also stops processes the server started that outlive it, but only those working in the contained profile's folders (the agent workspace root and the per-user temporary parent) without a controlling terminal, each identified by process id and start time.
-  Under the contained profile the Visual Director works inside the per-user temporary parent, so `/stop` stops a leftover Director too.
+  Under the contained profile the Visual Director works inside the per-user temporary parent, so `/stop` stops a leftover Director that has no controlling terminal.
+  A leftover Director that has one, as it does when the server was started from a terminal and the Director inherited it, is skipped: it keeps running until its CLI exits, because its time limit is a timer in the server, which is gone, and its folder is swept at the next contained start.
   Anything else the server started, such as the legacy Design Agent, the legacy Visual Director or the export browser, is left as before, and a configured agent folder inside or around the repository is never treated as contained.
   At start, before serving requests, and only while no other contained server of this user is running, the server stops leftover processes of this user without a controlling terminal whose working folder is one the contained profile's server makes: a conversation's folder or its staging folder, a run's temporary folder, a server folder, or a removal folder.
   It takes exactly these: processes of the same user, with no controlling terminal, working in such a folder, what is descended from them, and, for any of those that leads its own process group, the other members of that group, provided none of the group's members has a controlling terminal.
@@ -128,11 +130,13 @@ The contained profile (#156, #186, #226, #227, #228, #241) gives the agent one c
   On macOS the sandbox's write rules follow paths, so the move ends a leftover process's writes to the folder, which the stand-in qualification's cleanup check measures (`eval/sandbox-route/qualify.ts`).
   A folder the agent made user-immutable cannot be moved on macOS; the server, which owns its parent, clears the flag and moves it once more.
   A carousel cannot be deleted while its contained run is live, and a run cannot start while its carousel is being deleted: both take the carousel's one slot.
-  On Linux, where the sandbox's mount follows a moved folder, this is what keeps a live run's processes away from the removal.
+  The slot lives in one server process's memory, so this exclusion holds within one server process, and running more than one contained server over the same data or agent folders is not supported before activation (#237).
+  Within that limit, on Linux, where the sandbox's mount follows a moved folder, this is what keeps a live run's processes away from the removal.
 - **Residual: processes that evade the stop.** On Linux no background process outlived its run in the stand-in qualification.
   macOS has no process-lifetime containment for an unprivileged server.
   A process is found by the stop only if one of the server's looks saw it as a descendant of the CLI, or of a process it had recorded, or if it works in the run's folders when the stop looks at them.
   A process that was never seen that way and does not work in the run's folders is not found, nor is what it starts: it runs until it exits or the computer restarts.
+  A process that acquires a controlling terminal is the same residual: the run's stop, the shutdown stop, `/stop` and the start sweep do not stop it once the look they act on shows it with one.
   Such a process keeps only the run's sandbox rules: the folders it could write are moved away and removed (at the latest by the next start's sweep), and it cannot write a later conversation's folder, whose path is new and was never allowed to it.
   The same holds for a run's temporary folder, whose name is long and random, except where the names are short (see Temporary folders), where a later run can draw the same name and a surviving process could reach its folder.
   The stand-in qualification's survivor check holds its evader to that: on macOS it is inconclusive unless the evader was seen alive, in the process table, after the next conversation's folder existed, and where no evader survives (Linux) it records that the property was not exercised.

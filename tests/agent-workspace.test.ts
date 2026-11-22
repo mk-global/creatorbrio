@@ -31,7 +31,7 @@ import {
 } from "@/lib/agent-workspace";
 import { defaultProbe } from "@/lib/agent-processes";
 import { agentTempDirFits, MAX_AGENT_TEMP_PATH_BYTES } from "@/lib/design-agent-profile";
-import { OVERRIDE_KEY, realParent, serverFolderName } from "./helpers/server-temp-parent";
+import { longestRealParentBytes, OVERRIDE_KEY, realParent, serverFolderName, testParentName } from "./helpers/server-temp-parent";
 
 const ID = "2f1c9a52-8d3e-4b7a-9f21-0e4d5c6b7a89";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -244,9 +244,45 @@ describe("the server temporary folders", () => {
 
   it("are never the real parent while tests run: each test file has its own", () => {
     expect(serverTempRoot()).not.toBe(systemServerTempRoot());
-    expect(serverTempRoot()).toMatch(/^(\/private)?\/tmp\/cbt-[0-9a-z]+$/);
+    expect(serverTempRoot()).toMatch(/^(\/private)?\/tmp\/t[0-9a-z]+-[0-9a-z]*$/);
     expect(OVERRIDE_KEY).toBe(SERVER_TEMP_ROOT_OVERRIDE);
     expect(realParent(process.platform, uid)).toBe(systemServerTempRoot());
+  });
+
+  it("have a test parent no longer than the longest real parent, and never named like one (#241)", () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(longestRealParentBytes(platform)).toBe(Buffer.byteLength(systemServerTempRoot(platform, 4294967295)));
+      const base = platform === "darwin" ? "/private/tmp" : "/tmp";
+      // Any process id the platforms can have, and a random part long enough to fill what is left.
+      for (const pid of [1, 99999, 4194304, 2 ** 31, 2 ** 32]) {
+        const name = testParentName(base, platform, pid, "0123456789abcdef");
+        const parent = path.join(base, name);
+        expect({ platform, pid, fits: Buffer.byteLength(parent) <= longestRealParentBytes(platform) }).toEqual({ platform, pid, fits: true });
+        // The process id is whole and ends at the `-`, so no id's name is another's prefix and two live processes never share a name.
+        expect(name.startsWith(`t${pid.toString(36)}-`)).toBe(true);
+        expect(name.slice(1, name.indexOf("-"))).toBe(pid.toString(36));
+        // The real name is `cb` and base 36, which has no `-`.
+        expect(name).toContain("-");
+        for (const realUid of [0, 501, 4294967295]) expect(parent).not.toBe(systemServerTempRoot(platform, realUid));
+        // So a run's folder in it fits the CLI's limit for the longest user id the real parent fits.
+        expect(agentTempDirFits(path.join(parent, "zzz"), 4294967295)).toBe(true);
+      }
+    }
+    // One id's base 36 form can be the start of another's (46656 and 1679616 are `1000` and `10000`), and a fixed-length name then
+    // collides for some random parts: `t-10000ab` came from both. With the `-` after the id the two names differ.
+    const [shorter, longer] = [46656, 1679616];
+    expect(shorter.toString(36)).toBe("1000");
+    expect(longer.toString(36)).toBe("10000");
+    const a = testParentName("/private/tmp", "darwin", shorter, "0abcdef");
+    const b = testParentName("/private/tmp", "darwin", longer, "abcdef0");
+    expect([a, b]).toEqual(["t1000-0ab", "t10000-ab"]);
+    expect(a).not.toBe(b);
+    // The parent in use here is within the same bound, and a three-character run folder in it fits the longest user id.
+    if (process.platform !== "win32") {
+      expect(Buffer.byteLength(serverTempRoot())).toBeLessThanOrEqual(longestRealParentBytes(process.platform));
+      expect(agentTempDirFits(path.join(serverTempRoot(), "zzz"), 4294967295)).toBe(true);
+      expect(path.basename(serverTempRoot())).not.toMatch(/^cb[0-9a-z]+$/);
+    }
   });
 
   it("put a run's folder directly in the parent, owner-only, with its owner recorded in this server's folder", async () => {

@@ -46,9 +46,12 @@
  * sandbox's write rules follow paths, so the rename ends a surviving
  * process's access; on Linux nothing the agent started survives its run, and
  * a folder is never removed while its run is live (see the carousel delete
- * route). What could not be deleted stays in quarantine for the sweep at the
- * next server start (`sweepLeftoverFolders`), which first stops the processes
- * earlier servers' runs left working in these folders.
+ * route). That exclusion is the run slot, which lives in one server process's
+ * memory, so it holds within one server process: running more than one
+ * contained server over the same data or agent folders is not supported
+ * before activation (#237). What could not be deleted stays in quarantine for
+ * the sweep at the next server start (`sweepLeftoverFolders`), which first
+ * stops the processes earlier servers' runs left working in these folders.
  */
 import { constants } from "node:fs";
 import { execFile } from "node:child_process";

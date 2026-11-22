@@ -29,8 +29,11 @@
 // inside the contained profile's folders (the agent workspace root and the
 // per-user temporary parent), with no controlling terminal, get SIGTERM, then
 // SIGKILL after a bounded wait. Under the contained profile the Visual Director
-// works inside the per-user temporary parent, so a leftover Director is stopped
-// too. Every other descendant (the legacy Design Agent, the legacy Visual
+// works inside the per-user temporary parent, so a leftover Director that has no
+// controlling terminal is stopped too; one that inherited the server's terminal
+// is skipped and keeps running until its CLI exits (its time limit is a timer
+// in the server, which is gone), and its folder is swept at the next contained
+// start. Every other descendant (the legacy Design Agent, the legacy Visual
 // Director, the export browser) is left as it was before.
 // The server stops its own contained runs when it is signalled; this covers a
 // server that could not. A configured agent workspace root inside the checkout,

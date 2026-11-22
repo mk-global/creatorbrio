@@ -297,7 +297,7 @@ Inside Claude Code:
 | Command | What it does |
 |---|---|
 | `/start [port]` | Set up if needed, start the server in the background and open the browser. Safe to re-run. |
-| `/stop [port]` | Stop this checkout's CreatorBrio server, whatever its port. With the contained Design Agent profile it also stops the processes of that agent (and a leftover Visual Director) that outlive the server and work in the profile's folders; nothing else the server started is stopped. Other applications and other checkouts' servers are never stopped. macOS and Linux. |
+| `/stop [port]` | Stop this checkout's CreatorBrio server, whatever its port. With the contained Design Agent profile it also stops the processes of that agent (and a leftover Visual Director that has no controlling terminal) that outlive the server and work in the profile's folders; nothing else the server started is stopped. Other applications and other checkouts' servers are never stopped. macOS and Linux. |
 | `/reset` | Delete local carousels, templates, brands, style presets and uploads, then re-seed defaults. Asks first. |
 | `/doctor` | Check Node, the Claude CLI, dependencies, data files and port 3000. |
 
