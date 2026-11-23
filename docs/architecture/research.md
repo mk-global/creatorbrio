@@ -38,8 +38,10 @@ flowchart TD
 
 `POST /api/carousels/[id]/research` with `{ topic, links? }` starts a run and answers 202 at once with the running record; the run goes on in the server's process.
 A carousel has one run at a time, and a second start answers 409.
+Starting new research replaces the previous result with the next revision's running record; the snapshot the person confirmed stays.
 The record moves through the stages `searching`, `reading` and `synthesizing`, and ends `ready` or `failed` with a code and a message the person can act on.
 `POST /api/carousels/[id]/research/cancel` stops it; the run records itself as stopped, and nothing else on the carousel changes.
+A stop answered 202 always ends the run as `cancelled`, even when the model had already answered; a stop that arrives once the result is being stored is answered 409.
 `GET /api/carousels/[id]/research` returns `{ research }`, and reports a record that a stopped server left running as interrupted, so a run is never shown as running when nothing is running it.
 Every write names the run's revision, so a stale run never overwrites a newer one.
 
@@ -53,18 +55,23 @@ Brave's terms forbid keeping search results, so a result is used only for its ad
 A refused key, a rate limit or an unreachable service ends a run that has no links of the person's own with its own message, each suggesting research from the person's own links instead.
 When the person gave links, the run goes on with them alone and the result records why search failed (`result.searchFailure`), so the screen never implies the web was searched.
 Without a key, research needs at least one link, and a start with neither is refused before anything runs.
+HTTP 401 and 403 end a search as a refused key.
+So does HTTP 422, which Brave's API answers to an invalid subscription token with the code `SUBSCRIPTION_TOKEN_INVALID`, because the query and the result count this adapter sends are always valid.
+The legacy Design Agent runs with the server's environment under local trust (FD-K), so it can read the key, while the contained profile receives only an explicit allowlist and never the key.
 
 ### Reading pages
 
 Every page, the person's links and search results alike, is read through the source-retrieval boundary (`retrieveLinks` in `src/lib/source-retrieval.ts`) with its existing validation and limits: public addresses only, every redirect checked, 10 seconds per page and 30 seconds for all of them.
-Unlike a chat message, where any unreadable link blocks the run, research goes on without a page it cannot read and lists it with its host and reason.
+Unlike a chat message, where any unreadable link blocks the run, research goes on without a page it cannot read and lists it with its reason.
+The list names the host of one of the person's own links, and gives an empty host for a page the search found, because Brave's terms forbid keeping search results.
 At most five readable pages are used, the person's links first, with at most two search pages from one site.
 The model reads at most 12,000 characters of each page.
 
 ### Synthesis
 
 `src/lib/research/synthesis.ts` makes one Claude call through the person's own Claude Code sign-in, with the Visual Director's launch, shared in `src/lib/structured-claude.ts`: Read confined to an empty folder outside the repository, no setting sources, a strict empty MCP configuration, automatic memory off, no session persistence, input on standard input and structured output.
-It has a 180-second time limit and no spending cap unless `RESEARCH_MAX_BUDGET_USD` sets one; an invalid value is refused before anything runs.
+It has a 180-second time limit and no spending cap unless `RESEARCH_MAX_BUDGET_USD` sets one.
+An invalid value is refused when a run is started, with a 400 and its own message, before anything is searched or read, and it is checked again when synthesis starts.
 Page text reaches the model only inside untrusted-content blocks, with their delimiters neutralized.
 It returns at most 12 findings, at most 6 gaps and one suggested direction: angle, audience, central message, one to eight key points and an optional call to action.
 
@@ -78,14 +85,16 @@ The model is never trusted with facts about its sources.
 - Any other finding is `unchecked` and keeps no quote.
 
 A quote found on a page shows that the words are there, not that the finding follows from them, so CreatorBrio says "quoted in source" and never "verified".
-Each source stores a SHA-256 of the exact text the model read, and `reliability: "unverified"`: CreatorBrio does not rate a source.
+Each source stores a SHA-256 of the page text as the server read it, cut to the characters the model is given and before any page delimiter in it is made inert, and `reliability: "unverified"`: CreatorBrio does not rate a source.
+The quote check reads the text after that neutralization, which is the text the model saw.
 
 ## What is stored
 
 The research lives on the carousel as `research` in `carousels.json`, owned by the server; no update route accepts it.
 It holds the topic, the links, the state, the stage, the provider, the times, the result (sources, findings, gaps, the suggested direction and the unreadable pages) or the failure, and the run's cost, duration, search requests and pages read.
-Page text is never stored.
-A duplicated carousel keeps its research, but never a run in progress.
+Page text is never stored, and neither is the host of a search page that could not be read.
+A duplicated carousel keeps its research, but never a run in progress, and never `lastDesign`, because the copy has had no design run of its own.
+A copy made while a run was in progress and nothing was confirmed gets no research at all.
 
 The source type is the Production v2 research dossier's `ResearchSource`, shared through `src/types/research.ts`.
 Findings use their own type rather than the dossier's `Claim`, whose `supported` status claims more than the quote check shows.
@@ -103,10 +112,24 @@ Under the default Design Agent profile's local trust (FD-K), the agent reaches t
 
 Every creative run on a carousel with confirmed research gives the Visual Director a "Confirmed research" section and the Design Agent's task a "Confirmed research" part of its visual plan, built by `src/lib/research/handoff.ts`.
 Both carry the confirmed direction as the person's own request and only the `quoted` findings, with the sources they cite, inside an untrusted-content block; an `unchecked` finding never reaches a design.
+The Director's instructions tell it to treat the direction as the person's own explicit request, so the direction is recorded in the Creative Brief as `explicit` (`src/lib/director-instructions.ts`).
 The Design Agent is told to state as fact only those findings and to add no statistics, quotes or claims of its own.
 Under the legacy profile that is guidance rather than enforcement, because the agent keeps its own web access under local trust.
 The creative run record stores the research revision its design used (`researchRevision`), and the research record keeps the latest one (`lastDesign`).
-A carousel without confirmed research produces exactly the Director input and design message it did before.
+A carousel without confirmed research gets the same Director input document and the same design message as before.
+Its Director launch is not byte-identical to the earlier one, because the Director's instructions now carry a "Confirmed research" section for every carousel.
+
+The Design Agent receives its task as one command-line argument, so the research in it is budgeted (`fitResearch` in `src/lib/research/handoff.ts`, applied by `buildDesignMessage`).
+The research is fitted first, to what is left once the person's request, the plan and the reserve for a Continue in a new conversation are in, and linked pages share what it leaves.
+Research that fits is unchanged.
+Otherwise the cut is always the same: for each count of findings kept, starting with all of them, the sources' titles stay long when that fits and are shortened when it does not.
+The findings drop from the end, one at a time, with any source that only they cite.
+Only when no finding is left are the direction's texts shortened, each ending in an ellipsis where it was cut.
+An `unchecked` finding and an uncited source never reach the design message, although the stored snapshot may still hold them.
+
+A Retry of a run that stopped before design reuses its stored plan, so it is refused with the usual "can no longer be retried" answer when the carousel's confirmed research is not the one the plan was made from.
+The stored plan keeps that research's revision and confirmation time, or none when the carousel had none.
+Another revision, research confirmed after a plan made without any, and the same revision confirmed again all refuse the Retry.
 
 ## Limits
 
@@ -122,6 +145,18 @@ A carousel without confirmed research produces exactly the Director input and de
 
 ## Logs
 
-`[research] started`, `[research] search`, `[sources] source` and `[research] finished` carry the carousel, the revision, the outcome code, counts, the cost and durations.
-They never carry the topic, a link's path, a query, the key, page text, findings or the direction.
-An expected failure is logged as information; only an unexpected one is an error.
+The lines are structured, and an expected outcome is never an error.
+`[research] started` carries the carousel, the revision, the provider and the number of links.
+`[research] search` carries the provider, the outcome code, the HTTP status, the result count and the duration; it has no carousel.
+`[sources] source` is one line per page read, with its host, outcome code, redirect count, size and duration; it has no carousel.
+`[research] synthesis finished` carries the carousel, the outcome code, the cost, the number of turns, the duration, the configured cap and the number of pages.
+A synthesis that worked or was stopped is information, an expected failure (Claude exiting with an error or giving an unreadable reply, a reply that fails validation, the time limit, the spending cap or an invalid cap setting, a Claude launch that failed) is a warning, and only an unexpected exception is an error, with the error's name and system code and never its message.
+A failure of the server's own, such as no temporary folder, ends the run as `research_failed`; only a failed launch of Claude ends it as `claude_unavailable`.
+`[research] finished` carries the carousel, the revision, the outcome code, the cost, the duration, the number of search requests and the number of pages read.
+For a finished run it also carries the number of unreadable pages, the code of the search failure the run went on past (or null), and the number of findings and of quoted findings.
+It is information for every coded outcome, including a `research_failed` that came from a synthesis result, because synthesis already logged that cause as an error.
+An unexpected exception thrown inside the run itself makes it an error that also carries `err`, the exception's name and never its message, unless the person had already stopped the run, in which case the exception counts as stopped and is information with no `err`.
+`[research] confirmed` and `[research] interrupted` carry the carousel and the revision, and the first also whether the person edited the direction.
+`[research] could not record the outcome` is an error that carries the carousel, the revision, the outcome code and the error's name.
+None of them carries the topic, a link's path, a query, the key, page text, findings or the direction.
+An expected failure is logged as information or a warning; only an unexpected one is an error.

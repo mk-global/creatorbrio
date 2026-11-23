@@ -17,9 +17,11 @@ import { FORMATS, formatOf } from "../formats";
 import { isIP } from "node:net";
 import { bareHost, isPublicAddress, parseSourceUrl } from "../source-address";
 import { retrieveLinks, type SourceOutcome } from "../source-retrieval";
+import { parseSpendingCap } from "../spending-cap";
 import { now } from "../utils";
 import { configuredSearchProvider, searchQuery, type SearchProvider } from "./search";
 import {
+  RESEARCH_BUDGET_ENV,
   runSynthesis,
   textHash,
   validateDirection,
@@ -59,7 +61,8 @@ export const RESEARCH_PAGE_CHARS = 12_000;
 export const researchDeps = {
   searchProvider: (): SearchProvider | null => configuredSearchProvider(),
   retrieveLinks: (links: string[]): Promise<SourceOutcome[]> => retrieveLinks(links),
-  synthesize: (request: SynthesisRequest, options: { signal: AbortSignal }): Promise<SynthesisResult> => runSynthesis(request, options),
+  synthesize: (request: SynthesisRequest, options: { signal: AbortSignal; carouselId?: string }): Promise<SynthesisResult> =>
+    runSynthesis(request, options),
   claudeAvailable: (): boolean => isClaudeAvailable(),
 };
 
@@ -91,6 +94,8 @@ const SYNTHESIS_FAILURES: Record<Exclude<SynthesisFailureCode, "cancelled">, Res
   start_failed: "claude_unavailable",
   agent_failed: "synthesis_failed",
   invalid_output: "synthesis_failed",
+  // Not a spawn failure: it must never tell the person to sign in to Claude.
+  unexpected: "research_failed",
 };
 
 // ---------------------------------------------------------------------------
@@ -98,7 +103,20 @@ const SYNTHESIS_FAILURES: Record<Exclude<SynthesisFailureCode, "cancelled">, Res
 
 const REGISTRY_KEY = Symbol.for("creatorbrio.research-runs");
 
-function active(): Map<string, { revision: number; controller: AbortController; done: Promise<void> }> {
+interface ActiveRun {
+  revision: number;
+  controller: AbortController;
+  done: Promise<void>;
+  /**
+   * Set while the "ready" result is being committed. A stop that arrives after
+   * that point is answered as "nothing is running" instead of 202, so a stop
+   * the person was told was accepted never ends as a finished run. It lives on
+   * the registry entry, which every copy of this module shares, as the run does.
+   */
+  sealed: boolean;
+}
+
+function active(): Map<string, ActiveRun> {
   const store = globalThis as typeof globalThis & { [REGISTRY_KEY]?: ReturnType<typeof active> };
   store[REGISTRY_KEY] ??= new Map();
   return store[REGISTRY_KEY];
@@ -165,6 +183,10 @@ export async function startResearch(carouselId: string, body: unknown): Promise<
     };
   }
   if (!researchDeps.claudeAvailable()) return { ok: false, status: 400, error: RESEARCH_FAILURE_MESSAGES.claude_unavailable };
+  // An invalid cap is refused before search or retrieval run, not after the pages were read; synthesis checks it again.
+  if (!parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]).ok) {
+    return { ok: false, status: 400, error: RESEARCH_FAILURE_MESSAGES.budget_setting_invalid };
+  }
   const carousel = await getCarousel(carouselId);
   if (!carousel || carousel.isTemplate) return { ok: false, status: 404, error: "Project not found." };
 
@@ -174,7 +196,8 @@ export async function startResearch(carouselId: string, body: unknown): Promise<
   const controller = new AbortController();
   let release!: () => void;
   const done = new Promise<void>((r) => (release = r));
-  runs.set(carouselId, { revision: -1, controller, done });
+  const entry: ActiveRun = { revision: -1, controller, done, sealed: false };
+  runs.set(carouselId, entry);
 
   try {
     const stored = await updateCarouselResearch(carouselId, (current) => ({
@@ -195,9 +218,9 @@ export async function startResearch(carouselId: string, body: unknown): Promise<
       return { ok: false, status: 404, error: "Project not found." };
     }
     const revision = stored.research.revision;
-    runs.set(carouselId, { revision, controller, done });
+    entry.revision = revision;
     console.info("[research] started", { carouselId, revision, provider: provider?.name ?? null, links: input.links.length });
-    void execute(carousel, revision, input, provider, controller.signal).finally(() => {
+    void execute(carousel, revision, input, provider, entry).finally(() => {
       if (runs.get(carouselId)?.controller === controller) runs.delete(carouselId);
       release();
     });
@@ -224,10 +247,10 @@ export async function readResearch(carouselId: string): Promise<ResearchResponse
   return { ok: true, research: stored?.research ?? null };
 }
 
-/** Stops the carousel's running research. Returns false when none was running here. */
+/** Stops the carousel's running research. Returns false when none was running here, or when it is already committing its result. */
 export function cancelResearch(carouselId: string): boolean {
   const run = active().get(carouselId);
-  if (!run) return false;
+  if (!run || run.sealed) return false;
   run.controller.abort();
   return true;
 }
@@ -351,7 +374,8 @@ export function selectPages(
     const outcome = outcomes[i];
     if (!outcome) return;
     if (!outcome.ok) {
-      unreadable.push({ host: outcome.host, origin: candidate.origin, reason: outcome.reason });
+      // Brave's terms forbid keeping search results: the host of a search page that failed is not stored.
+      unreadable.push({ host: candidate.origin === "link" ? outcome.host : "", origin: candidate.origin, reason: outcome.reason });
       return;
     }
     if (pages.length === MAX_RESEARCH_PAGES) return;
@@ -391,8 +415,9 @@ async function execute(
   revision: number,
   input: { topic: string; links: string[] },
   provider: SearchProvider | null,
-  signal: AbortSignal
+  run: ActiveRun
 ): Promise<void> {
+  const { signal } = run.controller;
   const carouselId = carousel.id;
   const started = Date.now();
   const usage = { costUsd: null as number | null, durationMs: 0, searchRequests: 0, pagesRead: 0 };
@@ -421,6 +446,8 @@ async function execute(
 
     await setStage(carouselId, revision, "synthesizing");
     const brand = await resolveBrandForCarousel(carousel).catch(() => null);
+    // A stop that arrived while the pages were read or the stage was written must not start a paid call.
+    if (signal.aborted) throw new Failure("cancelled");
     const synthesis = await researchDeps.synthesize(
       {
         topic: input.topic,
@@ -428,7 +455,7 @@ async function execute(
         brand: brand && isBrandConfigured(brand) ? { name: brand.name, styleKeywords: brand.styleKeywords.slice(0, 8) } : null,
         pages,
       },
-      { signal }
+      { signal, carouselId }
     );
     usage.costUsd = synthesis.usage.costUsd;
     if (!synthesis.ok) throw new Failure(synthesis.code === "cancelled" ? "cancelled" : SYNTHESIS_FAILURES[synthesis.code]);
@@ -447,6 +474,9 @@ async function execute(
       origin: page.origin,
     }));
     await writeIfCurrent(carouselId, revision, (current) => {
+      // Checked inside the write, which nothing can interleave with: a stop answered before this point always wins.
+      if (signal.aborted) throw new Failure("cancelled");
+      run.sealed = true;
       return {
         ...settledFields(current),
         state: "ready",
@@ -479,9 +509,11 @@ async function execute(
     await writeIfCurrent(carouselId, revision, (current) => ({ ...failed(current, code), usage: finish() })).catch((writeErr) => {
       console.error("[research] could not record the outcome", { carouselId, revision, outcome: code, err: writeErr instanceof Error ? writeErr.name : "unknown" });
     });
-    // Expected outcomes are not system errors; an unexpected one is.
+    // Expected outcomes are not system errors; an unexpected exception is. A research_failed that came from a synthesis
+    // result is a Failure of ours here: synthesis already logged its real cause at error, so this line is information.
     const fields = { carouselId, revision, outcome: code, ...finish() };
-    if (code === "research_failed") console.error("[research] finished", { ...fields, err: err instanceof Error ? err.name : "unknown" });
-    else console.info("[research] finished", fields);
+    if (code === "research_failed" && !(err instanceof Failure)) {
+      console.error("[research] finished", { ...fields, err: err instanceof Error ? err.name : "unknown" });
+    } else console.info("[research] finished", fields);
   }
 }

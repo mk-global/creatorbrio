@@ -352,7 +352,7 @@ export interface CreativeRunRecord {
     items: { taskKey: string; assetId: string; sha256: string }[];
   } | null;
   /** The validated plan and original message, kept only while a blocked run can be retried. */
-  retry: { plan: unknown; message: string } | null;
+  retry: StoredRetry | null;
   /** When the retry window's data was purged. */
   purgedAt?: string;
   /** Differences between the finished design and the visual plan, as shown to the user. */
@@ -368,6 +368,25 @@ export interface CreativeRunRecord {
   continued?: number;
   /** The confirmed research revision the design worked from (#252); absent when the carousel had none. */
   researchRevision?: number;
+}
+
+/** The confirmed research a plan was made from (#252): which revision, and which confirmation of it. */
+export interface ResearchStamp {
+  revision: number;
+  confirmedAt: string;
+}
+
+/**
+ * What a blocked run keeps for an explicit retry: the validated plan, the
+ * user's message and the research the plan was made from, `null` when the
+ * carousel had none. A retry builds its design from the carousel's research
+ * as it is then, so it is refused when that is not the research the plan
+ * was made from. Absent in a record from before research, which had none.
+ */
+export interface StoredRetry {
+  plan: unknown;
+  message: string;
+  research?: ResearchStamp | null;
 }
 
 /** The stored handoff of a design run, enough to continue it without planning again. */

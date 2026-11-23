@@ -4,6 +4,7 @@ import { HANDOFF_END, HANDOFF_START, buildContinuationMessage, buildDesignMessag
 import { EMPTY_BRIEF_UPDATE } from "@/lib/creative-brief";
 import type { ReadyPlan } from "@/lib/director-plan";
 import type { ResolvedReferenceImage } from "@/types/carousel";
+import type { ConfirmedResearch } from "@/types/research";
 
 const photo: ResolvedReferenceImage = { id: "ref-photo", url: "/uploads/photo.png", absPath: "/srv/app/public/uploads/photo.png", name: "founder-photo.png", addedAt: "" };
 const mood: ResolvedReferenceImage = { id: "ref-mood", url: "/uploads/mood.png", absPath: "/srv/app/public/uploads/mood.png", name: "moodboard.png", addedAt: "" };
@@ -183,5 +184,107 @@ describe("linked pages in the design message (#228)", () => {
     const message = buildDesignMessage("Make 3 slides", { plan: plan(), assets, references: refs, sources: [pages[0].url], pages });
     expect(message).toContain("Short facts.");
     expect(message).not.toContain("[truncated]");
+  });
+});
+
+describe("confirmed research in the design message (#252)", () => {
+  /** The most the research limits allow, in a three-byte script: 12 quoted findings, five cited sources with long titles and addresses, a full direction, and an unchecked finding that must never appear. */
+  function maximalResearch(): ConfirmedResearch {
+    const sources = Array.from({ length: 5 }, (_, i) => {
+      const host = `h${i + 1}.${"a".repeat(50)}.example.com`;
+      return {
+        id: `S${i + 1}`, kind: "url" as const, url: `https://${host}/${"p".repeat(300)}`, host, title: "題".repeat(200), retrievedAt: "", blob: "",
+        reliability: "unverified" as const, retrievedBy: "source-retrieval" as const, origin: "search" as const,
+      };
+    });
+    const quotedFinding = (n: number) => ({
+      id: `F${n}`, text: "語".repeat(280), check: "quoted" as const, evidence: [{ sourceId: `S${((n - 1) % 5) + 1}`, quote: "words found on the page" }], sensitive: true,
+    });
+    const unchecked = { id: "F13", text: "UNCHECKED claim", check: "unchecked" as const, evidence: [], sensitive: false };
+    return {
+      revision: 3, confirmedAt: "", topic: "calmer evenings", edited: false, sources,
+      direction: { angle: "角".repeat(300), audience: "客".repeat(300), centralMessage: "中".repeat(300), keyPoints: Array.from({ length: 8 }, () => "点".repeat(200)), callToAction: "行".repeat(200) },
+      findings: [...Array.from({ length: 12 }, (_, i) => quotedFinding(i + 1)), unchecked],
+    };
+  }
+
+  const designMessage = (message: string, research: ConfirmedResearch | null, p: ReadyPlan = plan(), withRefs = true) =>
+    buildDesignMessage(message, { plan: p, assets: withRefs ? assets : new Map(), references: withRefs ? refs : [], sources: [], research });
+  const saved = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `0b9e2f4c-1d3a-4e5f-8a7b-${String(i).padStart(12, "0")}`, order: i, notes: "注".repeat(200) }));
+  const continueBytes = (p: ReadyPlan, task: string, n: number) =>
+    Buffer.byteLength(buildContinuationMessage({ plan: p, slides: saved(n), originalTask: task, resumingSession: false }));
+  /** Five more slides than the usual plan, each with the longest visual intent: the plan alone leaves little room. */
+  const roomyPlan = () =>
+    plan({
+      slideCount: 6,
+      slides: Array.from({ length: 6 }, (_, i) => ({ index: i + 1, visualIntent: "夜".repeat(200), treatment: "typography" as const, assetRefs: [], styleReferenceIds: [] })),
+      assets: [],
+    });
+
+  it("keeps the message, and a Continue made from it, within one argument with the longest request and maximal research", async () => {
+    const { MAX_DESIGN_MESSAGE_BYTES } = await import("@/lib/creative-handoff");
+    const { MAX_CHAT_MESSAGE_LENGTH } = await import("@/lib/chat-stream");
+    const longest = "日".repeat(MAX_CHAT_MESSAGE_LENGTH);
+    const message = designMessage(longest, maximalResearch());
+    expect(Buffer.byteLength(message)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+    expect(message.startsWith(longest)).toBe(true);
+    // The research did not fit whole, and what stayed is only what the server found quoted.
+    expect(message).toContain("Confirmed research (revision 3)");
+    expect(message).not.toContain("- F12: ");
+    expect(message).not.toContain("UNCHECKED");
+    for (const n of [0, 10, 19]) expect(continueBytes(plan(), message, n)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+  });
+
+  it("drops the later findings and the sources only they cite first, and keeps the whole direction", () => {
+    const research = maximalResearch();
+    const message = designMessage("日".repeat(30_000), research);
+    const d = research.direction;
+    expect(message).toContain(`- Angle: ${d.angle}`);
+    expect(message).toContain(`- Audience: ${d.audience}`);
+    expect(message).toContain(`- Central message: ${d.centralMessage}`);
+    expect(message).toContain(`- Key points, in order: ${d.keyPoints.join("; ")}`);
+    expect(message).toContain(`- Call to action: ${d.callToAction}`);
+    expect(message).toContain("- F1: ");
+    expect(message).not.toContain("- F12: ");
+    expect(message).not.toContain("UNCHECKED");
+    const listed = [...message.matchAll(/^- (S\d+): /gm)].map((m) => m[1]);
+    const cited = new Set([...message.matchAll(/^- F\d+: .* \(sources: ([^)]*)\)/gm)].flatMap((m) => m[1].split(", ")));
+    expect(listed.length).toBeGreaterThan(0);
+    // A source is listed exactly when a finding that is still listed cites it.
+    expect([...cited].sort()).toEqual([...listed].sort());
+  });
+
+  it("cuts the direction only when no finding is left to drop, and still fits", async () => {
+    const { MAX_DESIGN_MESSAGE_BYTES } = await import("@/lib/creative-handoff");
+    const { MAX_CHAT_MESSAGE_LENGTH } = await import("@/lib/chat-stream");
+    const research = maximalResearch();
+    const p = roomyPlan();
+    const message = designMessage("日".repeat(MAX_CHAT_MESSAGE_LENGTH), research, p, false);
+    expect(Buffer.byteLength(message)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+    for (const n of [0, 10, 19]) expect(continueBytes(p, message, n)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+    expect(message).not.toContain("- F1: ");
+    expect(message).not.toContain(`- Angle: ${research.direction.angle}`);
+    // What is left of the direction is still the person's words, cut at a character boundary and marked.
+    expect(message).toContain(`- Angle: ${"角".repeat(39)}`);
+    expect(message).toContain("\u2026");
+    expect(message).not.toContain("�");
+  });
+
+  it("leaves room for linked pages after the research, and keeps the whole within the argument", async () => {
+    const { MAX_DESIGN_MESSAGE_BYTES } = await import("@/lib/creative-handoff");
+    const pages = [1, 2, 3].map((i) => ({ url: `https://example.com/${i}`, host: "example.com", title: `Page ${i}`, text: "語".repeat(20_000), truncated: false }));
+    const message = buildDesignMessage("日".repeat(20_000), { plan: plan(), assets, references: refs, sources: pages.map((p) => p.url), pages, research: maximalResearch() });
+    expect(Buffer.byteLength(message)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+    // The research fit whole, and the pages were cut to what it left.
+    expect(message).toContain("- F12: ");
+    expect(message.match(/\[truncated\]/g)).toHaveLength(3);
+    for (const n of [0, 10, 19]) expect(continueBytes(plan(), message, n)).toBeLessThanOrEqual(MAX_DESIGN_MESSAGE_BYTES);
+  });
+
+  it("leaves research that fits exactly as it is", () => {
+    const research = { ...maximalResearch(), findings: maximalResearch().findings.slice(0, 2) };
+    const input = { plan: plan(), assets, references: refs, sources: [], research };
+    expect(buildDesignMessage("Make 3 slides", input)).toBe(`Make 3 slides\n\n${buildHandoff(input)}`);
+    expect(buildDesignMessage("Make 3 slides", { ...input, research: null })).toBe(buildDesignMessage("Make 3 slides", { plan: plan(), assets, references: refs, sources: [] }));
   });
 });

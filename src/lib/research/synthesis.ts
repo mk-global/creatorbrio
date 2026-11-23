@@ -74,9 +74,12 @@ export type SynthesisFailureCode =
   | "timed_out"
   | "budget_exceeded"
   | "budget_setting_invalid"
+  /** The Claude CLI could not be started. */
   | "start_failed"
   | "agent_failed"
-  | "invalid_output";
+  | "invalid_output"
+  /** Anything else that went wrong on our side, such as no temporary folder: never a sign-in problem. */
+  | "unexpected";
 
 export type SynthesisResult =
   | { ok: true; output: SynthesisOutput; usage: SynthesisUsage }
@@ -203,7 +206,11 @@ export function checkedTextOf(page: Pick<SynthesisPage, "text">): string {
   return normalizeForQuote(neutralizePageDelimiters(page.text));
 }
 
-/** SHA-256 of the exact page text given to the model, stored as the source's `blob`. */
+/**
+ * SHA-256 of the page text as the server read it (the part given to the
+ * model), before any page delimiter in it is made inert, stored as the
+ * source's `blob`. The quote check reads the text after that neutralization.
+ */
 export function textHash(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
@@ -282,10 +289,25 @@ export function validateDirection(input: unknown): ResearchDirection | null {
   };
 }
 
-/** Synthesizes once. Never throws for a model failure: every outcome is a typed result. */
+/** The short, content-free part of an error that makes an unexpected failure diagnosable: its name and an errno-style code. */
+function errorFacts(err: unknown): { err: string; errCode?: string } {
+  const code = (err as { code?: unknown } | null)?.code;
+  return {
+    err: err instanceof Error ? err.name : "unknown",
+    ...(typeof code === "string" && /^[A-Z][A-Z0-9_]{1,31}$/.test(code) ? { errCode: code } : {}),
+  };
+}
+
+/**
+ * Synthesizes once. Never throws for a model failure: every outcome is a
+ * typed result, and each one is logged once, as the Visual Director's are:
+ * the code, the cost, the turns and the duration, never the topic, a page or
+ * a finding. An expected failure is a warning, success and a stop are
+ * information, and only an unexpected exception is an error.
+ */
 export async function runSynthesis(
   request: SynthesisRequest,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  options: { signal?: AbortSignal; timeoutMs?: number; carouselId?: string } = {}
 ): Promise<SynthesisResult> {
   const started = Date.now();
   const usage = (cost: unknown): SynthesisUsage => ({
@@ -293,26 +315,50 @@ export async function runSynthesis(
     durationMs: Date.now() - started,
   });
   const cap = parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]);
-  if (!cap.ok) return { ok: false, code: "budget_setting_invalid", usage: usage(null) };
-
-  let dir: string | null = null;
-  try {
-    // An empty folder outside the repository: Read can reach nothing, and no CLAUDE.md is loaded.
-    dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "creatorbrio-research-")));
-    const args = structuredClaudeArgs(dir, { systemPrompt: RESEARCH_INSTRUCTIONS, schema: RESEARCH_OUTPUT_SCHEMA, budgetUsd: cap.usd });
-    const cli = await runStructuredClaude(args, dir, buildSynthesisInput(request), options.timeoutMs ?? RESEARCH_SYNTHESIS_TIMEOUT_MS, options.signal);
-    const result = parseStructuredResult(cli.stdout);
-    const spent = usage(result?.total_cost_usd);
-    if (cli.startError) return { ok: false, code: "start_failed", usage: spent };
-    if (cli.cancelled) return { ok: false, code: "cancelled", usage: spent };
-    if (cli.timedOut) return { ok: false, code: "timed_out", usage: spent };
-    if (result?.subtype === "error_max_budget_usd") return { ok: false, code: "budget_exceeded", usage: spent };
-    if (cli.exitCode !== 0 || !result || result.is_error) return { ok: false, code: "agent_failed", usage: spent };
-    const output = validateSynthesis(result.structured_output, request.pages);
-    return output ? { ok: true, output, usage: spent } : { ok: false, code: "invalid_output", usage: spent };
-  } catch {
-    return { ok: false, code: "start_failed", usage: usage(null) };
-  } finally {
-    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  let outcome: SynthesisResult;
+  let turns: number | null = null;
+  let thrown: unknown = null;
+  if (!cap.ok) outcome = { ok: false, code: "budget_setting_invalid", usage: usage(null) };
+  else {
+    let dir: string | null = null;
+    try {
+      // An empty folder outside the repository: Read can reach nothing, and no CLAUDE.md is loaded.
+      dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "creatorbrio-research-")));
+      const args = structuredClaudeArgs(dir, { systemPrompt: RESEARCH_INSTRUCTIONS, schema: RESEARCH_OUTPUT_SCHEMA, budgetUsd: cap.usd });
+      const cli = await runStructuredClaude(args, dir, buildSynthesisInput(request), options.timeoutMs ?? RESEARCH_SYNTHESIS_TIMEOUT_MS, options.signal);
+      const result = parseStructuredResult(cli.stdout);
+      turns = typeof result?.num_turns === "number" ? result.num_turns : null;
+      const spent = usage(result?.total_cost_usd);
+      if (cli.startError) outcome = { ok: false, code: "start_failed", usage: spent };
+      else if (cli.cancelled) outcome = { ok: false, code: "cancelled", usage: spent };
+      else if (cli.timedOut) outcome = { ok: false, code: "timed_out", usage: spent };
+      else if (result?.subtype === "error_max_budget_usd") outcome = { ok: false, code: "budget_exceeded", usage: spent };
+      else if (cli.exitCode !== 0 || !result || result.is_error) outcome = { ok: false, code: "agent_failed", usage: spent };
+      else {
+        const output = validateSynthesis(result.structured_output, request.pages);
+        outcome = output ? { ok: true, output, usage: spent } : { ok: false, code: "invalid_output", usage: spent };
+      }
+    } catch (err) {
+      // A failure of ours, such as no temporary folder: not "Claude is unavailable", which only a failed launch is.
+      thrown = err;
+      outcome = { ok: false, code: "unexpected", usage: usage(null) };
+    } finally {
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
   }
+
+  const fields = {
+    ...(options.carouselId ? { carouselId: options.carouselId } : {}),
+    outcome: outcome.ok ? "synthesized" : outcome.code,
+    durationMs: outcome.usage.durationMs,
+    costUsd: outcome.usage.costUsd,
+    turns,
+    // The configured cap, so costUsd can be read against it; never the raw setting.
+    budgetCapUsd: cap.ok ? cap.usd : null,
+    pages: request.pages.length,
+  };
+  if (outcome.ok || outcome.code === "cancelled") console.info("[research] synthesis finished", fields);
+  else if (outcome.code === "unexpected") console.error("[research] synthesis finished", { ...fields, ...errorFacts(thrown) });
+  else console.warn("[research] synthesis finished", fields);
+  return outcome;
 }

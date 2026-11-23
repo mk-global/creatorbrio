@@ -1,3 +1,5 @@
+import type { SearchFailureCode } from "@/types/research";
+
 /**
  * Web search for topic research (#252): one small provider interface and one
  * adapter, Brave Search, with the person's own key (TD-07; founder decision
@@ -23,7 +25,6 @@ const MAX_QUERY_WORDS = 50;
 /** A result page is small; anything past this is not one. */
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
-export type SearchFailureCode = "search_key_refused" | "search_rate_limited" | "search_unavailable";
 export type SearchOutcome = { ok: true; urls: string[] } | { ok: false; code: SearchFailureCode };
 
 export interface SearchProvider {
@@ -88,7 +89,11 @@ async function braveRequest(
   } catch {
     return { result: { ok: false, code: "search_unavailable" }, status: null };
   }
-  if (res.status === 401 || res.status === 403) return { result: { ok: false, code: "search_key_refused" }, status: res.status };
+  // Brave answers an invalid subscription token with 422 (SUBSCRIPTION_TOKEN_INVALID). The query and
+  // count this adapter sends are always valid, so a 422 is the token, not the request.
+  if (res.status === 401 || res.status === 403 || res.status === 422) {
+    return { result: { ok: false, code: "search_key_refused" }, status: res.status };
+  }
   if (res.status === 429) return { result: { ok: false, code: "search_rate_limited" }, status: res.status };
   if (res.status !== 200) return { result: { ok: false, code: "search_unavailable" }, status: res.status };
   let body: unknown;

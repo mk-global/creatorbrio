@@ -368,11 +368,13 @@ export async function setCreativeBrief(carouselId: string, brief: CreativeBrief)
 /**
  * What a duplicate keeps of a carousel's research (#252): the confirmed
  * direction and a finished result, never a running run, which belongs to the
- * original's process.
+ * original's process, and never `lastDesign`, which names a design run of the
+ * original that the copy never had.
  */
 function researchForCopy(research: CarouselResearch | undefined): CarouselResearch | undefined {
   if (!research) return undefined;
   const copy = structuredClone(research);
+  delete copy.lastDesign;
   if (copy.state !== "running") return copy;
   if (!copy.confirmed) return undefined;
   return {

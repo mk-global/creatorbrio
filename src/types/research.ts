@@ -94,6 +94,11 @@ export interface ResearchDirection {
   callToAction: string;
 }
 
+/**
+ * A page the run could not read. `host` is the site of one of the person's
+ * own links. A page the search found has an empty `host`: Brave's terms
+ * forbid keeping search results, so only that one failed, and why, is stored.
+ */
 export interface UnreadablePage {
   host: string;
   origin: ResearchPageOrigin;

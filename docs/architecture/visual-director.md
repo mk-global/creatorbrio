@@ -77,6 +77,7 @@ The Director reads the stored brief and proposes an update; the server validates
 - a newer `explicit` instruction replaces or retires an older value, and the Director must quote the retired item and give a reason.
 
 Values a revision does not mention are kept.
+When a carousel has confirmed research, the Director is told to record the confirmed direction as `explicit`, because the person confirmed it ([research.md](research.md#from-confirmed-research-to-the-design)).
 
 A revision that only restyles existing slides, such as one word's colour or weight, a font, a size, spacing or the slide's background colour, keeps every slide's current images as they are: the plan places or reuses each one again and adds no image task (#168).
 "Background" in such a request means the slide's background, not the backdrop of a photo on it.

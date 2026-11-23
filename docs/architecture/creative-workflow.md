@@ -58,7 +58,7 @@ They reach the browser as `stage` events in the typed stream contract (`src/lib/
 3. **Preparing images** runs the plan's image tasks one at a time and stages each validated image privately.
    When every required image is ready, all staged images are attached to the carousel in one all-or-nothing step.
 4. **Creating the design** runs the Design Agent exactly as before, resuming the carousel's session, with the user's message followed by a delimited "Visual plan for this request".
-   That section states the plan's facts only: who decides what, the slide count and why, each slide's treatment and the images to place with where to view them, each reference image's role, the linked pages, and the Director's advisory notes.
+   That section states the plan's facts only: who decides what, the slide count and why, each slide's treatment and the images to place with where to view them, each reference image's role, the linked pages, the research the person confirmed when the carousel has some ([research.md](research.md#from-confirmed-research-to-the-design)), and the Director's advisory notes.
    The Design Agent's system prompt does not change; a test pins it to its recorded baseline.
 
 ### After design: the conformance check
@@ -116,7 +116,8 @@ Retry is a button on a blocked run, never automatic.
 It sends a normal chat request with the run's ID; there is no separate endpoint.
 The server accepts it only for the carousel's most recent run, only when that run ended blocked, and only within 24 hours.
 A retry does not plan again, and reads linked pages again only for the contained Design Agent, which needs their text: it re-validates the stored plan against the carousel as it is now, uses the stored message rather than anything the client sends, runs only the images that are not already valid, and applies the stored plan's Creative Brief update when it reaches design.
-The plan and message are stored as soon as a plan with images is accepted, so a run cut off by a server restart before design can be retried too.
+The plan and the message are stored as soon as a plan with images is accepted, together with a stamp of the confirmed research the plan was made from (its revision and confirmation time, not the research itself) or none, so a run cut off by a server restart before design can be retried too.
+A retry is refused as a plan that can no longer be retried when the carousel's confirmed research is not the research that plan was made from ([research.md](research.md#from-confirmed-research-to-the-design)).
 
 ### Cancellation
 
@@ -241,7 +242,10 @@ No parser of the harness's own decides what a file means.
 results.json records under `serverEnvFiles` the names, never the values, of every variable the files add beyond the harness's environment (results.json is never committed), and a paid run is refused before the ledger reservation when one is not on the allowlist (`SERVER_ENV_ALLOWLIST` in `eval/acceptance/server-env.ts`).
 The allowlist is a list of exact names, each with the reason it is there, and not a pattern.
 It holds `CLAUDE_CLI_PATH` and `DISABLE_AUTOUPDATER`.
-It holds the four names `src/` reads (`DESIGN_AGENT_MAX_BUDGET_USD`, `DESIGN_AGENT_TIMEOUT_SECONDS`, `DESIGN_AGENT_INACTIVITY_SECONDS` and `DIRECTOR_MAX_BUDGET_USD`) and `IMAGE_SERVICE_URL`, which the harness overrides.
+It holds the four Design Agent and Director names (`DESIGN_AGENT_MAX_BUDGET_USD`, `DESIGN_AGENT_TIMEOUT_SECONDS`, `DESIGN_AGENT_INACTIVITY_SECONDS` and `DIRECTOR_MAX_BUDGET_USD`) and `IMAGE_SERVICE_URL`, which the harness overrides.
+`src/` also reads `BRAVE_SEARCH_API_KEY` and `RESEARCH_MAX_BUDGET_USD` for topic research (#252), so the four names are not all it reads.
+The harness sets neither of those two, neither is on the allowlist, and the acceptance scenarios do not run research.
+A `.env` file that sets either one therefore refuses a paid run, like any other name that is not on the list.
 It holds the model names `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`, which the record fingerprints by name and value hash.
 A file's `CLAUDE_CLI_PATH` is resolved to a real path and pinned by the harness, which gives that path to the servers explicitly, so they never read the file's value directly.
 Every other name is refused, including URL, socket, gateway, model-catalogue and delegated-session variables, the provider switches `CLAUDE_CODE_USE_*`, the effort level `CLAUDE_CODE_EFFORT_LEVEL`, and the token limits `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and `MAX_THINKING_TOKENS`.

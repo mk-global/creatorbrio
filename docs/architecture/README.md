@@ -35,7 +35,7 @@ flowchart LR
 |---|---|---|
 | Chat route | Owns each carousel's single active run and the event stream; runs the creative run, then the Design Agent; ends the run exactly once | `src/app/api/chat/route.ts` |
 | Creative run | Sequences linked pages, planning, images and the handoff; decides when a run is blocked | `src/lib/creative-run.ts` |
-| Source retrieval | Reads up to three public pages linked in a message, behind a network boundary | `src/lib/source-retrieval.ts` |
+| Source retrieval | Reads up to three public pages linked in a message, and the pages topic research reads, behind a network boundary | `src/lib/source-retrieval.ts` |
 | Visual Director | Decides the visual strategy and returns a validated plan; never designs slides | `src/lib/visual-director.ts`, `src/lib/director-plan.ts` |
 | Creative Brief | What a carousel is for, kept across revisions | `src/lib/creative-brief.ts` |
 | Topic research | Researches a topic on the server (Brave Search with the person's key, or their links), checks every quoted finding against the page text it read, and hands the direction the person confirmed to the Director and the Design Agent ([research.md](research.md)) | `src/lib/research/`, `src/types/research.ts` |

@@ -2,7 +2,7 @@ import { untrustedPageContent } from "@/lib/source-text";
 import { MAX_SLIDES, type ResolvedReferenceImage, type Slide } from "@/types/carousel";
 import type { ReadyPlan, SlideCountBasis } from "./director-plan";
 import type { ConfirmedResearch } from "@/types/research";
-import { designResearchLines } from "./research/handoff";
+import { designResearchLines, fitResearch } from "./research/handoff";
 
 /**
  * The Design Agent handoff and the conformance check that follows design.
@@ -95,21 +95,32 @@ function continuationReserve(plan: ReadyPlan): number {
   );
 }
 
-/** The task message for the Design Agent: the user's message, then the visual plan. */
+/**
+ * The task message for the Design Agent: the user's message, then the visual
+ * plan. The confirmed research and the linked pages are fitted to what is
+ * left of the argument once the request, the plan and a Continue's reserve
+ * are in, so neither makes the run fail to start. The research comes first,
+ * because it is the person's own confirmed direction (`fitResearch` says
+ * what is cut), and the pages share what it leaves, in order.
+ */
 export function buildDesignMessage(userMessage: string, input: HandoffInput): string {
-  const build = (pages: HandoffInput["pages"]) => `${userMessage}\n\n${buildHandoff({ ...input, pages })}`;
-  if (!input.pages || input.pages.length === 0) return build(input.pages);
-  // Linked pages share what is left of the argument once everything else is
-  // in, in order, so a long page never makes the run fail to start.
-  const empty = input.pages.map((page) => ({ ...page, title: "", text: "", truncated: true }));
-  let budget = Math.max(0, MAX_DESIGN_MESSAGE_BYTES - Buffer.byteLength(build(empty)) - continuationReserve(input.plan));
-  const pages = input.pages.map((page, i) => {
+  const build = (pages: HandoffInput["pages"], research: HandoffInput["research"] = input.research) =>
+    `${userMessage}\n\n${buildHandoff({ ...input, pages, research })}`;
+  const hasPages = !!input.pages && input.pages.length > 0;
+  if (!hasPages && !input.research) return build(input.pages);
+  const reserve = continuationReserve(input.plan);
+  const empty = hasPages ? input.pages!.map((page) => ({ ...page, title: "", text: "", truncated: true })) : input.pages;
+  const roomWith = (research: HandoffInput["research"]) => MAX_DESIGN_MESSAGE_BYTES - Buffer.byteLength(build(empty, research)) - reserve;
+  const research = input.research ? fitResearch(input.research, (candidate) => roomWith(candidate) >= 0) : input.research;
+  if (!hasPages) return build(input.pages, research);
+  let budget = Math.max(0, roomWith(research));
+  const pages = input.pages!.map((page, i) => {
     const share = Math.floor(budget / (input.pages!.length - i));
     const fitted = fitPage(page, share);
     budget -= Buffer.byteLength(untrustedPageContent(fitted)) - Buffer.byteLength(untrustedPageContent({ ...page, title: "", text: "", truncated: true }));
     return fitted;
   });
-  return build(pages);
+  return build(pages, research);
 }
 
 /** The page, cut at a character boundary so its title and text take at most `bytes` once delimited. */

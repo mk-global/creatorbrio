@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { SourceOutcome } from "@/lib/source-retrieval";
@@ -81,6 +81,10 @@ let workdir: string;
 let originalCwd: string;
 const originalDeps = { ...run.researchDeps };
 let infoLog: string[];
+/** Every console call of the test, by level, so a severity can be asserted. */
+let logCalls: { level: "info" | "warn" | "error"; line: string }[];
+const loggedAt = (level: "info" | "warn" | "error") => logCalls.filter((c) => c.level === level).map((c) => c.line);
+const fieldsOf = (line: string) => JSON.parse(line)[1] as Record<string, unknown>;
 
 beforeEach(async () => {
   originalCwd = process.cwd();
@@ -88,10 +92,15 @@ beforeEach(async () => {
   await mkdir(path.join(workdir, "data"), { recursive: true });
   process.chdir(workdir);
   infoLog = [];
-  const record = (...args: unknown[]) => void infoLog.push(JSON.stringify(args));
-  vi.spyOn(console, "info").mockImplementation(record);
-  vi.spyOn(console, "warn").mockImplementation(record);
-  vi.spyOn(console, "error").mockImplementation(record);
+  logCalls = [];
+  const recorder = (level: "info" | "warn" | "error") => (...args: unknown[]) => {
+    const line = JSON.stringify(args);
+    infoLog.push(line);
+    logCalls.push({ level, line });
+  };
+  vi.spyOn(console, "info").mockImplementation(recorder("info"));
+  vi.spyOn(console, "warn").mockImplementation(recorder("warn"));
+  vi.spyOn(console, "error").mockImplementation(recorder("error"));
 });
 
 afterEach(async () => {
@@ -151,6 +160,19 @@ describe("Brave Search adapter", () => {
     const fake = (async () => new Response("{}", { status })) as unknown as typeof fetch;
     const provider = search.configuredSearchProvider({ [search.SEARCH_KEY_ENV]: KEY }, fake)!;
     expect(await provider.search("topic", new AbortController().signal)).toEqual({ ok: false, code });
+  });
+
+  it("answers Brave's invalid-token reply, HTTP 422 with SUBSCRIPTION_TOKEN_INVALID, as a refused key", async () => {
+    const body = JSON.stringify({
+      type: "ErrorResponse",
+      error: { id: "synthetic-id", status: 422, code: "SUBSCRIPTION_TOKEN_INVALID", detail: "The provided subscription token is invalid.", meta: { errors: [] } },
+      time: 0,
+    });
+    const fake = (async () => new Response(body, { status: 422, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+    const provider = search.configuredSearchProvider({ [search.SEARCH_KEY_ENV]: KEY }, fake)!;
+    expect(await provider.search("topic", new AbortController().signal)).toEqual({ ok: false, code: "search_key_refused" });
+    expect(infoLog.join("\n")).toContain('"status":422');
+    expect(infoLog.join("\n")).not.toContain(KEY);
   });
 
   it("answers an unreachable service, a malformed reply and an unusable key without throwing", async () => {
@@ -325,8 +347,8 @@ describe("synthesis", () => {
     expect(stdin).toContain("Topic, in the person's words: calmer evenings");
     expect(stdin.match(/<untrusted-page-content>/g)).toHaveLength(2);
     expect(stdin).toContain("## Source S2 (b.example, a link the person gave)");
-    // Its working folder is removed afterwards.
-    await expect(readFile(path.join(cwd, "anything"))).rejects.toThrow();
+    // Its working folder is removed afterwards: the folder itself, not just a file in it.
+    await expect(stat(cwd)).rejects.toThrow();
   });
 
   it("reports the spending cap, an unreadable reply and an invalid cap setting", async () => {
@@ -344,6 +366,58 @@ describe("synthesis", () => {
     await synthesis.runSynthesis(request);
     const argv: string[] = JSON.parse(await readFile(path.join(fakeDir, "argv.json"), "utf8"));
     expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+  });
+
+  it("logs every outcome once, as information when it worked and as a warning when it failed as expected", async () => {
+    await writeFile(path.join(fakeDir, "scenario"), "ok");
+    expect(await synthesis.runSynthesis(request, { carouselId: "carousel-1" })).toMatchObject({ ok: true });
+    expect(loggedAt("info")).toHaveLength(1);
+    expect(loggedAt("info")[0]).toContain("[research] synthesis finished");
+    expect(fieldsOf(loggedAt("info")[0])).toMatchObject({
+      carouselId: "carousel-1", outcome: "synthesized", costUsd: 0.04, turns: 1, budgetCapUsd: null, pages: 2, durationMs: expect.any(Number),
+    });
+    expect(loggedAt("warn")).toEqual([]);
+
+    await writeFile(path.join(fakeDir, "scenario"), "budget");
+    await synthesis.runSynthesis(request);
+    await writeFile(path.join(fakeDir, "scenario"), "garbage");
+    await synthesis.runSynthesis(request);
+    await writeFile(path.join(fakeDir, "scenario"), "ok");
+    await writeFile(path.join(fakeDir, "output.json"), JSON.stringify({ findings: "not a list" }));
+    await synthesis.runSynthesis(request);
+    // A time limit that passes before the CLI has even started.
+    await synthesis.runSynthesis(request, { timeoutMs: 1 });
+    process.env[synthesis.RESEARCH_BUDGET_ENV] = "lots";
+    await synthesis.runSynthesis(request);
+
+    expect(loggedAt("warn").map((line) => fieldsOf(line).outcome)).toEqual([
+      "budget_exceeded", "agent_failed", "invalid_output", "timed_out", "budget_setting_invalid",
+    ]);
+    expect(loggedAt("error")).toEqual([]);
+    // Codes, cost and counts only: never the topic, a page or a finding.
+    for (const text of ["calmer evenings", "half-life", "Morning light", "Caffeine stays"]) expect(infoLog.join("\n")).not.toContain(text);
+  });
+
+  it("tells a failed launch from an unexpected failure of ours, and logs only the latter as an error", async () => {
+    claudePath = path.join(fakeDir, "no-such-claude");
+    expect(await synthesis.runSynthesis(request)).toMatchObject({ ok: false, code: "start_failed" });
+    expect(loggedAt("error")).toEqual([]);
+    expect(loggedAt("warn")).toHaveLength(1);
+
+    // No temporary folder to work in: a failure of ours, which must not read as "Claude is unavailable".
+    claudePath = path.join(fakeDir, "claude.cjs");
+    const tmp = process.env.TMPDIR;
+    process.env.TMPDIR = path.join(workdir, "no-such-folder");
+    try {
+      expect(await synthesis.runSynthesis(request, { carouselId: "carousel-1" })).toMatchObject({ ok: false, code: "unexpected" });
+    } finally {
+      if (tmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = tmp;
+    }
+    expect(loggedAt("error")).toHaveLength(1);
+    expect(fieldsOf(loggedAt("error")[0])).toMatchObject({ carouselId: "carousel-1", outcome: "unexpected", err: "Error", errCode: "ENOENT" });
+    expect(loggedAt("warn")).toHaveLength(1);
+    expect(infoLog.join("\n")).not.toContain("calmer evenings");
   });
 });
 
@@ -437,7 +511,8 @@ describe("a research run", () => {
       ["S2", "https://a.example/sleep", "search"],
       ["S3", "https://a.example/two", "search"],
     ]);
-    expect(research.result!.unreadable).toEqual([{ host: "b.example", origin: "search", reason: "http_status" }]);
+    // Brave's terms forbid keeping search results: the failed search page is listed without its host.
+    expect(research.result!.unreadable).toEqual([{ host: "", origin: "search", reason: "http_status" }]);
     expect(research.result!.sources.map((s) => ({ id: s.id, kind: s.kind, reliability: s.reliability, retrievedBy: s.retrievedBy }))).toEqual(
       ["S1", "S2", "S3"].map((id) => ({ id, kind: "url", reliability: "unverified", retrievedBy: "source-retrieval" }))
     );
@@ -446,6 +521,17 @@ describe("a research run", () => {
     // Page text is never stored.
     const stored = await readFile(path.join(workdir, "data", "carousels.json"), "utf8");
     expect(stored).not.toContain("half-life of about five hours in healthy adults, so");
+    // Nor is the host of a search result that could not be read.
+    expect(stored).not.toContain("b.example");
+  });
+
+  it("keeps the host of one of the person's own links that could not be read", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    script({ pages: { "https://mine.example/a": page("https://mine.example/a", PAGE_A) } });
+    await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a", "https://gone.example/x"] });
+    const research = await settledResearch(carousel.id);
+    expect(research.state).toBe("ready");
+    expect(research.result!.unreadable).toEqual([{ host: "gone.example", origin: "link", reason: "http_status" }]);
   });
 
   it("researches from the person's links alone without a search key, and refuses to start with neither", async () => {
@@ -503,6 +589,36 @@ describe("a research run", () => {
     expect((await settledResearch(carousel.id)).state).toBe("ready");
   });
 
+  it("refuses an invalid RESEARCH_MAX_BUDGET_USD before it searches or reads anything", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    const seen = script({
+      searchUrls: ["https://a.example/sleep"],
+      pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A), "https://mine.example/a": page("https://mine.example/a", PAGE_A) },
+    });
+    process.env[synthesis.RESEARCH_BUDGET_ENV] = "lots";
+    try {
+      const refused = await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toBe(run.RESEARCH_FAILURE_MESSAGES.budget_setting_invalid);
+    } finally {
+      delete process.env[synthesis.RESEARCH_BUDGET_ENV];
+    }
+    expect(seen).toEqual({ queries: [], links: [], requests: [] });
+    expect(run.isResearching(carousel.id)).toBe(false);
+    expect(await read(carousel.id)).toBeNull();
+  });
+
+  it("refuses to start when Claude is not available, before it searches or reads anything", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    const seen = script({ searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) } });
+    run.researchDeps.claudeAvailable = () => false;
+    const refused = await start(carousel.id, { topic: "calmer evenings" });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toBe(run.RESEARCH_FAILURE_MESSAGES.claude_unavailable);
+    expect(seen).toEqual({ queries: [], links: [], requests: [] });
+    expect(await read(carousel.id)).toBeNull();
+  });
+
   it.each([
     ["search_key_refused", { searchUrls: { code: "search_key_refused" as const } }],
     ["search_rate_limited", { searchUrls: { code: "search_rate_limited" as const } }],
@@ -516,6 +632,19 @@ describe("a research run", () => {
     [
       "synthesis_failed",
       { searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) }, synthesize: async () => ({ ok: false as const, code: "invalid_output" as const, usage: { costUsd: 0.02, durationMs: 1 } }) },
+    ],
+    [
+      "budget_exceeded",
+      { searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) }, synthesize: async () => ({ ok: false as const, code: "budget_exceeded" as const, usage: { costUsd: 0.5, durationMs: 1 } }) },
+    ],
+    [
+      "claude_unavailable",
+      { searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) }, synthesize: async () => ({ ok: false as const, code: "start_failed" as const, usage: { costUsd: null, durationMs: 1 } }) },
+    ],
+    [
+      // A failure of the server's own is never reported as a Claude sign-in problem.
+      "research_failed",
+      { searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) }, synthesize: async () => ({ ok: false as const, code: "unexpected" as const, usage: { costUsd: null, durationMs: 1 } }) },
     ],
   ])("ends as failed with %s and a message, and changes nothing else", async (code, s) => {
     const carousel = await createCarousel("Evenings", "4:5");
@@ -549,6 +678,92 @@ describe("a research run", () => {
     await updateCarouselResearch(carousel.id, (current) => ({ ...current!, revision: 7, state: "running", stage: "reading", failure: undefined }));
     const research = (await read(carousel.id))!;
     expect(research).toMatchObject({ revision: 7, state: "failed", failure: { code: "interrupted" } });
+  });
+
+  it("stops a run that is still reading pages, and never starts the model", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    const seen = script({});
+    let reading = false;
+    // Retrieval that never answers: only the stop can end the run.
+    run.researchDeps.retrieveLinks = () => {
+      reading = true;
+      return new Promise<SourceOutcome[]>(() => {});
+    };
+    await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+    await vi.waitFor(() => expect(reading).toBe(true));
+    expect((await read(carousel.id))!.stage).toBe("reading");
+    expect((await cancelRoute.POST(new Request("http://localhost/x", { method: "POST" }), params(carousel.id))).status).toBe(202);
+    expect(await settledResearch(carousel.id)).toMatchObject({ state: "failed", failure: { code: "cancelled" } });
+    expect(seen.requests).toEqual([]);
+  });
+
+  it("ends as cancelled when the stop arrives after the model answered and before the result is stored", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    let answer!: () => void;
+    script({
+      searchUrls: ["https://a.example/sleep"],
+      pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) },
+      // Ignores the stop, as a model call that had already finished would.
+      synthesize: async (request) => {
+        await new Promise<void>((r) => (answer = r));
+        return { ok: true, output: synthesis.validateSynthesis(modelOutput(), request.pages)!, usage: { costUsd: 0.05, durationMs: 1 } };
+      },
+    });
+    await start(carousel.id, { topic: "calmer evenings" });
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+    expect((await cancelRoute.POST(new Request("http://localhost/x", { method: "POST" }), params(carousel.id))).status).toBe(202);
+    answer();
+    const research = await settledResearch(carousel.id);
+    expect(research).toMatchObject({ state: "failed", failure: { code: "cancelled" }, usage: { costUsd: 0.05 } });
+    expect(research.result).toBeUndefined();
+  });
+
+  it("ends as research_failed, logged as an error without the topic, when something unexpected is thrown", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    script({ searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) } });
+    run.researchDeps.retrieveLinks = async () => {
+      throw new TypeError("disk trouble while researching calmer evenings");
+    };
+    await start(carousel.id, { topic: "calmer evenings" });
+    const research = await settledResearch(carousel.id);
+    expect(research).toMatchObject({ state: "failed", failure: { code: "research_failed", message: run.RESEARCH_FAILURE_MESSAGES.research_failed } });
+    const errors = loggedAt("error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("[research] finished");
+    expect(errors[0]).toContain('"outcome":"research_failed"');
+    // The error's name, never its message.
+    expect(errors[0]).toContain('"err":"TypeError"');
+    // The run's one "finished" line is the error: it is not repeated as information.
+    expect(loggedAt("info").filter((line) => line.includes("[research] finished"))).toEqual([]);
+    expect(infoLog.join("\n")).not.toContain("calmer evenings");
+  });
+
+  it("logs one error, with the real cause, when synthesis fails unexpectedly, and the run's own line is information without an err", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    script({ searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) } });
+    // The real synthesis, with no temporary folder to work in: a failure of ours, not a failed launch.
+    run.researchDeps.synthesize = originalDeps.synthesize;
+    const tmp = process.env.TMPDIR;
+    process.env.TMPDIR = path.join(workdir, "no-such-folder");
+    let research!: CarouselResearch;
+    try {
+      await start(carousel.id, { topic: "calmer evenings" });
+      research = await settledResearch(carousel.id);
+    } finally {
+      if (tmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = tmp;
+    }
+    expect(research).toMatchObject({ state: "failed", failure: { code: "research_failed", message: run.RESEARCH_FAILURE_MESSAGES.research_failed } });
+    // One error line, the one synthesis wrote, naming the real cause; the run adds no second error.
+    const errors = loggedAt("error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("[research] synthesis finished");
+    expect(fieldsOf(errors[0])).toMatchObject({ carouselId: carousel.id, outcome: "unexpected", err: "Error", errCode: "ENOENT" });
+    const finished = loggedAt("info").filter((line) => line.includes("[research] finished"));
+    expect(finished).toHaveLength(1);
+    expect(fieldsOf(finished[0])).toMatchObject({ carouselId: carousel.id, outcome: "research_failed" });
+    expect(fieldsOf(finished[0])).not.toHaveProperty("err");
+    expect(infoLog.join("\n")).not.toContain("calmer evenings");
   });
 
   it("confirms only the latest ready revision, keeps the snapshot across a new run, and never lets a copy inherit a running run", async () => {
@@ -586,6 +801,37 @@ describe("a research run", () => {
     release();
     const second = await settledResearch(carousel.id);
     expect(second).toMatchObject({ revision: 2, state: "ready", confirmed: { revision: 1 } });
+  });
+});
+
+describe("duplicating a carousel with research", () => {
+  const confirmedOf = (revision: number) => ({
+    revision, confirmedAt: "", topic: "calmer evenings", direction: DIRECTION, edited: false, sources: [], findings: [],
+  });
+
+  it("keeps the confirmed direction but not the original's design record", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    await updateCarouselResearch(carousel.id, () => ({
+      revision: 1, topic: "calmer evenings", links: [], state: "ready", searchProvider: null, startedAt: "",
+      confirmed: confirmedOf(1), lastDesign: { revision: 1, runId: "run-1", at: "" },
+    }));
+    const copy = (await duplicateCarousel(carousel.id))!;
+    expect(copy.research).toMatchObject({ state: "ready", confirmed: { revision: 1, direction: DIRECTION } });
+    // The copy has had no design run, so it never claims the original's.
+    expect(copy.research).not.toHaveProperty("lastDesign");
+    expect((await getCarousel(copy.id))!.research).not.toHaveProperty("lastDesign");
+    expect((await getCarousel(carousel.id))!.research?.lastDesign).toMatchObject({ runId: "run-1" });
+  });
+
+  it("gives a copy no research at all when the original's run is still in progress and nothing was confirmed", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    await updateCarouselResearch(carousel.id, () => ({
+      revision: 1, topic: "calmer evenings", links: [], state: "running", stage: "reading", searchProvider: null, startedAt: "",
+    }));
+    const copy = (await duplicateCarousel(carousel.id))!;
+    expect(copy).not.toHaveProperty("research");
+    expect(await getCarousel(copy.id)).not.toHaveProperty("research");
+    expect((await getCarousel(carousel.id))!.research?.state).toBe("running");
   });
 });
 
