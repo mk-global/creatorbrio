@@ -6,6 +6,7 @@ import type {
   ResearchFailureCode,
   ResearchPageOrigin,
   ResearchStage,
+  SearchFailureCode,
   UnreadablePage,
 } from "@/types/research";
 import { getCarousel, updateCarouselResearch } from "../carousels";
@@ -399,12 +400,15 @@ async function execute(
   let outcome: ResearchFailureCode | "ready" = "research_failed";
   try {
     let searchUrls: string[] = [];
+    let searchFailure: SearchFailureCode | undefined;
     if (provider) {
       usage.searchRequests++;
       const found = await provider.search(searchQuery(input.topic), signal);
       if (signal.aborted) throw new Failure("cancelled");
-      if (!found.ok) throw new Failure(found.code);
-      searchUrls = found.urls;
+      // The person's own links are worth reading even when search fails; without them there is nothing to read.
+      if (!found.ok && input.links.length === 0) throw new Failure(found.code);
+      if (!found.ok) searchFailure = found.code;
+      else searchUrls = found.urls;
       if (searchUrls.length === 0 && input.links.length === 0) throw new Failure("no_results");
       await setStage(carouselId, revision, "reading");
     }
@@ -447,7 +451,14 @@ async function execute(
         ...settledFields(current),
         state: "ready",
         finishedAt: now(),
-        result: { sources, findings: synthesis.output.findings, gaps: synthesis.output.gaps, direction: synthesis.output.direction, unreadable },
+        result: {
+          sources,
+          findings: synthesis.output.findings,
+          gaps: synthesis.output.gaps,
+          direction: synthesis.output.direction,
+          unreadable,
+          ...(searchFailure ? { searchFailure } : {}),
+        },
         usage: finish(),
       };
     });
@@ -458,6 +469,7 @@ async function execute(
       outcome,
       ...finish(),
       unreadable: unreadable.length,
+      searchFailure: searchFailure ?? null,
       findings: synthesis.output.findings.length,
       quoted: synthesis.output.findings.filter((f) => f.check === "quoted").length,
     });

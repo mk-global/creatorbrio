@@ -458,6 +458,29 @@ describe("a research run", () => {
     expect((await settledResearch(carousel.id)).state).toBe("ready");
   });
 
+  it.each(["search_key_refused", "search_rate_limited", "search_unavailable"] as const)(
+    "goes on with the person's links when search fails with %s, and records why",
+    async (code) => {
+      const carousel = await createCarousel("Evenings", "4:5");
+      const seen = script({ searchUrls: { code }, pages: { "https://mine.example/a": page("https://mine.example/a", PAGE_A) } });
+      await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+      const research = await settledResearch(carousel.id);
+      expect(research).toMatchObject({ state: "ready", usage: { searchRequests: 1, pagesRead: 1 } });
+      expect(research.result!.searchFailure).toBe(code);
+      expect(seen.links).toEqual([["https://mine.example/a"]]);
+      expect(research.result!.sources.map((s) => s.origin)).toEqual(["link"]);
+    }
+  );
+
+  it("records no search failure when search worked", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    script({ searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) } });
+    await start(carousel.id, { topic: "calmer evenings" });
+    const research = await settledResearch(carousel.id);
+    expect(research.state).toBe("ready");
+    expect(research.result).not.toHaveProperty("searchFailure");
+  });
+
   it("refuses a bad topic, too many links, a link that cannot be read, an unknown project and a second run", async () => {
     const carousel = await createCarousel("Evenings", "4:5");
     let release!: () => void;

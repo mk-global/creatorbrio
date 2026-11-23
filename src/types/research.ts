@@ -113,7 +113,14 @@ export interface ResearchResult {
   direction: ResearchDirection;
   /** Pages that could not be read; the run went on without them. */
   unreadable: UnreadablePage[];
+  /**
+   * Why web search failed when the run went on with the person's own links
+   * alone; absent when search worked or was not set up.
+   */
+  searchFailure?: SearchFailureCode;
 }
+
+export type SearchFailureCode = "search_key_refused" | "search_rate_limited" | "search_unavailable";
 
 export const RESEARCH_STAGES = ["searching", "reading", "synthesizing"] as const;
 export type ResearchStage = (typeof RESEARCH_STAGES)[number];

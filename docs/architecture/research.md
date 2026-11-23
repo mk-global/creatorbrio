@@ -31,7 +31,8 @@ flowchart TD
     P -- yes --> Y[Synthesizing: Claude, up to 5 pages]
     Y --> C[Quote check by the server]
     C --> D[Ready: sources, findings, gaps, suggested direction]
-    Q -- refused, limited, unreachable --> F
+    Q -- refused, limited, unreachable, no links --> F
+    Q -- refused, limited, unreachable, with links --> R
     Y -- failure or time limit --> F
 ```
 
@@ -49,7 +50,8 @@ The key is read from `BRAVE_SEARCH_API_KEY` in the server's environment (`.env.l
 `GET /api/status` reports only whether a key is set.
 One run makes one search request for up to 10 results.
 Brave's terms forbid keeping search results, so a result is used only for its address, transiently: no result title, description or ranking is stored or shown.
-A refused key, a rate limit or an unreachable service ends the run with its own message, each suggesting research from the person's own links instead.
+A refused key, a rate limit or an unreachable service ends a run that has no links of the person's own with its own message, each suggesting research from the person's own links instead.
+When the person gave links, the run goes on with them alone and the result records why search failed (`result.searchFailure`), so the screen never implies the web was searched.
 Without a key, research needs at least one link, and a start with neither is refused before anything runs.
 
 ### Reading pages
