@@ -27,7 +27,7 @@ import {
   startConversation,
 } from "@/lib/agent-workspace";
 import { trackRun, type TrackedRun } from "@/lib/agent-processes";
-import { containedArgs, containedEnv, privateReadDirs, type ContainedLayout } from "@/lib/design-agent-profile";
+import { containedArgs, containedEnv, containedModelApiAddress, ModelApiAddressError, privateReadDirs, type ContainedLayout } from "@/lib/design-agent-profile";
 
 export interface ContainedLaunch {
   args: string[];
@@ -37,6 +37,8 @@ export interface ContainedLaunch {
   conversationId: string;
   /** Removes the run's token, and its sign-in token, from text the app relays or logs. */
   redact: (text: string) => string;
+  /** The length of the longest secret `redact` removes: text cut anywhere inside that length from its end may hold the start of one. */
+  secretLength: number;
   /**
    * Starts tracking the spawned CLI's processes; `abort` ends the run as a
    * stop does, and `unreaped` says the server has not yet reaped the CLI.
@@ -74,6 +76,9 @@ export async function prepareContainedLaunch(options: {
   // Its own sign-in first (#246), so a launch without one changes nothing.
   const signIn = await agentSignIn({ env, repoDir, dataDir, workspaceRoot: agentWorkspaceRoot(env), tempRoot: serverTempRoot(process.platform, uid) });
   if (!signIn.ok) throw new AgentSignInError(signIn);
+  // And its model API setting, which must be valid before anything is made, since that is where its token is sent.
+  const modelApi = containedModelApiAddress(env);
+  if (!modelApi.ok) throw new ModelApiAddressError(modelApi);
   // A resumed conversation keeps its folder. A new one starts in a new folder,
   // and the earlier conversations' folders and sessions go: the server's side
   // of the person clearing the chat.
@@ -131,6 +136,7 @@ export async function prepareContainedLaunch(options: {
       conversationId: path.basename(workDir),
       // The sign-in token never reaches the agent; it is redacted too, should the CLI ever print it.
       redact: (text) => [token, signIn.token].reduce((t, secret) => (t.includes(secret) ? t.split(secret).join("[redacted]") : t), text),
+      secretLength: Math.max(token.length, signIn.token.length),
       track: (pid, abort, unreaped) => {
         tracked ??= trackRun({ leaderPid: pid, folders: [workDir, stagingDir, tempDir], abort, leaderUnreaped: unreaped });
       },

@@ -7,6 +7,12 @@
  * in it. A run whose runner was killed before its end is cleaned up by the
  * next run. See tests/helpers/browser-census.ts.
  *
+ * It also gives the whole run a synthetic home (#246): HOME and USERPROFILE
+ * name a folder made for the run and removed at its end, so no test, and no
+ * product code a test calls, reads the person's real home, such as a token,
+ * a sign-in or a configuration file. Only the browser a developer already
+ * installed stays reachable, through its own cache setting.
+ *
  * Before the suite runs in CI, it also makes sure the production build the browser
  * tests start is there and current (#175). CI checks out the sources with no
  * build, and the workflow's own Build step runs after the tests, so without
@@ -15,11 +21,70 @@
  * run never rewrites a developer's `.next` folder behind their back.
  */
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { builtAppMissing } from "./helpers/studio-app";
 import { censusAvailable, createTestRun, endAbandonedRuns, endTestRun } from "./helpers/browser-census";
 
-export default async function setup(): Promise<(() => Promise<void>) | void> {
+export default async function setup(): Promise<() => Promise<void>> {
+  const removeHome = makeSyntheticHome();
+  let teardown: (() => Promise<void>) | void;
+  try {
+    teardown = await setUpBrowserRun();
+  } catch (error) {
+    removeHome();
+    throw error;
+  }
+  return async () => {
+    try {
+      if (teardown) await teardown();
+    } finally {
+      removeHome();
+    }
+  };
+}
+
+/**
+ * Points HOME and USERPROFILE, which the test workers inherit, at a new folder
+ * directly under the system's temporary one, short like the Design Agent's own
+ * temporary parents (tests/setup/server-temp-root.ts) so that a path inside it
+ * fits the CLI's path limit. Returns what removes the folder.
+ */
+function makeSyntheticHome(): () => void {
+  // The browser a developer installed lives in the home's cache, and would be lost with it.
+  if (!process.env.PUPPETEER_CACHE_DIR) process.env.PUPPETEER_CACHE_DIR = path.join(homedir(), ".cache", "puppeteer");
+  const base = realpathSync(process.platform === "win32" ? tmpdir() : "/tmp");
+  const home = path.join(base, `cbh-${randomBytes(4).toString("hex")}`);
+  mkdirSync(home, { mode: 0o700 });
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  return () => {
+    for (const attempt of [0, 1]) {
+      try {
+        rmSync(home, { recursive: true, force: true });
+        return;
+      } catch {
+        // A test may have left a folder it made unremovable: make everything removable once, then try again.
+        if (attempt === 0) makeRemovable(home);
+      }
+    }
+  };
+}
+
+function makeRemovable(dir: string): void {
+  try {
+    chmodSync(dir, 0o700);
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) makeRemovable(path.join(dir, entry.name));
+    }
+  } catch {
+    // Left as it is; the removal reports nothing and the folder, empty of anything private, stays under the system's temporary one.
+  }
+}
+
+async function setUpBrowserRun(): Promise<(() => Promise<void>) | void> {
   if (!censusAvailable) return buildForCi();
   const abandoned = await endAbandonedRuns();
   if (abandoned.runs > 0) {

@@ -8,9 +8,10 @@
  * Windows and WSL2 are reported unavailable.
  *
  * It also needs this server to own the data folder and the agent folders
- * (`src/lib/contained-server.ts`) and the contained CLI's own sign-in token
- * (`src/lib/agent-sign-in.ts`); without either it is unavailable, with what
- * to do.
+ * (`src/lib/contained-server.ts`), the contained CLI's own sign-in token
+ * (`src/lib/agent-sign-in.ts`) and, when one is set, a valid model API
+ * address for it (`containedModelApiAddress`); without any of them it is
+ * unavailable, with what to do.
  *
  * The CLI version is checked once per CLI path: one older than the sandbox's
  * `strictAllowlist` is refused, and one other than the tested version runs
@@ -23,7 +24,7 @@ import path from "node:path";
 import { agentSignIn } from "@/lib/agent-sign-in";
 import { agentWorkspaceRoot, serverTempRoot } from "@/lib/agent-workspace";
 import { containedServerStatus } from "@/lib/contained-server";
-import { CONTAINED_PROFILE, compareCliVersions } from "@/lib/design-agent-profile";
+import { CONTAINED_PROFILE, compareCliVersions, containedModelApiAddress } from "@/lib/design-agent-profile";
 
 export type Availability =
   | { available: true; cliVersion: string; versionWarning: string | null }
@@ -69,7 +70,7 @@ export function platformAvailability(facts: HostFacts): { ok: true } | { ok: fal
     return {
       ok: false,
       reason: "The contained Design Agent is not available on Windows.",
-      guidance: "Run CreatorBrio on macOS, the platform the contained Design Agent is qualified on first.",
+      guidance: "Run CreatorBrio on macOS, the contained Design Agent's first activation platform.",
     };
   }
   if (facts.platform === "linux") {
@@ -77,7 +78,7 @@ export function platformAvailability(facts: HostFacts): { ok: true } | { ok: fal
       return {
         ok: false,
         reason: "The contained Design Agent has not been tested on WSL2.",
-        guidance: "Run CreatorBrio on macOS, the platform the contained Design Agent is qualified on first.",
+        guidance: "Run CreatorBrio on macOS, the contained Design Agent's first activation platform.",
       };
     }
     const missing = ["bwrap", "socat"].filter((p) => !facts.has(p));
@@ -93,7 +94,7 @@ export function platformAvailability(facts: HostFacts): { ok: true } | { ok: fal
   return {
     ok: false,
     reason: `The contained Design Agent is not available on ${facts.platform}.`,
-    guidance: "Run CreatorBrio on macOS, the platform the contained Design Agent is qualified on first.",
+    guidance: "Run CreatorBrio on macOS, the contained Design Agent's first activation platform.",
   };
 }
 
@@ -151,19 +152,26 @@ export async function signInAvailability(env: Record<string, string | undefined>
   return signIn.ok ? { ok: true } : signIn;
 }
 
+/** Whether the contained CLI's model API setting, when there is one, is usable: the same refusal a launch would give. */
+export async function modelApiAvailability(env: Record<string, string | undefined> = process.env): Promise<{ ok: true } | { ok: false; reason: string; guidance: string }> {
+  const address = containedModelApiAddress(env);
+  return address.ok ? { ok: true } : address;
+}
+
 /** What the availability check asks besides the platform and the CLI's version; replaced in tests. */
 export interface AvailabilityChecks {
   server: () => Promise<{ ok: true } | { ok: false; reason: string; guidance: string }>;
   signIn: () => Promise<{ ok: true } | { ok: false; reason: string; guidance: string }>;
+  modelApi: () => Promise<{ ok: true } | { ok: false; reason: string; guidance: string }>;
 }
 
-const DEFAULT_CHECKS: AvailabilityChecks = { server: containedServerStatus, signIn: () => signInAvailability() };
+const DEFAULT_CHECKS: AvailabilityChecks = { server: containedServerStatus, signIn: () => signInAvailability(), modelApi: () => modelApiAvailability() };
 
-/** The platform, then this server's ownership of its folders, then the sign-in token, then the CLI's version: the first that fails is the answer. */
+/** The platform, then this server's ownership of its folders, then the sign-in token, then the model API setting, then the CLI's version: the first that fails is the answer. */
 export async function containedAvailability(claudePath: string, facts: HostFacts = hostFacts(), checks: AvailabilityChecks = DEFAULT_CHECKS): Promise<Availability> {
   const host = platformAvailability(facts);
   if (!host.ok) return { available: false, reason: host.reason, guidance: host.guidance };
-  for (const check of [checks.server, checks.signIn]) {
+  for (const check of [checks.server, checks.signIn, checks.modelApi]) {
     const result = await check();
     if (!result.ok) return { available: false, reason: result.reason, guidance: result.guidance };
   }

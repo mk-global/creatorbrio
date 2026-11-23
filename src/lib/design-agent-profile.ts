@@ -19,7 +19,8 @@
  *   anything not allowed is refused: the subprocess credential scrub makes the
  *   CLI replace the requested `dontAsk` mode with `default`, and a headless run
  *   in `default` mode refuses every tool use that would need approval, as the
- *   stand-in qualification's file-tools check measures;
+ *   product-read arm of the stand-in network proof recorded for one `Read` on
+ *   macOS (no Linux evidence is claimed for it);
  * - Claude Code's sandbox for the shell, required (`failIfUnavailable`), with
  *   no unsandboxed escape hatch, a strict network allowlist naming only the
  *   run's listener port, the home folder, repository and data folder
@@ -35,7 +36,10 @@
  *   denied to the shell and the `Read` tool by name; no other credential
  *   reaches the CLI (#246);
  * - an explicit environment allowlist, plus the run's own short temporary
- *   folder and the listener token.
+ *   folder and the listener token, and a model API address only from the
+ *   CreatorBrio setting that names one (`containedModelApiAddress`), never
+ *   the server's own `ANTHROPIC_BASE_URL`, which would send the contained
+ *   CLI's dedicated token wherever the person's own Claude Code points.
  *
  * This is risk reduction under the vendor's sandbox and permission rules, not
  * an operating-system account boundary. See docs/architecture/design-agent.md.
@@ -278,14 +282,19 @@ export function containedArgs(options: {
 }
 
 /**
- * The variables the CLI process may inherit: what the model endpoint, an
- * operator's outbound proxy and certificates, locale and `PATH` need.
- * Everything else in the app's environment, including its own secrets and
- * settings, stays out of the agent's process, and so does every credential:
- * the contained CLI signs in only with its own token (#246), never with an API
- * key, sign-in token or other credential the server happens to hold. `HOME`
- * is replaced by the server-owned home, and the CLI's configuration folder is
- * never passed (`containedEnv`).
+ * The variables the CLI process may inherit: what an operator's outbound proxy
+ * and certificates, locale and `PATH` need. Everything else in the app's
+ * environment, including its own secrets and settings, stays out of the
+ * agent's process, and so does every credential: the contained CLI signs in
+ * only with its own token (#246), never with an API key, sign-in token or
+ * other credential the server happens to hold. `HOME` is replaced by the
+ * server-owned home, and the CLI's configuration folder is never passed
+ * (`containedEnv`).
+ *
+ * The model API address is deliberately not here: the server's own
+ * `ANTHROPIC_BASE_URL` is whatever the person's own Claude Code uses, often a
+ * gateway, and the contained CLI's dedicated token must not follow it. The
+ * address reaches the CLI only from `MODEL_API_URL_ENV`.
  */
 export const INHERITED_ENV = [
   "HOME",
@@ -299,7 +308,6 @@ export const INHERITED_ENV = [
   "TZ",
   "TERM",
   "TMPDIR",
-  "ANTHROPIC_BASE_URL",
   "HTTPS_PROXY",
   "HTTP_PROXY",
   "NO_PROXY",
@@ -309,6 +317,56 @@ export const INHERITED_ENV = [
   "NODE_EXTRA_CA_CERTS",
 ] as const;
 
+/**
+ * The only way the contained CLI gets a model API address (#246): an
+ * evaluation or operator setting, mapped to the CLI's `ANTHROPIC_BASE_URL`.
+ * Unset, the CLI uses its own default address.
+ */
+export const MODEL_API_URL_ENV = "CREATORBRIO_DESIGN_AGENT_API_BASE_URL";
+
+/** The model API address the contained CLI is given, or why the setting is refused; the refusal names the setting, never its value. */
+export type ModelApiAddress = { ok: true; url: string | null } | { ok: false; reason: string; guidance: string };
+
+/**
+ * Reads `MODEL_API_URL_ENV`: unset or blank is no address, anything else must
+ * be one absolute `http` or `https` address with no user name or password in
+ * it, or it is refused and no CLI starts. The value is passed as written,
+ * trimmed.
+ */
+export function containedModelApiAddress(env: Record<string, string | undefined> = process.env): ModelApiAddress {
+  const raw = env[MODEL_API_URL_ENV]?.trim() ?? "";
+  if (raw === "") return { ok: true, url: null };
+  const refuse = (what: string): ModelApiAddress => ({
+    ok: false,
+    reason: `${MODEL_API_URL_ENV} ${what}.`,
+    guidance: `Set it to one absolute http or https address with no user name or password in it, or remove it to use the CLI's own default address, then restart CreatorBrio.`,
+  });
+  // The address parser drops whitespace and control characters, so a value holding any would not be the address it was checked as.
+  if (/[\s\x00-\x1f\x7f]/.test(raw)) return refuse("is not one address");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return refuse("is not an absolute address");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return refuse("is not an http or https address");
+  if (url.username !== "" || url.password !== "") return refuse("holds a user name or password");
+  return { ok: true, url: raw };
+}
+
+/** A launch refused because the contained CLI's model API setting is invalid; its message names the setting only. */
+export class ModelApiAddressError extends Error {
+  readonly reason: string;
+  readonly guidance: string;
+
+  constructor(refusal: { reason: string; guidance: string }) {
+    super(refusal.reason);
+    this.name = "ModelApiAddressError";
+    this.reason = refusal.reason;
+    this.guidance = refusal.guidance;
+  }
+}
+
 /** The CLI's documented variable for a long-lived sign-in token from `claude setup-token`, which it never refreshes or stores. */
 export const SIGN_IN_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
@@ -316,11 +374,16 @@ export function containedEnv(
   source: Record<string, string | undefined>,
   run: { tempDir: string; token: string; home: string; signInToken: string }
 ): Record<string, string> {
+  // Refused before any variable is built, so no caller can start a CLI with an address that was never checked.
+  const api = containedModelApiAddress(source);
+  if (!api.ok) throw new ModelApiAddressError(api);
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV) {
     const value = source[name];
     if (typeof value === "string" && value !== "") env[name] = value;
   }
+  // The CreatorBrio setting only: the server's own `ANTHROPIC_BASE_URL` is never inherited.
+  if (api.url !== null) env.ANTHROPIC_BASE_URL = api.url;
   // The server-owned home: no shell startup file of the person's, and the CLI's own state kept apart from theirs.
   env.HOME = run.home;
   // Its own sign-in, read by the server from its file (#246); the CLI's own

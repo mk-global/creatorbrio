@@ -30,14 +30,27 @@
  * server that took both records checks them once more a moment later and, if
  * one is no longer its own, gives back the other and tries again; and each
  * server checks, whenever it is asked, that its records are still the ones in
- * place. A record in place names one server, so at most one ever acts as the
- * owner.
+ * place: at the start of every design, again immediately before the launch
+ * (planning can take minutes, and a record or the folders setting can change
+ * meanwhile), and on every contained deletion. Exclusive creation guarantees one owner of a record that is created
+ * where none was; the takeover of a stale record, with three or more servers
+ * starting at once after a crash, is made safe by those checks and not fully
+ * excluded (accepted).
+ *
+ * The folders are bound to the ones claimed: the data folder's and the agent
+ * folders' real paths are kept, and a server whose settings now name other
+ * folders is refused, as one that never claimed them is, until it is restarted
+ * (`containedServerStatus`), so what it owns is what it deletes in.
+ *
+ * Both events are logged without a path: a stale record taken over (the folder
+ * and the previous process id), and this server's own record found replaced.
  *
  * This is no distributed lock: both folders are local, and the records only
- * keep a second server on the same computer out.
+ * keep a second server on the same computer out. A legacy-profile server takes
+ * no record and is not excluded.
  */
 import { constants, lstatSync, readFileSync, unlinkSync } from "node:fs";
-import { link, mkdir, open, rename, unlink } from "node:fs/promises";
+import { link, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { defaultProbe, onServerShutdown, type ProcessProbe } from "@/lib/agent-processes";
@@ -74,10 +87,13 @@ interface HeldRecord {
   dev: number;
   ino: number;
   body: string;
+  /** Which folder's record it is, once a claim of both folders names it. */
+  folder?: OwnedFolder;
 }
 
 export type RecordClaim =
-  | { owned: true; record: HeldRecord }
+  /** `tookOver` is the server whose stale record this claim replaced, when it replaced one. */
+  | { owned: true; record: HeldRecord; tookOver?: ServerIdentity }
   | { owned: false; holder: ServerIdentity | null; problem: "held" | "not-a-record" | "contended" };
 
 const recordBody = (self: ServerIdentity) => `${JSON.stringify({ pid: self.pid, start: self.start })}\n`;
@@ -133,6 +149,8 @@ export async function claimRecord(
   const uid = options.uid ?? process.getuid?.() ?? 0;
   const file = path.join(dir, SERVER_RECORD);
   const body = recordBody(self);
+  // The server whose stale record this call removed, which it says if the record it then creates is its own.
+  let tookOver: ServerIdentity | undefined;
   for (let attempt = 0; attempt < (options.attempts ?? 8); attempt++) {
     // Created whole: a complete private file, linked into place only if no record is there.
     const draft = path.join(dir, `${SERVER_RECORD}.${self.pid}.${randomUUID()}`);
@@ -161,7 +179,7 @@ export async function claimRecord(
       // Verified after creating: the file in place is the one this call made.
       const now = await readRecord(file, uid);
       if (now !== null && now !== "not-a-record" && now.dev === created.dev && now.ino === created.ino && now.text === body) {
-        return { owned: true, record: { file, dev: created.dev, ino: created.ino, body } };
+        return { owned: true, record: { file, dev: created.dev, ino: created.ino, body }, ...(tookOver ? { tookOver } : {}) };
       }
       continue;
     }
@@ -182,6 +200,7 @@ export async function claimRecord(
     const moved = await readRecord(aside, uid);
     if (moved !== null && moved !== "not-a-record" && moved.text === held.text) {
       await unlink(aside).catch(() => {});
+      tookOver = held.holder;
       continue;
     }
     // Another taker replaced the stale record first: its record goes back, unless a record is in place again.
@@ -218,7 +237,24 @@ export interface ServerRefusal {
   guidance: string;
 }
 
-type Ownership = { owned: true; records: HeldRecord[] } | ({ owned: false; log: Record<string, unknown> } & Omit<ServerRefusal, "ok">);
+/** The real paths of the two folders a server took charge of. */
+interface ClaimedFolders {
+  dataDir: string;
+  agentsRoot: string;
+}
+
+type Ownership =
+  | {
+      owned: true;
+      records: HeldRecord[];
+      /** The folders the records are in, which this server owns and deletes in. */
+      folders: ClaimedFolders;
+      /** Where the settings name the two folders now, as the claim read them, or null when either cannot be resolved. */
+      resolve: () => Promise<ClaimedFolders | null>;
+      /** Whether the replaced record was already logged, so a request-by-request check logs it once. */
+      replacedLogged: boolean;
+    }
+  | ({ owned: false; log: Record<string, unknown> } & Omit<ServerRefusal, "ok">);
 
 const STATE_KEY = Symbol.for("creatorbrio.contained-server");
 
@@ -289,6 +325,18 @@ export async function claimContainedServer(options: {
     const dataDir = options.dataDir ?? path.resolve(repoDir, "data");
     await mkdir(dataDir, { recursive: true });
     const agentsRoot = await resolvedRoot(options.agentsRoot ?? agentWorkspaceRoot(), repoDir);
+    // The same reading of the settings, kept to compare with later: a server whose settings were changed since it started owns other folders than the ones it would use.
+    const resolve = async (): Promise<ClaimedFolders | null> => {
+      try {
+        return {
+          dataDir: await realpath(options.dataDir ?? path.resolve(options.repoDir ?? process.cwd(), "data")),
+          agentsRoot: await realpath(options.agentsRoot ?? agentWorkspaceRoot()),
+        };
+      } catch {
+        return null;
+      }
+    };
+    const folders: ClaimedFolders = { dataDir: await realpath(dataDir), agentsRoot };
     const probe = options.probe ?? defaultProbe();
     const running = async (holder: ServerIdentity) => {
       const starts = new Map((await probe.list().catch(() => [])).map((p) => [p.pid, p.start]));
@@ -310,14 +358,15 @@ export async function claimContainedServer(options: {
           final = claim.problem === "not-a-record" || (folder === "data" && claim.problem === "held");
           break;
         }
-        records.push(claim.record);
+        if (claim.tookOver) console.info("[design-agent] took over a stale ownership record", { folder, previousPid: claim.tookOver.pid });
+        records.push({ ...claim.record, folder });
       }
       if (final) break;
       if (records.length === 0) continue;
       // Settled: only a server whose records are still both its own a moment later owns the folders.
       await sleep(settleMs);
       if (records.every(stillHeld)) {
-        store.current = { owned: true, records: [...records] };
+        store.current = { owned: true, records: [...records], folders, resolve, replacedLogged: false };
         onServerShutdown(releaseContainedServer);
         return { owned: true };
       }
@@ -359,11 +408,26 @@ export async function containedServerStatus(): Promise<{ ok: true } | ServerRefu
     };
   }
   if (!current.owned) return { ok: false, reason: current.reason, guidance: current.guidance };
-  if (!current.records.every(stillHeld)) {
+  const replaced = current.records.filter((record) => !stillHeld(record));
+  if (replaced.length > 0) {
+    // Read on every request, so it is said once.
+    if (!current.replacedLogged) {
+      current.replacedLogged = true;
+      console.warn("[design-agent] this server's ownership record was replaced, so it no longer runs contained designs or deletes projects", { folders: replaced.map((record) => record.folder ?? "unknown") });
+    }
     return {
       ok: false,
       reason: "This server's ownership record for the contained Design Agent's folders was replaced, so it no longer runs designs or deletes projects.",
       guidance: "Stop every CreatorBrio server using these folders, then start one.",
+    };
+  }
+  // The records are in the folders claimed at start; a design or a deletion works in the folders the settings name now.
+  const now = await current.resolve();
+  if (now === null || now.dataDir !== current.folders.dataDir || now.agentsRoot !== current.folders.agentsRoot) {
+    return {
+      ok: false,
+      reason: "The data folder or the Design Agent's folders are no longer the ones this server took charge of when it started, so it no longer runs designs or deletes projects.",
+      guidance: "Restart CreatorBrio after changing CREATORBRIO_DESIGN_AGENT_WORKSPACES, or change the setting back.",
     };
   }
   return { ok: true };

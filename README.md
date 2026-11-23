@@ -99,9 +99,17 @@ macOS is the platform it is being activated on first.
 On Linux it runs with **bubblewrap and socat** installed (for example `sudo apt install bubblewrap socat`), but it is unsupported there, because Claude Code's sandbox leaves the shared temporary folders writable on Linux; Debian 12 is the only Linux it has been tested on.
 It is not available on native Windows or WSL2, which have not been tested.
 It has been tested on Claude Code 2.1.328, refuses versions older than 2.1.219, and warns about any other version.
-It signs in with a Claude Code token of its own, never your Claude Code sign-in: run `claude setup-token`, save the token it prints, alone, in `~/.creatorbrio/design-agent-token` (or the absolute path `CREATORBRIO_DESIGN_AGENT_TOKEN_FILE` names), and `chmod 600` it; the token lasts a year.
-Only one CreatorBrio server at a time can run the contained agent over the same data folder and agent folders.
-`npm run doctor` checks the platform, the sandbox prerequisites, the version and the token file, without printing the token.
+The contained Design Agent signs in with a separate token made from your Claude account, which counts against its usage, and not with your Claude Code sign-in.
+Planning (the Visual Director) still uses your own Claude Code sign-in, so Claude Code must also be installed and signed in once in a terminal, and the planner shares your normal sign-in storage and locks.
+Make the Design Agent's token with `claude setup-token`, save the token it prints, alone, in `~/.creatorbrio/design-agent-token` (or the absolute path `CREATORBRIO_DESIGN_AGENT_TOKEN_FILE` names), and `chmod 600` it; the token lasts a year.
+CreatorBrio checks the token file, not that the token is still valid.
+It never uses the `ANTHROPIC_BASE_URL` your own Claude Code uses, so its token is not sent wherever that points.
+`CREATORBRIO_DESIGN_AGENT_API_BASE_URL` in `.env.local` is an evaluation and operator setting that gives it a model API address of its own: one absolute `http` or `https` address with no user name or password in it, or unset for the CLI's default.
+A plain `http` address that is not on this computer sends the token unencrypted.
+`HTTPS_PROXY` is still passed on and is a deliberate operator choice: an HTTPS proxy alone can see the token when its certificate authority is trusted by the system.
+A managed policy settings file on the computer can name a key helper or set the model address, and the profile does not close that.
+Only one CreatorBrio server at a time can run the contained agent over the same data folder and agent folders, and a legacy-profile server over the same folders is not kept out.
+`npm run doctor` checks the platform, the sandbox prerequisites, the version, the token file and the model API setting, without printing the token.
 
 ### Install and start
 

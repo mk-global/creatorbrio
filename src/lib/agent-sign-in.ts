@@ -2,22 +2,25 @@
  * The contained Design Agent's own sign-in (#246).
  *
  * The contained CLI signs in with a long-lived token of its own, created by
- * `claude setup-token`, which the CLI neither refreshes nor stores. The server
+ * `claude setup-token`, which, as documented, the CLI neither refreshes nor
+ * stores. The server
  * reads it from one owner-only file outside the repository, the data folder
  * and the agent's folders, and passes it to the CLI as
  * `CLAUDE_CODE_OAUTH_TOKEN` (`containedEnv`); the CLI's environment scrub
  * keeps it out of the agent's shell, and the profile denies the shell and the
  * `Read` tool the file by name. Nothing else signs the contained CLI in: no
  * credential from the server's environment, and neither the person's keychain
- * nor their credentials file, so a contained run never shares, refreshes or
- * changes the person's own Claude Code sign-in.
+ * nor their credentials file, so a contained run is designed never to share,
+ * refresh or change the person's own Claude Code sign-in. Planning (the Visual Director)
+ * is not contained and still uses that sign-in, with its storage and locks.
  *
  * The file is `~/.creatorbrio/design-agent-token`, beside the agent folders'
  * default root and inside the home folder the profile read-denies, or the
  * absolute path `CREATORBRIO_DESIGN_AGENT_TOKEN_FILE` names. It must be a
- * regular file, never a link, owned by the person running the server, with no
- * group or other access; it is read without following a link, and one
- * trailing newline is dropped. The token is never logged, printed or placed in
+ * regular file with one name only (no other hard link, which would be a second
+ * path to the token that no check here covers), never a symbolic link, owned by
+ * the person running the server, with no group or other access; it is read
+ * without following a link, and one trailing newline is dropped. The token is never logged, printed or placed in
  * a message: every refusal names the file only as the person configured it.
  */
 import { constants } from "node:fs";
@@ -136,6 +139,12 @@ export async function readAgentToken(input: {
   try {
     const info = await handle.stat();
     if (!info.isFile()) return refuse(`The Design Agent's sign-in token file, ${where}, is not a regular file.`);
+    if (info.nlink !== 1) {
+      return refuse(
+        `The Design Agent's sign-in token file, ${where}, has more than one name (a hard link), so the token can also be reached by another path.`,
+        `Save the token in a new file of its own and remove the other names. ${guidance}`
+      );
+    }
     if (info.uid !== input.uid) return refuse(`The Design Agent's sign-in token file, ${where}, belongs to another account.`);
     if ((info.mode & 0o077) !== 0) {
       return refuse(`The Design Agent's sign-in token file, ${where}, can be read or changed by other accounts.`, `Make it readable only by you (\`chmod 600\`), then run \`npm run doctor\`.`);

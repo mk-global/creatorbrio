@@ -1,8 +1,9 @@
 /**
  * A loopback stand-in for the Messages API (#237).
  *
- * The real Claude CLI runs against it with `ANTHROPIC_BASE_URL` pointing here
- * and a dummy API key, so its tools, permissions, sandbox and sessions are
+ * The real Claude CLI runs against it with its model API address pointing here
+ * (`ANTHROPIC_BASE_URL`, which the contained profile takes only from
+ * CreatorBrio's own setting, `STAND_IN_MODEL_API_SETTING`) and a dummy API key, so its tools, permissions, sandbox and sessions are
  * exercised exactly as shipped, with no model, no spend and no credential.
  * It answers the CLI's main loop (a request that offers Bash or Read) with the
  * scripted tool calls in order, one per turn, then a final text reply; any
@@ -25,6 +26,13 @@ import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 
 export const STAND_IN_API_KEY = "sk-ant-api03-creatorbrio-stand-in-dummy";
+
+/**
+ * The setting the contained profile maps to the CLI's `ANTHROPIC_BASE_URL`
+ * (`MODEL_API_URL_ENV` in `src/lib/design-agent-profile.ts`, which a test keeps
+ * equal to this; the stand-in imports nothing of the app's).
+ */
+export const STAND_IN_MODEL_API_SETTING = "CREATORBRIO_DESIGN_AGENT_API_BASE_URL";
 
 export interface ScriptedCall {
   name: string;
@@ -114,7 +122,12 @@ export function scriptCallsMade(messages: readonly { role?: string; content?: un
   return n;
 }
 
-/** A stand-in answers at most this many main-loop requests per script, so a CLI that loops cannot run unattended. */
+/**
+ * A stand-in answers at most this many main-loop requests per script, so a CLI that loops cannot run unattended.
+ * It issues one scripted call per request, so a script of more calls than this was cut short at this many, the
+ * calls after them never issued: `setScript` refuses such a script instead (measured on 2026-11-22: a 70-call
+ * script was answered 64 times and its last six calls were never made).
+ */
 export const MAX_REQUESTS_PER_SCRIPT = 64;
 
 export async function startStandIn(markers: readonly string[] = []): Promise<StandIn> {
@@ -197,6 +210,9 @@ export async function startStandIn(markers: readonly string[] = []): Promise<Sta
     port: (server.address() as { port: number }).port,
     requests,
     setScript: (calls) => {
+      if (calls.length > MAX_REQUESTS_PER_SCRIPT) {
+        throw new Error(`The stand-in serves at most ${MAX_REQUESTS_PER_SCRIPT} scripted calls per script, one per request, and this script has ${calls.length}: the calls after the ${MAX_REQUESTS_PER_SCRIPT}th would never be made.`);
+      }
       script = calls;
       generation++;
       answered = 0;
@@ -208,9 +224,16 @@ export async function startStandIn(markers: readonly string[] = []): Promise<Sta
   };
 }
 
-/** The CLI's environment additions for a stand-in run: the loopback address and the dummy key, and no sign-in. */
+/**
+ * The CLI's environment additions for a stand-in run: the loopback address,
+ * under the CLI's own name for the launches the harness starts directly (the
+ * legacy launch and the controls) and under CreatorBrio's setting, which is
+ * the only way the contained profile gives its CLI an address, and the dummy
+ * key, and no sign-in.
+ */
 export function standInEnv(env: NodeJS.ProcessEnv, port: number): NodeJS.ProcessEnv {
-  const next: NodeJS.ProcessEnv = { ...env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: STAND_IN_API_KEY };
+  const address = `http://127.0.0.1:${port}`;
+  const next: NodeJS.ProcessEnv = { ...env, ANTHROPIC_BASE_URL: address, [STAND_IN_MODEL_API_SETTING]: address, ANTHROPIC_API_KEY: STAND_IN_API_KEY };
   delete next.CLAUDE_CODE_OAUTH_TOKEN;
   delete next.ANTHROPIC_AUTH_TOKEN;
   return next;

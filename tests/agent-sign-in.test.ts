@@ -5,7 +5,7 @@
  * do and names neither the file's path nor the token.
  */
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -84,6 +84,20 @@ describe("reading the token", () => {
     await chmod(file, 0o400);
     expect(await read()).toMatchObject({ ok: true });
     expect(refusal(await read({ uid: uid + 1 })).reason).toMatch(/belongs to another account/);
+  });
+
+  it("refuses a file with more than one hard link, without naming either path, and accepts it again once it has one name (#246)", async () => {
+    await writeFile(file, TOKEN, { mode: 0o600 });
+    const other = path.join(base, "another-name");
+    await link(file, other);
+    const refused = refusal(await read());
+    expect(refused.reason).toMatch(/more than one name \(a hard link\)/);
+    expect(refused.guidance).toMatch(/new file of its own.*claude setup-token/);
+    expect(refusal(await read({ configured: false })).reason).toContain(DEFAULT_TOKEN_FILE_SHOWN);
+    // Whichever name is configured, the other one is just as much a path to the token.
+    expect(refusal(await read({ file: other })).reason).toMatch(/more than one name/);
+    await rm(other);
+    expect(await read()).toEqual({ ok: true, token: TOKEN, file });
   });
 
   it("refuses a link, never reading or changing what it points to", async () => {

@@ -8,6 +8,9 @@
 import { installShutdownHook } from "../../../src/lib/agent-processes";
 import { claimContainedServer, containedServerStatus } from "../../../src/lib/contained-server";
 
+// Standard output carries the one JSON line below, so informational logs, such as a stale record's takeover, go to standard error.
+console.info = console.error;
+
 const [dataDir, agentsRoot, repoDir, startAt] = process.argv.slice(2);
 const wait = Number(startAt) - Date.now();
 if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));

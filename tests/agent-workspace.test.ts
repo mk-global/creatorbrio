@@ -239,6 +239,54 @@ describe("the contained CLI's server-owned home (#242)", () => {
     expect(await readdir(path.join(dir, "Library"))).toEqual(["Caches"]);
   });
 
+  it("accepts a Library the CLI made with its own umask, holding Caches, and still refuses a Library that is a link (#246)", async () => {
+    const dir = await prepare();
+    const library = path.join(dir, "Library");
+    // As the CLI makes it: group and other readable, holding the cache folder it keeps there.
+    await mkdir(path.join(library, "Caches"), { recursive: true });
+    await chmod(library, 0o755);
+    await chmod(path.join(library, "Caches"), 0o755);
+    expect((await stat(library)).mode & 0o777).toBe(0o755);
+    // Every launch after it still starts, and keeps what the CLI put there.
+    await expect(prepare()).resolves.toBe(dir);
+    await expect(prepare()).resolves.toBe(dir);
+    expect(await readdir(library)).toEqual(["Caches"]);
+    expect((await stat(library)).mode & 0o777).toBe(0o755);
+    // The server's own link still goes from such a Library, and only the link.
+    const keychains = path.join(person(), "Library", "Keychains");
+    await mkdir(keychains, { recursive: true });
+    await symlink(keychains, path.join(library, "Keychains"));
+    await expect(prepare()).resolves.toBe(dir);
+    expect(await readdir(library)).toEqual(["Caches"]);
+    expect(await readdir(keychains)).toEqual([]);
+    // A Library that is a link, whatever it points to, is refused and left as it is.
+    await rm(library, { recursive: true });
+    await mkdir(path.join(base, "other-library"), { mode: 0o755 });
+    await symlink(path.join(base, "other-library"), library);
+    await expect(prepare()).rejects.toThrow(/Library is not a folder the server made/);
+    expect(await readlink(library)).toBe(path.join(base, "other-library"));
+    expect(await readdir(path.join(base, "other-library"))).toEqual([]);
+  });
+
+  it("tells a person to remove only the offending link or the home folder, never a command that could reach into what a link points to (#246)", async () => {
+    const dir = await prepare();
+    const library = path.join(dir, "Library");
+    await mkdir(library, { mode: 0o700 });
+    await symlink(path.join(base, "elsewhere"), path.join(library, "Keychains"));
+    const keychainRefusal = (await prepare().catch((err: unknown) => err)) as Error;
+    await rm(path.join(library, "Keychains"));
+    await rm(library, { recursive: true });
+    await symlink(path.join(base, "other-library"), library);
+    const libraryRefusal = (await prepare().catch((err: unknown) => err)) as Error;
+    for (const refusal of [keychainRefusal, libraryRefusal]) {
+      expect(refusal).toBeInstanceOf(AgentWorkspaceError);
+      expect(refusal.message).toMatch(/Remove only that (link|link or folder) itself, never what (it|a link) points to, or remove the Design Agent's home folder/);
+      // No command a shell could complete into the target's contents, and no path.
+      expect(refusal.message).not.toMatch(/\brm\b|\*|`/);
+      expect(refusal.message).not.toContain(base);
+    }
+  });
+
   it("refuses any other entry in the keychain link's place, and never follows, replaces or removes it", async () => {
     const dir = await prepare();
     const library = path.join(dir, "Library");

@@ -123,6 +123,13 @@ A run whose runner was killed before its end, for example with `kill -9`, is cle
 A suite that launches its own browser closes it in its own `afterAll` or `finally`; one launched with its own `userDataDir` is outside the census.
 The census reads processes with `ps`, so it runs on macOS and Linux; on Windows, which is untested, a test run has none.
 
+### The tests' home
+
+`tests/global-setup.ts` also points `HOME` and `USERPROFILE` at a new folder under the system temporary folder for the whole run, and removes it at the end.
+So no test, and no product code a test calls, reads a real token, sign-in or configuration file from your own home; `tests/test-home.test.ts` checks it.
+A browser you installed for Puppeteer stays reachable, because the run sets `PUPPETEER_CACHE_DIR` to its usual place unless you set it.
+A test that needs a file in a home writes it there itself, and `scripts/doctor.mjs` runs in the tests from the test's own folder, never from the checkout, so a `.env.local` there changes nothing.
+
 ## Changelog and release notes
 
 Pull requests never edit [`CHANGELOG.md`](../CHANGELOG.md), and nobody edits it by hand.

@@ -448,6 +448,25 @@ export function controlProblems(control: { valid: boolean; obs: Observation[] } 
   return problems;
 }
 
+/** The reads and writes whose refusal is evidence only when the run's control arm reached the same probe. */
+export const CONTROL_GATED_PROBES = [...READ_PROBES, ...WRITE_PROBES.filter((probe) => probe !== "write_work")];
+
+/**
+ * An arm's observations with every refused read or write the run's control did
+ * not itself reach set to untested: a probe that finds nothing (it aborted, a
+ * path was wrong, the platform shows nothing) reads the same as a refused one,
+ * and only the control, run unsandboxed from the same text, shows it could
+ * have found something. The control's own observations, and any other outcome,
+ * are unchanged.
+ */
+export function gateOnControl(obs: Observation[], control: Observation[] | null): Observation[] {
+  return obs.map((o) =>
+    o.outcome === "refused" && CONTROL_GATED_PROBES.includes(o.probe) && control?.find((c) => c.probe === o.probe)?.outcome !== "reached"
+      ? { probe: o.probe, outcome: "untested", evidence: `the control did not reach this probe in the same run, so its refusal proves nothing (${o.evidence})` }
+      : o
+  );
+}
+
 /** Decoy, raw TCP and Unix socket hits outside every arm's window: nobody can say which arm they belong to. */
 export function strayHits(hits: Hit[], windows: ArmWindow[]): Hit[] {
   return hits.filter((h) => h.server !== "listener" && !windows.some((w) => h.at >= w.start && h.at <= w.end));
@@ -1311,9 +1330,11 @@ async function main() {
     say(formatRunReport(problemsOfRun));
     for (const r of armRuns) {
       const readArm = isReadArm(r.arm);
-      const route = readArm ? null : routeVerdict(r.obs, { valid: r.validity.valid, runProblems: problemsOfRun });
-      const containment = readArm ? null : containmentFindings(r.obs);
-      const untested = untestedProbes(r.obs);
+      // A refused read or write counts only where the control arm reached the same probe.
+      const obs = r.arm === "control" ? r.obs : gateOnControl(r.obs, control?.obs ?? null);
+      const route = readArm ? null : routeVerdict(obs, { valid: r.validity.valid, runProblems: problemsOfRun });
+      const containment = readArm ? null : containmentFindings(obs);
+      const untested = untestedProbes(obs);
       results.push({
         arm: r.arm,
         startedAt: new Date(r.window.start).toISOString(),
@@ -1330,7 +1351,7 @@ async function main() {
         valid: r.validity.valid,
         problems: r.validity.problems,
         probeLines: r.lines.filter((l) => l.id.startsWith("env_") || ["platform", "write_tmpdir", "escape_launchd", "done"].includes(l.id)),
-        observations: r.obs,
+        observations: obs,
         route,
         containment,
         untested,

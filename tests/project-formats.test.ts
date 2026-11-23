@@ -254,7 +254,8 @@ describe("the app status", () => {
     const body = await (await statusRoute()).json();
     expect(Object.keys(body).sort()).toEqual(["claude", "designAgent", "imageGeneration"]);
     expect(typeof body.claude.available).toBe("boolean");
-    expect(typeof body.imageGeneration.configured).toBe("boolean");
+    // No image-service token exists in the run's synthetic home, so a token in the person's own home is never read (#246).
+    expect(body.imageGeneration.configured).toBe(false);
     expect(body.designAgent).toEqual({ profile: "legacy" });
     expect(JSON.stringify(body)).not.toMatch(/[/\\]|http|token/i);
   });

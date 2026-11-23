@@ -70,6 +70,8 @@ const QUALIFIED_CLI_VERSION = "2.1.328";
 const MINIMUM_CLI_VERSION = "2.1.219";
 // The setting naming the contained Design Agent's token file (src/lib/agent-sign-in.ts); a test keeps it equal.
 const TOKEN_FILE_SETTING = "CREATORBRIO_DESIGN_AGENT_TOKEN_FILE";
+// The setting that is the only model API address the contained CLI gets (src/lib/design-agent-profile.ts); a test keeps it equal.
+const MODEL_API_SETTING = "CREATORBRIO_DESIGN_AGENT_API_BASE_URL";
 
 function envLocalValue(name) {
   if (process.env[name] !== undefined) return process.env[name];
@@ -123,9 +125,11 @@ if (profile === "legacy") {
   // profile still runs, but the CLI's sandbox leaves the shared temporary
   // folders writable there, so it is unsupported.
   if (platform() === "linux") {
-    add(WARN, "Design Agent platform", "the contained profile is unsupported on Linux (its sandbox leaves the shared temporary folders writable); macOS is the platform it is qualified on");
+    add(WARN, "Design Agent platform", "the contained profile is unsupported on Linux (its sandbox leaves the shared temporary folders writable); macOS is its first activation platform");
   }
   add(...tokenFileCheck());
+  const modelApi = modelApiCheck();
+  if (modelApi) add(...modelApi);
 }
 
 // 2c. The contained Design Agent's own sign-in token file (#246), as
@@ -145,10 +149,31 @@ function tokenFileCheck() {
   }
   if (info.isSymbolicLink()) return [FAIL, "Design Agent sign-in", `${shown} is a link; replace it with the file itself`, true];
   if (!info.isFile()) return [FAIL, "Design Agent sign-in", `${shown} is not a regular file`, true];
+  if (info.nlink !== 1) return [FAIL, "Design Agent sign-in", `${shown} has more than one name (a hard link): save the token in a new file of its own and remove the other names`, true];
   if (typeof process.getuid === "function" && info.uid !== process.getuid()) return [FAIL, "Design Agent sign-in", `${shown} belongs to another account`, true];
   if ((info.mode & 0o077) !== 0) return [FAIL, "Design Agent sign-in", `${shown} is present but not private: \`chmod 600\` it`, true];
   if (info.size === 0) return [FAIL, "Design Agent sign-in", `${shown} is empty: ${make}`, true];
   return [CHECK, "Design Agent sign-in", `token file present and private (${shown})`];
+}
+
+// 2d. The contained Design Agent's model API setting, as src/lib/design-agent-profile.ts
+// reads it: unset is fine, a set one must be one absolute http or https address
+// with no user name or password. The server's own ANTHROPIC_BASE_URL never
+// reaches the contained agent. The value is never printed.
+function modelApiCheck() {
+  const raw = (envLocalValue(MODEL_API_SETTING) ?? "").trim();
+  if (!raw) return null;
+  const fail = (what) => [FAIL, "Design Agent model API", `${MODEL_API_SETTING} ${what}; use one absolute http or https address with no user name or password, or remove it`, true];
+  if (/[\s\u0000-\u001f\u007f]/.test(raw)) return fail("is not one address");
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return fail("is not an absolute address");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return fail("is not an http or https address");
+  if (url.username !== "" || url.password !== "") return fail("holds a user name or password");
+  return [INFO, "Design Agent model API", `the contained agent's token is sent to the address ${MODEL_API_SETTING} names, never to ANTHROPIC_BASE_URL`];
 }
 
 // 3. Dependencies

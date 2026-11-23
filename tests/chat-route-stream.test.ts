@@ -40,7 +40,9 @@ import path from "node:path";
 const dir = process.env.FAKE_CLAUDE_DIR;
 writeFileSync(path.join(dir, "pid"), String(process.pid));
 writeFileSync(path.join(dir, "argv.json"), JSON.stringify(process.argv.slice(2)));
-writeFileSync(path.join(dir, "env.json"), JSON.stringify(process.env));
+// Only the variables the tests below assert are written down, never the whole environment, which may hold a person's credentials (#246).
+const RECORDED = ["HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CREATORBRIO_DESIGN_AGENT_WORKSPACES", "ANTHROPIC_BASE_URL", "CREATORBRIO_DESIGN_AGENT_API_BASE_URL"];
+writeFileSync(path.join(dir, "env.json"), JSON.stringify(Object.fromEntries(RECORDED.filter((name) => name in process.env).map((name) => [name, process.env[name]]))));
 const scenario = readFileSync(path.join(dir, "scenario"), "utf8");
 const resumeAt = process.argv.indexOf("--resume");
 const requested = resumeAt === -1 ? null : process.argv[resumeAt + 1];
@@ -255,9 +257,12 @@ describe("chat errors after streaming starts (#3)", () => {
   it("starts the legacy agent with the app's whole environment, the person's home included, and makes no server-owned home (#242)", async () => {
     await play("success");
     const agents = path.join(workdir, "agent-folders");
-    const original = { workspaces: process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES, config: process.env.CLAUDE_CONFIG_DIR };
+    const original = { workspaces: process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES, config: process.env.CLAUDE_CONFIG_DIR, gateway: process.env.ANTHROPIC_BASE_URL, modelApi: process.env.CREATORBRIO_DESIGN_AGENT_API_BASE_URL };
     process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agents;
     process.env.CLAUDE_CONFIG_DIR = path.join(workdir, "person-claude-config");
+    // The person's own gateway reaches the legacy agent, which has always had it, and the contained profile's setting is just another variable here (#246).
+    process.env.ANTHROPIC_BASE_URL = "https://gateway.example.test";
+    process.env.CREATORBRIO_DESIGN_AGENT_API_BASE_URL = "http://127.0.0.1:4321";
     try {
       const carousel = await createCarousel("Legacy", "4:5");
       await readEvents(await postChat({ carouselId: carousel.id }));
@@ -266,12 +271,34 @@ describe("chat errors after streaming starts (#3)", () => {
       expect(env.CLAUDE_CONFIG_DIR).toBe(process.env.CLAUDE_CONFIG_DIR);
       expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR);
       expect(env.CREATORBRIO_DESIGN_AGENT_WORKSPACES).toBe(agents);
+      expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway.example.test");
+      expect(env.CREATORBRIO_DESIGN_AGENT_API_BASE_URL).toBe("http://127.0.0.1:4321");
       expect(existsSync(agents)).toBe(false);
     } finally {
-      for (const [name, value] of [["CREATORBRIO_DESIGN_AGENT_WORKSPACES", original.workspaces], ["CLAUDE_CONFIG_DIR", original.config]] as const) {
+      for (const [name, value] of [["CREATORBRIO_DESIGN_AGENT_WORKSPACES", original.workspaces], ["CLAUDE_CONFIG_DIR", original.config], ["ANTHROPIC_BASE_URL", original.gateway], ["CREATORBRIO_DESIGN_AGENT_API_BASE_URL", original.modelApi]] as const) {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
       }
+    }
+  });
+
+  it("writes down only the named variables the tests assert, never the whole environment (#246)", async () => {
+    await play("success");
+    // A synthetic variable standing for any credential the person's shell exports.
+    process.env.CBQ_PLANTED_SYNTHETIC = "synthetic-planted-value-0123456789";
+    try {
+      const carousel = await createCarousel("Recorded", "4:5");
+      await readEvents(await postChat({ carouselId: carousel.id }));
+      const raw = await readFile(path.join(fakeDir, "env.json"), "utf8");
+      expect(raw).not.toContain("CBQ_PLANTED_SYNTHETIC");
+      expect(raw).not.toContain("synthetic-planted-value");
+      // What the file holds is a subset of the named variables, and the ones the test asserts are there.
+      const recorded = Object.keys(JSON.parse(raw) as Record<string, string>);
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(recorded.every((name) => ["HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CREATORBRIO_DESIGN_AGENT_WORKSPACES", "ANTHROPIC_BASE_URL", "CREATORBRIO_DESIGN_AGENT_API_BASE_URL"].includes(name))).toBe(true);
+      expect(recorded).toContain("HOME");
+    } finally {
+      delete process.env.CBQ_PLANTED_SYNTHETIC;
     }
   });
 

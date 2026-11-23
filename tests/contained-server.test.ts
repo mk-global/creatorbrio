@@ -3,13 +3,15 @@
  * (#246): the ownership records, judged in one process, then with real OS
  * processes starting as contained servers do: a second server is refused, a
  * crashed server's record is taken over, and of servers starting at once,
- * over no record or over a stale one, exactly one owns the folders.
+ * over no record or over a stale one, exactly one owns the folders. The
+ * simultaneous starts are a stress test (four racers, repeated rounds), which
+ * can show a defect but is no deterministic proof of exclusion.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   claimContainedServer,
   claimRecord,
@@ -21,6 +23,7 @@ import {
   type ServerIdentity,
 } from "@/lib/contained-server";
 import { ownServerStart } from "@/lib/agent-workspace";
+import { containedAvailability } from "@/lib/design-agent-availability";
 
 const HELPERS = path.resolve(__dirname, "helpers/ts-child");
 let base: string;
@@ -154,11 +157,87 @@ describe("a contained server's ownership of its folders", () => {
     await writeFile(replacement, await readFile(path.join(agents, SERVER_RECORD)));
     await unlink(path.join(agents, SERVER_RECORD));
     await link(replacement, path.join(agents, SERVER_RECORD));
-    expect(await containedServerStatus()).toMatchObject({ ok: false, reason: expect.stringMatching(/was replaced/) });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await containedServerStatus()).toMatchObject({ ok: false, reason: expect.stringMatching(/was replaced/) });
+      // Asked on every request, it says so once: which folder, never a path.
+      expect(await containedServerStatus()).toMatchObject({ ok: false });
+      const warned = warn.mock.calls.filter(([message]) => String(message).includes("ownership record was replaced"));
+      expect(warned).toHaveLength(1);
+      expect(warned[0][1]).toEqual({ folders: ["agents"] });
+      expect(JSON.stringify(warned)).not.toContain(base);
+    } finally {
+      warn.mockRestore();
+    }
     releaseContainedServer();
     // Only its own record goes: the data folder's.
     expect(await recordIn(data)).toBeNull();
     expect(await lstat(path.join(agents, SERVER_RECORD))).toBeTruthy();
+  });
+
+  it("says when it takes over a stale record: the folder and the previous process, never a path (#246)", async () => {
+    const dead = { pid: 99_999_001, start: "Sun Nov 22 09:00:00 2026" };
+    await mkdir(agents, { recursive: true, mode: 0o700 });
+    await plant(agents, dead);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      expect(await claimContainedServer({ dataDir: data, agentsRoot: agents, repoDir: repo, alive: () => false })).toEqual({ owned: true });
+      const taken = info.mock.calls.filter(([message]) => String(message).includes("took over a stale ownership record"));
+      // Only the agent folders' record was stale; the data folder's was created.
+      expect(taken).toEqual([["[design-agent] took over a stale ownership record", { folder: "agents", previousPid: dead.pid }]]);
+      expect(JSON.stringify(taken)).not.toContain(base);
+      expect((await recordIn(agents))?.pid).toBe(process.pid);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("says nothing of a takeover when no record was stale", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      expect(await claimContainedServer({ dataDir: data, agentsRoot: agents, repoDir: repo })).toEqual({ owned: true });
+      expect(info.mock.calls.filter(([message]) => String(message).includes("stale ownership record"))).toEqual([]);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("stays bound to the folders it claimed: other folders in the settings refuse contained work and deletion until a restart, and the claimed ones restore it (#246)", async () => {
+    const setting = "CREATORBRIO_DESIGN_AGENT_WORKSPACES";
+    const original = process.env[setting];
+    const ok = async () => ({ ok: true as const });
+    const darwin = { platform: "darwin" as const, kernelRelease: null, has: () => true };
+    process.env[setting] = agents;
+    try {
+      // As the server starts it: the agent folders from the setting, which is read again whenever it is asked.
+      expect(await claimContainedServer({ dataDir: data, repoDir: repo })).toEqual({ owned: true });
+      expect(await containedServerStatus()).toEqual({ ok: true });
+      const other = path.join(base, "other-agents");
+      await mkdir(other, { mode: 0o700 });
+      process.env[setting] = other;
+      const refused = await containedServerStatus();
+      expect(refused).toMatchObject({ ok: false, reason: expect.stringMatching(/no longer the ones this server took charge of when it started/), guidance: expect.stringMatching(/Restart CreatorBrio after changing CREATORBRIO_DESIGN_AGENT_WORKSPACES/) });
+      expect(JSON.stringify(refused)).not.toContain(base);
+      // The availability check, which Home, Settings and the chat read, says the same.
+      expect(await containedAvailability("/nonexistent/claude", darwin, { server: containedServerStatus, signIn: ok, modelApi: ok })).toMatchObject({ available: false, reason: expect.stringMatching(/no longer the ones this server took charge of/) });
+      // A folder that does not exist, or a relative or unusable setting, is not the claimed one either.
+      for (const value of [path.join(base, "missing"), "relative/agents"]) {
+        process.env[setting] = value;
+        expect(await containedServerStatus(), value).toMatchObject({ ok: false, reason: expect.stringMatching(/no longer the ones/) });
+      }
+      // The same folder under another spelling is the same folder; the claimed one restores it.
+      const alias = path.join(base, "alias");
+      await symlink(agents, alias);
+      process.env[setting] = alias;
+      expect(await containedServerStatus()).toEqual({ ok: true });
+      process.env[setting] = agents;
+      expect(await containedServerStatus()).toEqual({ ok: true });
+      // Nothing was taken or removed in the other folder meanwhile.
+      expect(await recordIn(other)).toBeNull();
+    } finally {
+      if (original === undefined) delete process.env[setting];
+      else process.env[setting] = original;
+    }
   });
 
   it("refuses an agent folders' setting inside the repository without taking anything", async () => {

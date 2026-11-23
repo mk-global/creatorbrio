@@ -431,8 +431,11 @@ export async function prepareAgentHome(input: {
  * #242 holds on macOS (`Library/Keychains`), and the then empty `Library`
  * the server made for it. Only the exact link the server made is removed, by
  * unlinking it, so its target is never followed or touched; any other entry
- * there is refused, never removed. Checked on every platform, since the home
- * may have been made on another.
+ * there is refused, never removed. A `Library` the CLI made itself (it may
+ * keep `Library/Caches` there, with its default mode) stays whatever its mode,
+ * since the home that holds it is owner-only; only a link or another
+ * account's folder in its place is refused. Checked on every platform, since
+ * the home may have been made on another.
  */
 async function removeKeychainLink(home: string, personHome: string, uid: number): Promise<void> {
   const library = path.join(home, "Library");
@@ -441,8 +444,12 @@ async function removeKeychainLink(home: string, personHome: string, uid: number)
     throw err;
   });
   if (libraryInfo === null) return;
-  if (!isPrivateDir(libraryInfo, uid)) {
-    throw new AgentWorkspaceError("The Design Agent's home folder's Library is not a folder the server made. Remove it and try again.");
+  // The home itself is verified owner-only, so a `Library` inside it is reachable by no one else whatever its own mode: the CLI may make
+  // `Library/Caches` with its default umask, and refusing that would lock out every later launch. A link, or another account's folder, is refused.
+  if (!libraryInfo.isDirectory() || libraryInfo.isSymbolicLink() || libraryInfo.uid !== uid) {
+    throw new AgentWorkspaceError(
+      "The Design Agent's home folder's Library is not a folder the server made. Remove only that link or folder itself, never what a link points to, or remove the Design Agent's home folder, and try again."
+    );
   }
   const link = path.join(library, "Keychains");
   const info = await lstat(link).catch((err: NodeJS.ErrnoException) => {
@@ -451,7 +458,9 @@ async function removeKeychainLink(home: string, personHome: string, uid: number)
   });
   if (info !== null) {
     if (!info.isSymbolicLink() || (await readlink(link)) !== path.join(personHome, "Library", "Keychains")) {
-      throw new AgentWorkspaceError("The Design Agent's home folder's Library/Keychains is not the link the server made. Remove it and try again.");
+      throw new AgentWorkspaceError(
+        "The Design Agent's home folder's Library/Keychains is not the link the server made. Remove only that link itself, never what it points to, or remove the Design Agent's home folder, and try again."
+      );
     }
     await unlink(link);
   }
