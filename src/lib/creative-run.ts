@@ -40,6 +40,8 @@ import {
   type ImageAspectRatio,
 } from "./image-service";
 import { findSourceLinks, retrieveSources, type SourceUnavailableReason } from "./source-retrieval";
+import { confirmedResearchOf } from "./research/handoff";
+import { recordResearchDesign } from "./research/run";
 import { directorFailureMessage, planContextFor, runDirector, type DirectorRequest, type DirectorSource } from "./visual-director";
 
 /**
@@ -590,6 +592,8 @@ async function imagesThenHandoff(
     references: input.references,
     sources: sources.map((s) => s.url),
     pages: input.pageTextForAgent ? sources : undefined,
+    // The research the Director planned from, so plan and design always agree.
+    research: confirmedResearchOf(input.carousel.research),
   });
   // Kept so that an unfinished design can be continued without planning again.
   const assetIds: Record<string, string | null> = {};
@@ -597,7 +601,9 @@ async function imagesThenHandoff(
     const id = asset.operation === "reuse" ? asset.assetId : committed.get(asset.key);
     assetIds[asset.key] = id && !unavailable.has(asset.key) ? id : null;
   }
-  await beginDesign(carouselId, runId, { plan, designMessage, assetIds });
+  const research = confirmedResearchOf(input.carousel.research);
+  await beginDesign(carouselId, runId, { plan, designMessage, assetIds }, { researchRevision: research?.revision });
+  if (research) await recordResearchDesign(carouselId, research.revision, runId);
   return { kind: "design", runId, designMessage, plan, assets, continued: false };
 }
 

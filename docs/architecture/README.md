@@ -38,6 +38,7 @@ flowchart LR
 | Source retrieval | Reads up to three public pages linked in a message, behind a network boundary | `src/lib/source-retrieval.ts` |
 | Visual Director | Decides the visual strategy and returns a validated plan; never designs slides | `src/lib/visual-director.ts`, `src/lib/director-plan.ts` |
 | Creative Brief | What a carousel is for, kept across revisions | `src/lib/creative-brief.ts` |
+| Topic research | Researches a topic on the server (Brave Search with the person's key, or their links), checks every quoted finding against the page text it read, and hands the direction the person confirmed to the Director and the Design Agent ([research.md](research.md)) | `src/lib/research/`, `src/types/research.ts` |
 | Image client | Requests and validates one image from the optional local image service | `src/lib/image-service.ts` |
 | Asset module | Stages, attaches, recovers and expires generated images | `src/lib/assets.ts` |
 | Handoff and conformance | The Design Agent's visual plan section, and the check after design | `src/lib/creative-handoff.ts` |

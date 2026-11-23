@@ -366,6 +366,8 @@ export interface CreativeRunRecord {
   continuation?: DesignContinuation | null;
   /** How many times this run's design was continued. */
   continued?: number;
+  /** The confirmed research revision the design worked from (#252); absent when the carousel had none. */
+  researchRevision?: number;
 }
 
 /** The stored handoff of a design run, enough to continue it without planning again. */

@@ -294,10 +294,17 @@ export async function setCreativeStage(carouselId: string, runId: string, stage:
  * continued without planning again. Saved before the Design Agent starts, so
  * a design cut off by a restart can be continued too.
  */
-export async function beginDesign(carouselId: string, runId: string, continuation: DesignContinuation): Promise<void> {
+export async function beginDesign(
+  carouselId: string,
+  runId: string,
+  continuation: DesignContinuation,
+  options: { researchRevision?: number } = {}
+): Promise<void> {
   await updateRun(carouselId, runId, (record) => {
     record.stage = "designing";
     record.continuation = continuation;
+    // The confirmed research this design worked from (#252); absent without research.
+    if (options.researchRevision !== undefined) record.researchRevision = options.researchRevision;
   });
 }
 

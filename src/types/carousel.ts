@@ -1,4 +1,5 @@
 import type { CreativeBrief } from "./creative-brief";
+import type { CarouselResearch } from "./research";
 import type { ProjectFormat } from "@/lib/formats";
 
 export type AspectRatio = "1:1" | "4:5" | "9:16";
@@ -69,6 +70,11 @@ export interface Carousel {
    * only from a validated Visual Director update, never from a request body.
    */
   creativeBrief?: CreativeBrief;
+  /**
+   * Topic research and the direction the person confirmed (#252).
+   * Server-owned: written only by the research run and its confirm route.
+   */
+  research?: CarouselResearch;
   caption?: string;
   hashtags?: string[];
   chatSessionId: string | null;

@@ -32,7 +32,7 @@ vi.mock("@/lib/claude-path", () => ({
 }));
 
 const { POST: chat } = await import("@/app/api/chat/route");
-const { addReferenceImage, addSlide, appendCarouselAssets, createCarousel, getCarousel, setCreativeBrief } = await import("@/lib/carousels");
+const { addReferenceImage, addSlide, appendCarouselAssets, createCarousel, getCarousel, setCreativeBrief, updateCarouselResearch } = await import("@/lib/carousels");
 const { isGenerating, getInterruption, readCreativeRuns, slideFingerprint } = await import("@/lib/generation-status");
 const { creativeRunDeps } = await import("@/lib/creative-run");
 const { setAssetFaultHookForTests, simulateRestartForTests } = await import("@/lib/assets");
@@ -311,6 +311,33 @@ describe("a creative run through the chat route", () => {
     expect((await readCreativeRuns())[carousel.id]).toMatchObject({ ended: { outcome: "completed" }, tasks: [] });
     expect(isGenerating(carousel.id)).toBe(false);
     expect(await getInterruption(carousel.id)).toBeNull();
+  });
+
+  it("designs from the confirmed research and records which revision it used (#252)", async () => {
+    const carousel = await newCarousel();
+    const source = { id: "S1", kind: "url" as const, url: "https://a.example/sleep", host: "a.example", title: "Sleep guide", retrievedAt: "",
+      blob: "", reliability: "unverified" as const, retrievedBy: "source-retrieval" as const, origin: "search" as const };
+    const findings = [
+      { id: "F1", text: "Morning light helps set the body clock.", check: "quoted" as const, evidence: [{ sourceId: "S1", quote: "Morning light exposure helps set the body clock" }], sensitive: false },
+      { id: "F2", text: "Cold showers double productivity.", check: "unchecked" as const, evidence: [], sensitive: false },
+    ];
+    const direction = { angle: "Small mornings, calmer nights.", audience: "Busy professionals", centralMessage: "Start early to sleep well.",
+      keyPoints: ["Get outside early"], callToAction: "" };
+    await updateCarouselResearch(carousel.id, () => ({
+      revision: 2, topic: "calmer evenings", links: [], state: "ready", searchProvider: "brave", startedAt: "",
+      confirmed: { revision: 2, confirmedAt: "", topic: "calmer evenings", direction, edited: false, sources: [source], findings },
+    }));
+    const { events } = await send({ carouselId: carousel.id, message: "Make 3 slides from the research" });
+
+    expect(stages(events)).toEqual(["planning", "designing"]);
+    expect(director.requests[0].carousel.research?.confirmed?.revision).toBe(2);
+    const task = await taskMessage();
+    expect(task).toContain("Confirmed research (revision 2)");
+    expect(task).toContain("- Angle: Small mornings, calmer nights.");
+    expect(task).toContain("F1: Morning light helps set the body clock.");
+    expect(task).not.toContain("Cold showers");
+    expect((await readCreativeRuns())[carousel.id]).toMatchObject({ ended: { outcome: "completed" }, researchRevision: 2 });
+    expect((await getCarousel(carousel.id))?.research?.lastDesign).toMatchObject({ revision: 2 });
   });
 
   it("makes a one-slide reel cover with one generated photograph and places it", async () => {

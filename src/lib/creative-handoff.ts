@@ -1,6 +1,8 @@
 import { untrustedPageContent } from "@/lib/source-text";
 import { MAX_SLIDES, type ResolvedReferenceImage, type Slide } from "@/types/carousel";
 import type { ReadyPlan, SlideCountBasis } from "./director-plan";
+import type { ConfirmedResearch } from "@/types/research";
+import { designResearchLines } from "./research/handoff";
 
 /**
  * The Design Agent handoff and the conformance check that follows design.
@@ -38,6 +40,8 @@ export interface HandoffInput {
    * profile, whose agent fetches the URLs itself.
    */
   pages?: readonly HandoffPage[];
+  /** The research the person confirmed for this carousel, if any (#252). */
+  research?: ConfirmedResearch | null;
 }
 
 export interface HandoffPage {
@@ -124,7 +128,7 @@ function fitPage<T extends HandoffPage>(page: T, bytes: number): T {
   return fitted;
 }
 
-export function buildHandoff({ plan, assets, references, sources, pages }: HandoffInput): string {
+export function buildHandoff({ plan, assets, references, sources, pages, research }: HandoffInput): string {
   const { execution: x, strategy: s } = plan;
   const byKey = new Map(x.assets.map((a) => [a.key, a]));
   const refById = new Map(references.map((r) => [r.id, r]));
@@ -190,6 +194,8 @@ export function buildHandoff({ plan, assets, references, sources, pages }: Hando
       untrustedPageContent(page)
     );
   }
+
+  if (research) lines.push(...designResearchLines(research));
 
   lines.push(
     "",

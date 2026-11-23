@@ -5,6 +5,7 @@ import { getClaudePath } from "@/lib/claude-path";
 import { CONTAINED_PROFILE, designAgentProfileName } from "@/lib/design-agent-profile";
 import { containedAvailability } from "@/lib/design-agent-availability";
 import { agentTokenFile, tokenGuidance } from "@/lib/agent-sign-in";
+import { configuredSearchProvider } from "@/lib/research/search";
 
 /**
  * What Settings and Home tell a person about this computer (#175): whether
@@ -17,6 +18,9 @@ import { agentTokenFile, tokenGuidance } from "@/lib/agent-sign-in";
  *
  * `designAgent` says which Design Agent profile runs (#227): for the contained
  * profile, whether it can run here, the CLI version and any version warning.
+ *
+ * `research.search` says only whether a web search key is set (#252), never
+ * the key or anything derived from it.
  */
 export async function GET() {
   const capabilities = await capabilityStatus({ referenceCount: 0, intactAssetCount: 0 });
@@ -24,6 +28,7 @@ export async function GET() {
     claude: { available: isClaudeAvailable() },
     imageGeneration: { configured: isAvailable(capabilities, "image-generation") },
     designAgent: await designAgentStatus(),
+    research: { search: { configured: configuredSearchProvider() !== null } },
   });
 }
 

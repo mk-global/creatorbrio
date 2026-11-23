@@ -3,6 +3,7 @@ import { generateId, now } from "./utils";
 import { brandIdOf, getDefaultBrandId } from "./brand";
 import type { Carousel, CarouselAsset, CarouselsData, Slide, AspectRatio, ReferenceImage } from "@/types/carousel";
 import type { CreativeBrief } from "@/types/creative-brief";
+import type { CarouselResearch } from "@/types/research";
 import { MAX_VERSIONS } from "@/types/carousel";
 import { slideLimitOf, type ProjectFormat } from "./formats";
 
@@ -120,12 +121,15 @@ export async function duplicateCarousel(id: string): Promise<Carousel | null> {
       assets: [...carouselAssets(source)],
       // The copy keeps what the carousel is for; its references and assets came with it.
       ...(source.creativeBrief ? { creativeBrief: structuredClone(source.creativeBrief) } : {}),
+      // The copy keeps the research it was made from, but never a run in progress (#252).
+      research: researchForCopy(source.research),
       chatSessionId: null,
       isTemplate: false,
       createdAt: now(),
       updatedAt: now(),
     };
 
+    if (!duplicate.research) delete duplicate.research;
     data.carousels.push(duplicate);
     return duplicate;
   });
@@ -358,5 +362,50 @@ export async function setCreativeBrief(carouselId: string, brief: CreativeBrief)
     carousel.creativeBrief = brief;
     carousel.updatedAt = now();
     return true;
+  });
+}
+
+/**
+ * What a duplicate keeps of a carousel's research (#252): the confirmed
+ * direction and a finished result, never a running run, which belongs to the
+ * original's process.
+ */
+function researchForCopy(research: CarouselResearch | undefined): CarouselResearch | undefined {
+  if (!research) return undefined;
+  const copy = structuredClone(research);
+  if (copy.state !== "running") return copy;
+  if (!copy.confirmed) return undefined;
+  return {
+    revision: copy.revision,
+    topic: copy.confirmed.topic,
+    links: [],
+    state: "failed",
+    searchProvider: copy.searchProvider,
+    startedAt: copy.startedAt,
+    finishedAt: now(),
+    failure: { code: "interrupted", message: "This copy was made while research was still running, so it has only the direction confirmed before." },
+    confirmed: copy.confirmed,
+  };
+}
+
+/**
+ * Reads and changes a carousel's research under the carousels file's lock.
+ * Only the research module calls it. `change` returns the new record, or
+ * `undefined` to leave the carousel exactly as it is. Returns the stored
+ * record, or null when the carousel does not exist.
+ */
+export async function updateCarouselResearch(
+  carouselId: string,
+  change: (current: CarouselResearch | undefined) => CarouselResearch | undefined
+): Promise<{ research: CarouselResearch | undefined } | null> {
+  return mutate((data) => {
+    const carousel = data.carousels.find((c) => c.id === carouselId);
+    if (!carousel) return null;
+    const next = change(carousel.research);
+    if (next !== undefined) {
+      carousel.research = next;
+      carousel.updatedAt = now();
+    }
+    return { research: carousel.research };
   });
 }

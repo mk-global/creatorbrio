@@ -1,14 +1,11 @@
-import type { ChildProcess } from "node:child_process";
 import { copyFile, mkdtemp, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import crossSpawn from "cross-spawn";
 import type { BrandConfig } from "@/types/brand";
 import type { Carousel, CarouselAsset, ResolvedReferenceImage } from "@/types/carousel";
 import type { StylePreset } from "@/types/style-preset";
 import { DIMENSIONS, MAX_SLIDES } from "@/types/carousel";
 import { FORMATS, formatOf, slideLimitOf } from "./formats";
-import { getClaudePath } from "./claude-path";
 import { briefForCarousel } from "./creative-brief";
 import type { CapabilityId, CapabilityStatus } from "./creative-capabilities";
 import { DIRECTOR_INSTRUCTIONS } from "./director-instructions";
@@ -27,8 +24,16 @@ import {
 } from "./director-plan";
 import { confineUploadedPng } from "./reference-images";
 import { untrustedPageContent } from "./source-text";
+import { confirmedResearchOf, directorResearchSection } from "./research/handoff";
 import { designAgentProfileName, type ExecutionProfile } from "./design-agent-profile";
 import { createServerTempDir, removeServerTempDir } from "./agent-workspace";
+import {
+  STRUCTURED_TOOLS,
+  parseStructuredResult,
+  runStructuredClaude,
+  structuredClaudeArgs,
+  type StructuredCliResult,
+} from "./structured-claude";
 
 /**
  * The Visual Director: one separate, stateless Claude CLI invocation per
@@ -53,7 +58,7 @@ import { createServerTempDir, removeServerTempDir } from "./agent-workspace";
  */
 
 /** The tools the Director may use; pinned by the docs-consistency test. */
-export const DIRECTOR_TOOLS = ["Read"] as const;
+export const DIRECTOR_TOOLS = STRUCTURED_TOOLS;
 /**
  * The Visual Director's existing isolation, recorded in the creative agents'
  * profile model (#186) and pinned by tests; its launch is unchanged, and text
@@ -75,10 +80,6 @@ export const DIRECTOR_PROFILE = {
 export const DIRECTOR_TIMEOUT_MS = 120_000;
 /** The optional operator setting that caps one planning run's Claude usage, in US dollars. */
 export const DIRECTOR_BUDGET_ENV = "DIRECTOR_MAX_BUDGET_USD";
-/** How long a cancelled or timed-out Director gets to exit before it is killed. */
-const KILL_GRACE_MS = 5_000;
-/** The CLI's JSON result is small; anything past this is not a plan. */
-const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 
 export interface DirectorSource {
   url: string;
@@ -396,6 +397,7 @@ export function buildDirectorInput(
   const pages = explicitPageCounts(message);
   const known = new Set([...request.references.map((r) => r.id), ...request.assets.map((a) => a.asset.id)]);
   const brief = briefForCarousel(carousel.creativeBrief, known);
+  const research = confirmedResearchOf(carousel.research);
 
   const sections = [
     block(
@@ -458,6 +460,8 @@ export function buildDirectorInput(
         .join("\n")
     ),
     block("Stored Creative Brief from earlier requests", brief ? JSON.stringify(brief, null, 2) : "None yet."),
+    // Only when the person confirmed research (#252); every other input is exactly as before.
+    ...(research ? [block("Confirmed research", directorResearchSection(research))] : []),
     ...request.sources.map((s, i) =>
       block(
         `Linked page ${i + 1} (${s.host})`,
@@ -484,27 +488,7 @@ export function directorBudgetCap(raw: string | undefined): { ok: true; usd: num
 
 /** The CLI arguments; exported so tests can pin the isolation flags. */
 export function directorArgs(workDir: string, budgetUsd: number | null): string[] {
-  return [
-    "-p",
-    "--output-format",
-    "json",
-    "--system-prompt",
-    DIRECTOR_INSTRUCTIONS,
-    "--tools",
-    ...DIRECTOR_TOOLS,
-    "--allowedTools",
-    // The leading slash plus an absolute path is the CLI's absolute-path form.
-    `Read(/${workDir}/**)`,
-    "--json-schema",
-    JSON.stringify(DIRECTOR_PLAN_SCHEMA),
-    "--no-session-persistence",
-    ...(budgetUsd === null ? [] : ["--max-budget-usd", String(budgetUsd)]),
-    "--setting-sources",
-    "",
-    "--strict-mcp-config",
-    "--settings",
-    JSON.stringify({ autoMemoryEnabled: false }),
-  ];
+  return structuredClaudeArgs(workDir, { systemPrompt: DIRECTOR_INSTRUCTIONS, schema: DIRECTOR_PLAN_SCHEMA, budgetUsd });
 }
 
 /**
@@ -549,81 +533,10 @@ async function prepareWorkDir(request: DirectorRequest) {
   }
 }
 
-interface CliOutcome {
-  exitCode: number | null;
-  stdout: string;
-  timedOut: boolean;
-  cancelled: boolean;
-  startError: boolean;
-}
-
-function runCli(args: string[], cwd: string, input: string, signal?: AbortSignal, timeoutMs = DIRECTOR_TIMEOUT_MS) {
-  return new Promise<CliOutcome>((resolve) => {
-    let child: ChildProcess;
-    try {
-      child = crossSpawn(getClaudePath(), args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: process.env });
-    } catch {
-      resolve({ exitCode: null, stdout: "", timedOut: false, cancelled: false, startError: true });
-      return;
-    }
-    let stdout = "";
-    let bytes = 0;
-    let timedOut = false;
-    let cancelled = false;
-    let killTimer: NodeJS.Timeout | null = null;
-    const stop = () => {
-      child.kill("SIGTERM");
-      killTimer ??= setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, timeoutMs);
-    const onAbort = () => {
-      cancelled = true;
-      stop();
-    };
-    if (signal?.aborted) onAbort();
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes <= MAX_STDOUT_BYTES) stdout += chunk.toString("utf8");
-    });
-    // Stderr is drained and dropped: it can echo the input.
-    child.stderr?.on("data", () => {});
-    child.stdin?.on("error", () => {});
-    child.stdin?.end(input);
-    child.on("error", () => {
-      clearTimeout(timer);
-      resolve({ exitCode: null, stdout: "", timedOut, cancelled, startError: true });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      signal?.removeEventListener("abort", onAbort);
-      resolve({ exitCode: code, stdout, timedOut, cancelled, startError: false });
-    });
-  });
-}
-
-interface CliResult {
-  subtype?: string;
-  is_error?: boolean;
-  structured_output?: unknown;
-  total_cost_usd?: number;
-  num_turns?: number;
-  permission_denials?: unknown[];
-}
-
-function parseResult(stdout: string): CliResult | null {
-  try {
-    const parsed = JSON.parse(stdout.trim());
-    return parsed && typeof parsed === "object" ? (parsed as CliResult) : null;
-  } catch {
-    return null;
-  }
-}
+type CliResult = StructuredCliResult;
+const parseResult = parseStructuredResult;
+const runCli = (args: string[], cwd: string, input: string, signal?: AbortSignal, timeoutMs = DIRECTOR_TIMEOUT_MS) =>
+  runStructuredClaude(args, cwd, input, timeoutMs, signal);
 
 /**
  * Plans one request. Never throws for a planning failure: every outcome is a

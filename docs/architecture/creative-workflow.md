@@ -38,6 +38,8 @@ flowchart TD
     E --> X[Export]
 ```
 
+A carousel with research the person confirmed adds that research to the Director's input and to the Design Agent's task in every run; how research runs and what it hands over is in [research.md](research.md).
+
 ### Stages
 
 The chat panel shows each stage as it starts: "Reading linked pages", "Planning visuals", "Preparing images" with a count such as "2 of 5", and "Creating the design".
