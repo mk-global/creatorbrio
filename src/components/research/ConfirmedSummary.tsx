@@ -9,9 +9,10 @@ function when(iso: string): string {
 
 /**
  * The direction in use (#253): what the person confirmed from earlier
- * research, with the quoted findings and the sources the design was given.
- * Shown whenever the screen shows a different run, so the references behind
- * the slides are never out of sight.
+ * research, with its quoted findings and the sources they cite. The design is
+ * given only those, and cut to fit when they are long (`fitResearch` in
+ * `src/lib/research/handoff.ts`). Shown whenever the screen shows a different
+ * run, so the references behind the slides are never out of sight.
  */
 export function ConfirmedSummary({ confirmed }: { confirmed: ConfirmedResearch }) {
   const quoted = confirmed.findings.filter((f) => f.check === "quoted");
@@ -36,7 +37,7 @@ export function ConfirmedSummary({ confirmed }: { confirmed: ConfirmedResearch }
         </ol>
         {quoted.length > 0 && (
           <div>
-            <p className="text-graphite">Findings the design was given</p>
+            <p className="text-graphite">Findings quoted in a source. The design is given only these, and some may be left out to fit.</p>
             <ul className="mt-1 list-disc space-y-1 pl-5">
               {quoted.map((f) => (
                 <li key={f.id} className="break-words">

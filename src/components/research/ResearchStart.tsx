@@ -2,9 +2,31 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import type { StartRefusal } from "./useResearch";
 
 export const MAX_LINKS = 3;
 export const MAX_TOPIC = 500;
+
+/** Failures the person fixes in Settings: where, so a notice can link there. */
+const SETTINGS_LINK: Record<string, { href: string; label: string }> = {
+  search_key_refused: { href: "/settings#research", label: "Web search settings" },
+  budget_setting_invalid: { href: "/settings#research", label: "Research settings" },
+  claude_unavailable: { href: "/settings#claude", label: "Claude Code settings" },
+};
+
+/** The link to the Settings row that fixes a failure code, led by a space to follow a message; nothing for any other code. */
+export function SettingsLink({ code }: { code: string | null | undefined }) {
+  const target = code ? SETTINGS_LINK[code] : undefined;
+  if (!target) return null;
+  return (
+    <>
+      {" "}
+      <Link href={target.href} className="font-semibold underline underline-offset-4">
+        {target.label}
+      </Link>
+    </>
+  );
+}
 
 /** Lines of the links box that are not blank, trimmed. */
 export function linksFrom(text: string): string[] {
@@ -87,9 +109,11 @@ export function ResearchFields({
   );
 }
 
-/** Whether the fields can start research, and why not. */
+/** Whether the fields can start research, and why not. A topic the server would refuse for its length stops here, so New project never creates a project for it. */
 export function researchReady(topic: string, links: string, searchConfigured: boolean | null): { ok: boolean; reason: string | null } {
-  if (topic.trim().length < 3) return { ok: false, reason: null };
+  const length = topic.trim().length;
+  if (length < 3) return { ok: false, reason: null };
+  if (length > MAX_TOPIC) return { ok: false, reason: `The topic can be at most ${MAX_TOPIC} characters; this one is ${length}. Shorten it to research it.` };
   const count = linksFrom(links).length;
   if (count > MAX_LINKS) return { ok: false, reason: null };
   if (searchConfigured === false && count === 0) return { ok: false, reason: "Add at least one link, or set up web search." };
@@ -112,7 +136,7 @@ export function ResearchStart({
   onStart: (topic: string, links: string[]) => Promise<void>;
   onCancel?: () => void;
   editorHref: string;
-  error: string | null;
+  error: StartRefusal | null;
 }) {
   const [topic, setTopic] = useState(initialTopic);
   const [links, setLinks] = useState(initialLinks.join("\n"));
@@ -131,7 +155,8 @@ export function ResearchStart({
       <ResearchFields topic={topic} onTopic={setTopic} links={links} onLinks={setLinks} searchConfigured={searchConfigured} />
       {error && (
         <p role="alert" className="mt-6 max-w-[640px] rounded-lg bg-alert-bg px-4 py-3 text-[14px]">
-          Research didn&apos;t start: {error}
+          Research didn&apos;t start: {error.message}
+          <SettingsLink code={error.code} />
         </p>
       )}
       {ready.reason && <p className="mt-4 text-[13px] text-graphite">{ready.reason}</p>}

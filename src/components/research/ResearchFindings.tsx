@@ -44,8 +44,9 @@ function FindingItem({ finding, sources }: { finding: ResearchFinding; sources: 
           </span>
         )}
       </p>
-      {finding.evidence.map((e) => (
-        <figure key={e.sourceId} className="mt-3">
+      {finding.evidence.map((e, i) => (
+        // A finding may quote one source twice, so the source alone is not a key.
+        <figure key={`${e.sourceId}-${i}`} className="mt-3">
           <blockquote className="flex gap-2 text-[14px] text-ink/80">
             <Quote className="mt-0.5 size-4 shrink-0 text-graphite" aria-hidden="true" />
             <span className="break-words">{e.quote}</span>

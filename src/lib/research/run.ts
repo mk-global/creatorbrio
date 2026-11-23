@@ -135,7 +135,11 @@ export async function researchSettled(carouselId: string): Promise<void> {
 
 export type ResearchResponse =
   | { ok: true; research: CarouselResearch | null }
-  | { ok: false; status: 400 | 404 | 409; error: string };
+  /**
+   * `code` is set only for a refusal the person fixes in Settings (Claude Code unavailable, an invalid spending
+   * setting), so the screen can link there; `error` is the message in every case.
+   */
+  | { ok: false; status: 400 | 404 | 409; error: string; code?: ResearchFailureCode };
 
 class ResearchRequestError extends Error {}
 
@@ -182,10 +186,12 @@ export async function startResearch(carouselId: string, body: unknown): Promise<
       error: "Web search is not set up, so research needs at least one link. Add links to pages about the topic, or set up Brave Search (see Settings).",
     };
   }
-  if (!researchDeps.claudeAvailable()) return { ok: false, status: 400, error: RESEARCH_FAILURE_MESSAGES.claude_unavailable };
+  if (!researchDeps.claudeAvailable()) {
+    return { ok: false, status: 400, error: RESEARCH_FAILURE_MESSAGES.claude_unavailable, code: "claude_unavailable" };
+  }
   // An invalid cap is refused before search or retrieval run, not after the pages were read; synthesis checks it again.
   if (!parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]).ok) {
-    return { ok: false, status: 400, error: RESEARCH_FAILURE_MESSAGES.budget_setting_invalid };
+    return { ok: false, status: 400, error: RESEARCH_FAILURE_MESSAGES.budget_setting_invalid, code: "budget_setting_invalid" };
   }
   const carousel = await getCarousel(carouselId);
   if (!carousel || carousel.isTemplate) return { ok: false, status: 404, error: "Project not found." };

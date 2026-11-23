@@ -147,6 +147,14 @@ If setup cannot find the Claude CLI, set `CLAUDE_CLI_PATH` in `.env.local` to th
 5. Ask for changes in the same chat, such as *"make slide 3 more minimal"* or *"write the caption and hashtags"*.
 6. Open **Export** and choose **Instagram · PNG ZIP** or **LinkedIn · PDF** (a Reel cover also offers its single PNG first).
 
+To start from a topic instead, choose **Research a topic** under "Start from" in New project, or press **Research it** beside the idea field on Home.
+Give the topic and, if you like, up to three links to pages you trust.
+With your own Brave Search key (see Settings) CreatorBrio also searches the web; without one it reads only your links.
+CreatorBrio reads the pages and shows what they say: findings found in a page show their quote and source, and the rest are marked not checked and left out of the design.
+Review the findings and the sources, and edit the suggested direction if you want to.
+Then press **Confirm and create design**: that confirmation is your request, so the editor opens and the design starts, and nothing is designed before it.
+Research needs Claude Code signed in, as designing does.
+
 The design step has a 30-minute time limit (`DESIGN_AGENT_TIMEOUT_SECONDS`, 60 to 3600) and no spending cap unless you set `DESIGN_AGENT_MAX_BUDGET_USD` in `.env.local`.
 It is also stopped after 5 minutes without output (`DESIGN_AGENT_INACTIVITY_SECONDS`, 60 to 900 and shorter than the time limit), so a stuck run ends early; either way the saved slides are kept and **Continue** carries on from them.
 Planning has a 120-second time limit and no spending cap unless you set `DIRECTOR_MAX_BUDGET_USD`.

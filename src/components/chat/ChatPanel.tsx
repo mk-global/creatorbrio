@@ -30,7 +30,8 @@ interface Message {
 interface ChatPanelProps {
   carouselId: string;
   referenceImages?: ReferenceImage[];
-  claudeAvailable: boolean;
+  /** Null until the editor's Claude check has answered; the composer treats that as available. */
+  claudeAvailable: boolean | null;
   onStreamStart?: () => void;
   onStreamEnd?: () => void;
   chatInputRef?: React.RefObject<HTMLTextAreaElement | null>;
@@ -249,15 +250,17 @@ export function ChatPanel({
   );
 
   // The research screen's confirmation is sent once, after this carousel's
-  // history and session are loaded, so it continues the same conversation.
+  // history and session are loaded and the Claude check has answered that
+  // Claude is available, so it continues the same conversation and is not
+  // spent on a refusal.
   const autoSent = useRef(false);
   useEffect(() => {
-    if (!autoSend || autoSent.current || loadedFor !== carouselId || !claudeAvailable) return;
+    if (!autoSend || autoSent.current || loadedFor !== carouselId || claudeAvailable !== true) return;
     autoSent.current = true;
     void handleSend(autoSend);
   }, [autoSend, handleSend, loadedFor, carouselId, claudeAvailable]);
 
-  if (!claudeAvailable) {
+  if (claudeAvailable === false) {
     return (
       <div className="h-full flex flex-col items-center justify-center p-6 text-center">
         <Plug className="h-10 w-10 text-muted-foreground mb-3" />

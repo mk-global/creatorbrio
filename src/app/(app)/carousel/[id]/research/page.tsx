@@ -11,8 +11,8 @@ import { ConfirmedSummary } from "@/components/research/ConfirmedSummary";
 import { DirectionForm } from "@/components/research/DirectionForm";
 import { ResearchFindings } from "@/components/research/ResearchFindings";
 import { ResearchProgress } from "@/components/research/ResearchProgress";
-import { ResearchStart } from "@/components/research/ResearchStart";
-import { useResearch } from "@/components/research/useResearch";
+import { ResearchStart, SettingsLink } from "@/components/research/ResearchStart";
+import { useResearch, type StartRefusal } from "@/components/research/useResearch";
 import { brandDisplayName } from "@/lib/brand-display";
 import { FORMATS, formatOf } from "@/lib/formats";
 import { clearResearchRequest, handOffDesignStart, readResearchRequest } from "@/lib/new-project-handoff";
@@ -26,8 +26,8 @@ const SEARCH_FAILED: Record<string, string> = {
   search_unavailable: "Brave Search could not be reached",
 };
 
-/** Failures that the same request may get past, so "Try again" is offered first. */
-const RETRYABLE = new Set(["search_rate_limited", "search_unavailable", "synthesis_failed", "synthesis_timed_out", "interrupted", "cancelled", "research_failed"]);
+/** Failures that the same request may get past (a page may be back up), so "Try again" is offered first. */
+const RETRYABLE = new Set(["search_rate_limited", "search_unavailable", "no_readable_pages", "synthesis_failed", "synthesis_timed_out", "interrupted", "cancelled", "research_failed"]);
 
 function when(iso: string): string {
   const d = new Date(iso);
@@ -45,9 +45,10 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
   const { brands } = useApp();
   const status = useAppStatus();
   const searchConfigured = status ? (status.research?.search.configured ?? false) : null;
-  const { state, start, stop, confirm } = useResearch(id);
+  const { state, start, stop, confirm, reload } = useResearch(id);
   const [carousel, setCarousel] = useState<Carousel | null>(null);
-  const [startError, setStartError] = useState<string | null>(null);
+  const [carouselFailed, setCarouselFailed] = useState(false);
+  const [startError, setStartError] = useState<StartRefusal | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -57,10 +58,9 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
     let current = true;
     fetch(`/api/carousels/${encodeURIComponent(id)}`)
       .then((r) => (r.ok ? (r.json() as Promise<Carousel>) : null))
-      .then((c) => current && c && setCarousel(c))
-      .catch(() => {
-        // The name and brand are context only; research works without them.
-      });
+      // The name and brand are context only, but confirming needs the format, so a failure is remembered.
+      .then((c) => current && (c ? setCarousel(c) : setCarouselFailed(true)))
+      .catch(() => current && setCarouselFailed(true));
     return () => {
       current = false;
     };
@@ -91,8 +91,14 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
       setConfirming(false);
       return;
     }
+    // Confirming is disabled until the carousel has loaded, so the format's words are never left out.
     const prefix = carousel ? FORMATS[formatOf(carousel)].composerPrefix : "";
-    handOffDesignStart(id, `${prefix}Design it from the confirmed research.`);
+    // Bound to the snapshot the server just confirmed: the editor sends only for that one.
+    handOffDesignStart(id, {
+      message: `${prefix}Design it from the confirmed research.`,
+      revision: result.confirmed.revision,
+      confirmedAt: result.confirmed.confirmedAt,
+    });
     router.push(editorHref);
   };
 
@@ -101,8 +107,8 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
 
   return (
     <div className="max-w-[980px]">
-      <Link href={editorHref} className="btn btn-ghost btn-sm -ml-2">
-        <ArrowLeft className="size-4" aria-hidden="true" /> {carousel ? carousel.name : "Back to the project"}
+      <Link href={editorHref} className="btn btn-ghost btn-sm -ml-2 max-w-full">
+        <ArrowLeft className="size-4 shrink-0" aria-hidden="true" /> <span className="min-w-0 truncate">{carousel ? carousel.name : "Back to the project"}</span>
       </Link>
       <h1 className="type-title mt-3">Research</h1>
       <p className="mt-2 max-w-[66ch] text-graphite">
@@ -128,7 +134,15 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
       )}
       {state.status === "error" && (
         <div className="mt-8">
-          <PageNotice tone="alert" title="The research couldn't be loaded">
+          <PageNotice
+            tone="alert"
+            title="The research couldn't be loaded"
+            action={
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => void reload()}>
+                Try again
+              </button>
+            }
+          >
             {state.message}
           </PageNotice>
         </div>
@@ -150,14 +164,7 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
                 }
               >
                 {research.failure?.message}
-                {research.failure?.code === "search_key_refused" && (
-                  <>
-                    {" "}
-                    <Link href="/settings#research" className="font-semibold underline underline-offset-4">
-                      Web search settings
-                    </Link>
-                  </>
-                )}
+                <SettingsLink code={research.failure?.code} />
               </PageNotice>
               {research.confirmed && <ConfirmedSummary confirmed={research.confirmed} />}
             </div>
@@ -191,6 +198,7 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
           onConfirm={(d) => void accept(research, d)}
           confirming={confirming}
           confirmError={confirmError}
+          waitingFor={carousel ? null : carouselFailed ? "The project's format could not be read. Reload this page, then confirm." : "Reading the project's format…"}
         />
       )}
     </div>
@@ -203,12 +211,15 @@ function ReadyView({
   onConfirm,
   confirming,
   confirmError,
+  waitingFor,
 }: {
   research: CarouselResearch;
   onAgain: () => void;
   onConfirm: (direction: ResearchDirection) => void;
   confirming: boolean;
   confirmError: string | null;
+  /** Why confirming cannot start yet, or null. */
+  waitingFor: string | null;
 }) {
   const result = research.result!;
   const confirmedHere = research.confirmed?.revision === research.revision ? research.confirmed : null;
@@ -264,6 +275,7 @@ function ReadyView({
           confirmLabel={designed ? "Confirm and design again" : "Confirm and create design"}
           busy={confirming}
           error={confirmError}
+          waitingFor={waitingFor}
         />
       </div>
     </div>

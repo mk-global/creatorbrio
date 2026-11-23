@@ -179,8 +179,13 @@ export default function SettingsPage() {
         <Row title="What leaves this computer">
           <p>When you design by chat, your message, your brand and the project go to Claude through Claude Code. Links you paste are fetched while designing.</p>
           <p>
-            When you research a topic, the topic goes to Brave Search if web search is set up, CreatorBrio reads the pages itself, and their text goes to Claude
-            through Claude Code. Only each page&apos;s address, title and a fingerprint of its text are kept.
+            When you research a topic, CreatorBrio fetches the pages itself: your links and, when web search is set up, the pages a search finds. The topic goes to
+            Brave Search when web search is set up. The topic, the project&apos;s format, your brand&apos;s name and style words, and each page&apos;s address, title and
+            text go to Claude through Claude Code.
+          </p>
+          <p>
+            What is kept on this computer is the topic, your links, the findings with the short quotes they cite, what the pages don&apos;t establish and the
+            suggested direction, with each page&apos;s address, title and a fingerprint of its text. The text of a page is never kept.
           </p>
           <p>The Video Studio sends nothing out. Fonts for slides load from Google Fonts.</p>
         </Row>

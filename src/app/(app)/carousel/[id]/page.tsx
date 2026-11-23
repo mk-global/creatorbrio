@@ -29,7 +29,8 @@ export default function CarouselEditorPage({ params }: PageProps) {
   // Words the New project form left for the message box; read once, cleared once mounted.
   const [initialDraft] = useState(() => readDraft(id));
   useEffect(() => clearDraft(id), [id]);
-  // A design the research screen asked for (#253): sent once, so a reload never sends it again.
+  // A design the research screen asked for (#253): read once and cleared once mounted, whether or not it is used,
+  // so a reload never sends it again. It is sent only for the confirmed direction it was made for (see `autoSend`).
   const [designStart] = useState(() => readDesignStart(id));
   useEffect(() => clearDesignStart(id), [id]);
   const [pane, setPane] = useState<"preview" | "chat">(initialDraft || designStart ? "chat" : "preview");
@@ -37,7 +38,8 @@ export default function CarouselEditorPage({ params }: PageProps) {
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeSlide, setActiveSlide] = useState(0);
-  const [claudeAvailable, setClaudeAvailable] = useState(true);
+  // Unknown (null) until /api/chat/check has answered; the composer treats unknown as available, as it always has.
+  const [claudeAvailable, setClaudeAvailable] = useState<boolean | null>(null);
   const [chatOpen, setChatOpen] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showSafeZones, setShowSafeZones] = useState(false);
@@ -102,9 +104,10 @@ export default function CarouselEditorPage({ params }: PageProps) {
       try {
         const res = await fetch("/api/chat/check");
         const data: { available?: boolean } = await res.json();
-        if (data.available === false) setClaudeAvailable(false);
+        setClaudeAvailable(data.available !== false);
       } catch {
-        // assume available
+        // The check did not answer: assume available, as the composer always has.
+        setClaudeAvailable(true);
       }
     };
     load();
@@ -248,6 +251,11 @@ export default function CarouselEditorPage({ params }: PageProps) {
 
   const format = formatOf(carousel);
   const brand = brands.find((b) => b.id === (carousel.brandId ?? defaultBrandId));
+  // The message the research screen's confirmation asked for, only while this carousel still holds the exact
+  // direction that was confirmed (same revision and confirmation time); anything else left behind is not sent.
+  const confirmedNow = carousel.research?.confirmed;
+  const autoSend =
+    designStart && confirmedNow?.revision === designStart.revision && confirmedNow.confirmedAt === designStart.confirmedAt ? designStart.message : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -345,7 +353,7 @@ export default function CarouselEditorPage({ params }: PageProps) {
             chatInputRef={chatInputRef}
             continuation={generation.continuation}
             initialDraft={initialDraft}
-            autoSend={designStart || undefined}
+            autoSend={autoSend}
           />
         </div>
 

@@ -249,7 +249,7 @@ Motion answers something the person did, or marks the one orchestrated moment.
 
 | Level | Class / variant | Look | Use |
 |---|---|---|---|
-| Create | `.btn-create`, `variant="create"` | Deep Coral fill, paper label | The one action on a screen that starts new work: New project, Set up project, Start a project, New brand, Create brand, Create and open editor, the Studio's Create |
+| Create | `.btn-create`, `variant="create"` | Deep Coral fill, paper label | The one action on a screen that starts new work: New project, Set up project, Start a project, New brand, Create brand, Create and open editor, Create and research, the research screen's Confirm and create design, the Studio's Create |
 | Primary | `.btn-primary`, `variant="accent"` or default | Ink fill, paper label | The main action that is not creation: Save, Export, Use for new work, a dialog's confirm |
 | Secondary | `.btn-quiet`, `variant="outline"` | Paper with a Fine Rule edge | Cancel, Edit brand, Use template |
 | Tertiary | `.btn-ghost`, `variant="ghost"` | Text only, Canvas-grey hover | Toolbar actions, close buttons |
@@ -286,7 +286,7 @@ A full dark theme is not part of v1.0.
   Say what happens: "Create and open editor", not "Let's go".
 - Sentence case, active voice, no exclamation marks, no filler.
 - Name things the way people think of them: brand, project, template, slide, production.
-- Be honest about limits: Early features are labelled, unbuilt features are not offered, and nothing is designed until the person presses Send.
+- Be honest about limits: Early features are labelled, unbuilt features are not offered, and nothing is designed until the person presses Send, or confirms a research direction, which is their request to design and says so on its button.
 - Errors say what happened and what to do next, and that nothing was lost when that is true.
   They never apologise vaguely or blame the person.
 - An empty screen is an invitation to start, with one clear action.

@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus, X } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ResearchDirection } from "@/types/research";
 
 const MAX_FIELD = 300;
@@ -16,6 +16,27 @@ export function directionProblem(d: ResearchDirection): string | null {
   return null;
 }
 
+/**
+ * A textarea as tall as its text, so a long direction is read in full before it
+ * is confirmed and never sits behind a scrollbar (the chat box grows the same way).
+ */
+function GrowingText({ value, ...props }: React.ComponentProps<"textarea"> & { value: string }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      el.style.height = "auto";
+      if (el.scrollHeight > 0) el.style.height = `${el.scrollHeight}px`;
+    };
+    fit();
+    // A narrower or wider screen wraps the same words differently.
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [value]);
+  return <textarea ref={ref} value={value} {...props} />;
+}
+
 function Field({
   id,
   label,
@@ -23,7 +44,6 @@ function Field({
   value,
   onChange,
   max,
-  rows = 2,
 }: {
   id: string;
   label: string;
@@ -31,14 +51,13 @@ function Field({
   value: string;
   onChange: (v: string) => void;
   max: number;
-  rows?: number;
 }) {
   return (
     <div>
       <label htmlFor={id} className="mb-1.5 block text-[14px] font-semibold">
         {label} {hint && <span className="font-normal text-graphite">{hint}</span>}
       </label>
-      <textarea id={id} className="field" rows={rows} maxLength={max} value={value} onChange={(e) => onChange(e.target.value)} />
+      <GrowingText id={id} className="field resize-none overflow-hidden" maxLength={max} value={value} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
 }
@@ -53,26 +72,24 @@ export function DirectionForm({
   confirmLabel,
   busy,
   error,
+  waitingFor = null,
 }: {
   initial: ResearchDirection;
   onConfirm: (direction: ResearchDirection) => void;
   confirmLabel: string;
   busy: boolean;
   error: string | null;
+  /** Why confirming cannot start yet (the project is still loading), or null. */
+  waitingFor?: string | null;
 }) {
   const [d, setD] = useState<ResearchDirection>(initial);
   const set = <K extends keyof ResearchDirection>(key: K, value: ResearchDirection[K]) => setD((prev) => ({ ...prev, [key]: value }));
   const cleaned: ResearchDirection = { ...d, keyPoints: d.keyPoints.filter((p) => p.trim()) };
-  const problem = directionProblem(cleaned);
+  const problem = directionProblem(cleaned) ?? waitingFor;
 
   return (
-    <form
-      aria-labelledby="direction"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!problem && !busy) onConfirm(cleaned);
-      }}
-    >
+    // Never submitted: Enter in a field must not confirm, which starts a paid design. Only the button below does.
+    <form aria-labelledby="direction" onSubmit={(e) => e.preventDefault()}>
       <h2 id="direction" className="type-section">
         Suggested direction
       </h2>
@@ -100,12 +117,17 @@ export function DirectionForm({
                 <label htmlFor={`direction-point-${i}`} className="sr-only">
                   Key point {i + 1}
                 </label>
-                <input
+                {/* One line of meaning that wraps: Enter does nothing, and pasted line breaks become spaces. */}
+                <GrowingText
                   id={`direction-point-${i}`}
-                  className="field"
+                  className="field min-h-11 min-w-0 flex-1 resize-none overflow-hidden"
+                  rows={1}
                   maxLength={MAX_POINT}
                   value={point}
-                  onChange={(e) => set("keyPoints", d.keyPoints.map((p, j) => (j === i ? e.target.value : p)))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.preventDefault();
+                  }}
+                  onChange={(e) => set("keyPoints", d.keyPoints.map((p, j) => (j === i ? e.target.value.replace(/\s*\r?\n\s*/g, " ") : p)))}
                 />
                 <button
                   type="button"
@@ -132,7 +154,6 @@ export function DirectionForm({
           value={d.callToAction}
           onChange={(v) => set("callToAction", v)}
           max={MAX_POINT}
-          rows={1}
         />
       </div>
 
@@ -143,7 +164,7 @@ export function DirectionForm({
       )}
       <div className="mt-8 flex flex-col gap-3 rounded-[14px] bg-ink p-4 text-white sm:flex-row sm:items-center sm:justify-between sm:pl-6">
         <p className="text-[14px] text-white/85">{problem ?? "Confirming opens the editor and starts the design right away."}</p>
-        <button type="submit" className="btn btn-create" disabled={Boolean(problem) || busy}>
+        <button type="button" className="btn btn-create" disabled={Boolean(problem) || busy} onClick={() => onConfirm(cleaned)}>
           {busy ? "Confirming…" : confirmLabel}
         </button>
       </div>

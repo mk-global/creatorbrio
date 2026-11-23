@@ -31,15 +31,16 @@ export function ResearchProgress({ research, onStop }: { research: CarouselResea
       <h2 id="progress" className="type-section">
         Researching
       </h2>
-      <p className="mt-1 text-[14px] text-graphite" aria-live="polite">
+      <p className="mt-1 text-[14px] text-graphite">
         Usually one to three minutes. You can leave this page; research goes on, and you can come back to it from the project.
       </p>
-      <ol className="mt-5 grid gap-3">
+      {/* The steps are what change as the run moves on, so they are the live region. Each step is atomic, so a change is announced as its name with its state. */}
+      <ol className="mt-5 grid gap-3" aria-live="polite">
         {steps.map((step, i) => {
           const done = current > i;
           const active = current === i;
           return (
-            <li key={step.stage} className={`flex items-center gap-3 text-[15px] ${done || active ? "text-ink" : "text-graphite"}`}>
+            <li key={step.stage} aria-atomic="true" className={`flex items-center gap-3 text-[15px] ${done || active ? "text-ink" : "text-graphite"}`}>
               {done ? (
                 <Check className="size-5 text-ink" aria-hidden="true" />
               ) : active ? (

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CarouselResearch, ResearchDirection } from "@/types/research";
+import type { CarouselResearch, ConfirmedResearch, ResearchDirection } from "@/types/research";
 
 /** How often the screen asks for progress while research runs. */
 const POLL_MS = 1500;
@@ -12,14 +12,25 @@ export type ResearchState =
   | { status: "error"; message: string }
   | { status: "ready"; research: CarouselResearch | null };
 
-async function call<T>(url: string, init?: RequestInit): Promise<{ ok: true; body: T } | { ok: false; status: number; error: string }> {
+/** Why a start was refused. `code` is the failure code of a refusal that Settings fixes, when the server names one. */
+export interface StartRefusal {
+  message: string;
+  code: string | null;
+}
+
+async function call<T>(url: string, init?: RequestInit): Promise<{ ok: true; body: T } | { ok: false; status: number; error: string; code: string | null }> {
   try {
     const res = await fetch(url, { ...init, headers: { "Content-Type": "application/json" } });
-    const body = (await res.json().catch(() => ({}))) as T & { error?: string };
+    const body = (await res.json().catch(() => ({}))) as T & { error?: string; code?: unknown };
     if (res.ok) return { ok: true, body };
-    return { ok: false, status: res.status, error: body.error || `The app answered with status ${res.status}.` };
+    return {
+      ok: false,
+      status: res.status,
+      error: body.error || `The app answered with status ${res.status}.`,
+      code: typeof body.code === "string" ? body.code : null,
+    };
   } catch {
-    return { ok: false, status: 0, error: "CreatorBrio did not answer. Check that it is still running, then try again." };
+    return { ok: false, status: 0, error: "CreatorBrio did not answer. Check that it is still running, then try again.", code: null };
   }
 }
 
@@ -60,13 +71,13 @@ export function useResearch(projectId: string) {
   }, [running, load]);
 
   const start = useCallback(
-    async (topic: string, links: string[]): Promise<string | null> => {
+    async (topic: string, links: string[]): Promise<StartRefusal | null> => {
       const result = await call<{ research: CarouselResearch }>(base, { method: "POST", body: JSON.stringify({ topic, links }) });
       if (!alive.current) return null;
       if (!result.ok) {
         // Already running (another tab): show that run rather than an error.
         if (result.status === 409) await load();
-        return result.status === 409 ? null : result.error;
+        return result.status === 409 ? null : { message: result.error, code: result.code };
       }
       setState({ status: "ready", research: result.body.research });
       return null;
@@ -80,18 +91,22 @@ export function useResearch(projectId: string) {
   }, [base, load]);
 
   const confirm = useCallback(
-    async (revision: number, direction: ResearchDirection): Promise<{ ok: true } | { ok: false; error: string }> => {
+    async (revision: number, direction: ResearchDirection): Promise<{ ok: true; confirmed: ConfirmedResearch } | { ok: false; error: string }> => {
       const result = await call<{ research: CarouselResearch }>(`${base}/confirm`, {
         method: "POST",
         body: JSON.stringify({ revision, direction }),
       });
-      if (!alive.current) return { ok: true };
+      // The person left the page while this was in flight: whatever the server did,
+      // nothing here may go on to hand off a design request or open the editor.
+      if (!alive.current) return { ok: false, error: "You left this page before the direction was confirmed. Confirm it again to start the design." };
       if (!result.ok) {
         if (result.status === 409) await load();
         return { ok: false, error: result.error };
       }
+      const confirmed = result.body.research?.confirmed;
+      if (!confirmed) return { ok: false, error: "CreatorBrio did not confirm the direction. Try again." };
       setState({ status: "ready", research: result.body.research });
-      return { ok: true };
+      return { ok: true, confirmed };
     },
     [base, load]
   );

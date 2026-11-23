@@ -70,8 +70,10 @@ The design agent's prompt is frozen, so a format reaches it only as visible word
 3. **Create and open editor** creates the project with `POST /api/carousels` (or `POST /api/templates/[id]/use` with an optional name), then hands the composed first message to the editor the same way.
 4. The editor puts it in the message box. Nothing is designed until the person presses Send.
 
-Starting from research (#253) differs in one step: **Create and research** hands the topic and links to the research screen instead, and the design starts when the person confirms a direction there.
-That confirmation is the only handoff that sends a message, once, on the editor's arrival ([research.md](research.md#the-research-screen)).
+Starting from research (#253) differs in steps 3 and 4.
+**Create and research** creates the project and hands the topic and links to the research screen, not a first message to the editor, and the research starts on arrival.
+There the person confirms a direction, and the editor, on arrival, sends the one design request that confirmation stands for.
+That is the only handoff that sends a message, once ([research.md](research.md#the-research-screen)).
 
 A screen reads a handoff while rendering and clears it once mounted, because React may render twice in development.
 
@@ -81,7 +83,8 @@ A screen reads a handoff while rendering and clears it once mounted, because Rea
   It checks Home's formats and navigation, no horizontal overflow on twelve screens at 1440, 1280, 768, 390 and 320 px, keyboard focus order and visible focus, brand switching and persistence, each format's sizes, Reel cover creation with the prefilled message and the refused second slide, the single PNG and PDF exports, starting from a template, an unpaired Studio visit without a 401, the brand identity as rendered (the brand's icons, Deep Coral creation, the outlined delete, the type roles and Geist Mono metadata, #189), and an empty console.
   The server gets a Claude CLI stub that refuses every call, and the test fails if any request reaches `/api/chat`.
 - `tests/app-research.test.ts` runs the same build on port 3192 with no search key and the same refusing Claude stub.
-  It checks starting research from New project and the refusal of an unreadable link, an interrupted run with its recovery, the findings, sources and edited direction of a seeded ready run, that confirming sends exactly one design request and a reload sends none, and no horizontal overflow on a phone.
+  It checks starting research from New project and the refusal of an unreadable link, a real run started offline from a link that is refused when read (its progress view with Stop, the server's failure and Try again), an interrupted run with its recovery, the Settings link for the failures that need it, a topic over the limit refused before a project is made, the findings, quotes, sources and edited direction of a seeded ready run with nothing called verified, that the design request waits for the Claude check and is sent exactly once after confirming, and that a reload sends none, that Enter in a field never confirms, that a design-start key left for another confirmation or a screen left before its answer sends nothing, and no horizontal overflow on a phone for long project names.
+  Claude is only the stub, so no model is ever called; the test records every request to `/api/chat` and asserts exactly which ones each journey makes.
 - In CI, `tests/global-setup.ts` builds the app before the suite and the test uses the runner's Chrome; it fails rather than skips when either is missing.
   Locally a missing or stale build skips it with the reason.
 - `tests/brand-identity.test.ts` keeps the palette, its documentation, contrast, the action hierarchy and the icons consistent, and checks that CreatorBrio's identity never reaches a person's brand, slides or exports ([../brand/CREATORBRIO-BRAND-GUIDELINES.md](../brand/CREATORBRIO-BRAND-GUIDELINES.md)).

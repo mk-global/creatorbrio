@@ -40,6 +40,7 @@ Brand colours and fonts, meaning the brands people create, appear only inside wo
 3. **One bold thing:** work drawn at its real shape. A carousel fans sideways because it swipes, a document stacks downwards because it pages, a Reel cover is one sheet. Everything else is disciplined.
 4. **Honest availability.** Early is labelled, features that are not built are not offered, and Settings says what is and is not set up on this computer.
 5. **Nothing happens behind the person's back.** Creating a project never starts a design; the words go into the message box, and the person presses Send.
+   The one exception is research: confirming a research direction is the person's own request to design, so it starts the design at once, and the screen says so beside the button before they press it.
 
 ## Screenshots
 

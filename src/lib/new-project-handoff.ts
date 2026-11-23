@@ -75,7 +75,28 @@ export function readResearchRequest(projectId: string): ResearchRequestDraft | n
 }
 export const clearResearchRequest = (projectId: string) => clear(researchKey(projectId));
 
-/** A message the editor sends once on arrival: the person pressed "Confirm and create design" (#253). */
-export const handOffDesignStart = (projectId: string, message: string) => put(designStartKey(projectId), message);
-export const readDesignStart = (projectId: string) => read(designStartKey(projectId));
+/**
+ * A message the editor sends once on arrival: the person pressed "Confirm and
+ * create design" (#253). It names the confirmed snapshot it was made for, by
+ * revision and confirmation time, so a key left behind by an earlier visit can
+ * never send for a direction the carousel no longer holds.
+ */
+export interface DesignStartDraft {
+  message: string;
+  revision: number;
+  confirmedAt: string;
+}
+
+export const handOffDesignStart = (projectId: string, start: DesignStartDraft) => put(designStartKey(projectId), JSON.stringify(start));
+export function readDesignStart(projectId: string): DesignStartDraft | null {
+  try {
+    const parsed = JSON.parse(read(designStartKey(projectId)) || "null") as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const { message, revision, confirmedAt } = parsed as Record<string, unknown>;
+    if (typeof message !== "string" || !message.trim() || !Number.isInteger(revision) || typeof confirmedAt !== "string") return null;
+    return { message, revision: revision as number, confirmedAt };
+  } catch {
+    return null;
+  }
+}
 export const clearDesignStart = (projectId: string) => clear(designStartKey(projectId));
