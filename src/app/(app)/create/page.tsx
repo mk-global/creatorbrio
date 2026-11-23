@@ -10,7 +10,8 @@ import { useProjects, useTemplates } from "@/components/library/useLibrary";
 /**
  * New project (#175): format, then details, then the editor. Nothing is
  * designed here; the description becomes the editor's first message, which
- * the person sends themselves.
+ * the person sends themselves. Starting from research (#253) goes to the
+ * research screen instead, where the person confirms a direction first.
  */
 function CreatePage() {
   const params = useSearchParams();
@@ -36,7 +37,12 @@ function CreatePage() {
       templates={templates.state.status === "ready" ? templates.state.items : []}
       templatesError={templates.state.status === "error" ? templates.state.message : null}
       projects={projects.state.status === "ready" ? projects.state.items : []}
-      params={{ format: params.get("format"), template: params.get("template"), fromIdea: params.get("from") === "idea" }}
+      params={{
+        format: params.get("format"),
+        template: params.get("template"),
+        fromIdea: params.get("from") === "idea",
+        research: params.get("start") === "research",
+      }}
     />
   );
 }

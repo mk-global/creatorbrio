@@ -12,7 +12,7 @@ import { EditorHeader } from "@/components/editor/EditorHeader";
 import { ExportButton } from "@/components/editor/ExportButton";
 import { duplicateProject, saveProjectAsTemplate } from "@/components/library/useLibrary";
 import { FORMATS, formatOf, primaryExportFor } from "@/lib/formats";
-import { clearDraft, readDraft } from "@/lib/new-project-handoff";
+import { clearDesignStart, clearDraft, readDesignStart, readDraft } from "@/lib/new-project-handoff";
 import { CaptionPanel } from "@/components/editor/CaptionPanel";
 import { FullscreenPreview } from "@/components/editor/FullscreenPreview";
 import { useGenerationStatus } from "@/components/editor/useGenerationStatus";
@@ -29,7 +29,10 @@ export default function CarouselEditorPage({ params }: PageProps) {
   // Words the New project form left for the message box; read once, cleared once mounted.
   const [initialDraft] = useState(() => readDraft(id));
   useEffect(() => clearDraft(id), [id]);
-  const [pane, setPane] = useState<"preview" | "chat">(initialDraft ? "chat" : "preview");
+  // A design the research screen asked for (#253): sent once, so a reload never sends it again.
+  const [designStart] = useState(() => readDesignStart(id));
+  useEffect(() => clearDesignStart(id), [id]);
+  const [pane, setPane] = useState<"preview" | "chat">(initialDraft || designStart ? "chat" : "preview");
   const [carousel, setCarousel] = useState<Carousel | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -342,6 +345,7 @@ export default function CarouselEditorPage({ params }: PageProps) {
             chatInputRef={chatInputRef}
             continuation={generation.continuation}
             initialDraft={initialDraft}
+            autoSend={designStart || undefined}
           />
         </div>
 

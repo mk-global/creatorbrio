@@ -3,11 +3,16 @@
  * idea typed on Home goes to the New project form, and what the form
  * composes goes into the editor's message box. Nothing is ever sent from
  * here; the person reads it and presses Send (#175,
- * docs/architecture/app-shell.md). Kept in sessionStorage, so it never
- * outlives the tab and never reaches the server.
+ * docs/architecture/app-shell.md). The one exception is research (#253):
+ * the research screen's "Confirm and create design" is the person's request
+ * to design, so it hands the editor a message to send once, on arrival.
+ * Kept in sessionStorage, so it never outlives the tab and never reaches the
+ * server.
  */
 const IDEA_KEY = "creatorbrio:idea";
 const draftKey = (projectId: string) => `creatorbrio:draft:${projectId}`;
+const researchKey = (projectId: string) => `creatorbrio:research:${projectId}`;
+const designStartKey = (projectId: string) => `creatorbrio:design-start:${projectId}`;
 
 function storage(): Storage | null {
   try {
@@ -49,3 +54,28 @@ export const clearIdea = () => clear(IDEA_KEY);
 export const handOffDraft = (projectId: string, draft: string) => put(draftKey(projectId), draft);
 export const readDraft = (projectId: string) => read(draftKey(projectId));
 export const clearDraft = (projectId: string) => clear(draftKey(projectId));
+
+/** The topic and links the New project form asks the research screen to research (#253). */
+export interface ResearchRequestDraft {
+  topic: string;
+  links: string[];
+}
+
+export const handOffResearch = (projectId: string, request: ResearchRequestDraft) => put(researchKey(projectId), JSON.stringify(request));
+export function readResearchRequest(projectId: string): ResearchRequestDraft | null {
+  try {
+    const parsed = JSON.parse(read(researchKey(projectId)) || "null") as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const { topic, links } = parsed as Record<string, unknown>;
+    if (typeof topic !== "string") return null;
+    return { topic, links: Array.isArray(links) ? links.filter((l): l is string => typeof l === "string") : [] };
+  } catch {
+    return null;
+  }
+}
+export const clearResearchRequest = (projectId: string) => clear(researchKey(projectId));
+
+/** A message the editor sends once on arrival: the person pressed "Confirm and create design" (#253). */
+export const handOffDesignStart = (projectId: string, message: string) => put(designStartKey(projectId), message);
+export const readDesignStart = (projectId: string) => read(designStartKey(projectId));
+export const clearDesignStart = (projectId: string) => clear(designStartKey(projectId));

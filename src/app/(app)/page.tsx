@@ -145,12 +145,23 @@ export default function Home() {
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              className="btn btn-quiet h-11 flex-[1_1_auto] sm:flex-none"
+              disabled={!idea.trim()}
+              onClick={() => {
+                handOffIdea(idea.trim());
+                router.push(`/create?format=${ideaFormat}&from=idea&start=research`);
+              }}
+            >
+              Research it
+            </button>
             <button type="submit" className="btn btn-create h-11 flex-[1_1_auto] sm:flex-none" disabled={!idea.trim()}>
               Set up project
             </button>
           </div>
         </form>
-        <p className="mt-2 pl-1 text-[13px] text-graphite">Nothing is designed until you press Send in the editor.</p>
+        <p className="mt-2 pl-1 text-[13px] text-graphite">Nothing is designed until you press Send in the editor, or confirm a direction after research.</p>
       </section>
 
       <section aria-labelledby="recent">

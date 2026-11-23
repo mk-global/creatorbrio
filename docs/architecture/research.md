@@ -1,6 +1,6 @@
 # Topic research
 
-This page describes how CreatorBrio researches a topic for a carousel and how the direction the person confirms reaches the design (#252).
+This page describes how CreatorBrio researches a topic for a carousel, the screen the person uses for it, and how the direction the person confirms reaches the design (#252, #253).
 It describes only what is merged.
 
 ## Status
@@ -9,7 +9,7 @@ It describes only what is merged.
 |---|---|
 | Research run on the server: search, page reading, synthesis and the quote check | Implemented |
 | Confirmed research in the Visual Director's input and the Design Agent's task | Implemented |
-| Research screen and the New project entry point | Planned under #253 |
+| Research screen and the New project entry point | Implemented |
 
 ## Decisions it follows
 
@@ -107,6 +107,22 @@ Researching again starts a new revision and keeps that snapshot until the person
 
 Confirming is a workflow step, not a binding approval.
 Under the default Design Agent profile's local trust (FD-K), the agent reaches the app's API with the person's permissions, so a confirmation is not proof that a person made it; a binding, agent-proof approval arrives with the publishing gates.
+
+## The research screen
+
+`/carousel/[id]/research` is an ordinary page of the app shell (#253).
+A person reaches it from **Research a topic** in New project's "Start from" choice, from **Research it** beside Home's idea field, or from **Research** in the editor's toolbar.
+New project hands the topic and links to the screen through this tab's `sessionStorage`, as it hands a first message to the editor, and the screen starts research once on arrival.
+
+The screen polls the research record while a run is in progress, so a reload or a second tab shows the same run, and **Stop** cancels it.
+A failure shows the server's message; failures the same request may get past, such as a busy search service or an interrupted run, also offer **Try again**, and the form keeps the topic and links so they can be changed.
+A ready run shows the findings quoted in a source with their quotes and source links, the findings that were not checked (marked as left out of the design), what the pages do not establish, every page read and every page that could not be read.
+The screen says that a quote found in a page shows the words are there, not that the finding is true.
+
+The suggested direction is a form the person can change.
+**Confirm and create design** confirms exactly what is in the form and opens the editor, which sends one message, "Design it from the confirmed research.", after the format's own words.
+That is the one handoff that sends: the person's confirmation is their request to design, and the message is read and cleared once, so a reload never sends it again.
+**Research again** starts a new revision with the same or different words and links.
 
 ## From confirmed research to the design
 

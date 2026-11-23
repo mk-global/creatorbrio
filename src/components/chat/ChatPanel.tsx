@@ -38,6 +38,11 @@ interface ChatPanelProps {
   continuation?: ContinuationOffer | null;
   /** Words waiting in the message box when the editor opens (#175); the person sends them. */
   initialDraft?: string;
+  /**
+   * A message sent once when the chat opens: the person pressed "Confirm and
+   * create design" on the research screen (#253), which is their request to design.
+   */
+  autoSend?: string;
 }
 
 /** What a Continue shows as the user's message; the server ignores the text. */
@@ -52,6 +57,7 @@ export function ChatPanel({
   chatInputRef,
   continuation = null,
   initialDraft,
+  autoSend,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -238,6 +244,14 @@ export function ChatPanel({
     },
     [isStreaming, sessionId, carouselId, onStreamStart, onStreamEnd, persistMessages]
   );
+
+  // The research screen's confirmation is sent once, after this carousel's history is loaded.
+  const autoSent = useRef(false);
+  useEffect(() => {
+    if (!autoSend || autoSent.current) return;
+    autoSent.current = true;
+    void handleSend(autoSend);
+  }, [autoSend, handleSend]);
 
   if (!claudeAvailable) {
     return (

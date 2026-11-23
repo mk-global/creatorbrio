@@ -114,6 +114,27 @@ export default function SettingsPage() {
           </p>
         </Row>
         <Row
+          id="research"
+          title="Web search for research"
+          status={
+            !status ? checking : status.research?.search.configured ? <span className="tag tag-ok">Set up</span> : <span className="tag tag-neutral">Not set up</span>
+          }
+        >
+          <p>
+            Optional. Research always reads the links you give it. With a Brave Search API key of your own, it also searches the web for your topic; searches count
+            against your Brave account.
+          </p>
+          {!status?.research?.search.configured && (
+            <div>
+              <p>To set it up, add this line to .env.local in the CreatorBrio folder with your key, then restart CreatorBrio:</p>
+              <Command>BRAVE_SEARCH_API_KEY=your-key</Command>
+            </div>
+          )}
+          <p>
+            Reading the pages uses your Claude Code sign-in. To cap what one research run may spend, set RESEARCH_MAX_BUDGET_USD in .env.local as well.
+          </p>
+        </Row>
+        <Row
           title="Video Studio"
           status={
             studio.state === "checking" ? (
@@ -157,6 +178,10 @@ export default function SettingsPage() {
         </Row>
         <Row title="What leaves this computer">
           <p>When you design by chat, your message, your brand and the project go to Claude through Claude Code. Links you paste are fetched while designing.</p>
+          <p>
+            When you research a topic, the topic goes to Brave Search if web search is set up, CreatorBrio reads the pages itself, and their text goes to Claude
+            through Claude Code. Only each page&apos;s address, title and a fingerprint of its text are kept.
+          </p>
           <p>The Video Studio sends nothing out. Fonts for slides load from Google Fonts.</p>
         </Row>
         <Row title="About">

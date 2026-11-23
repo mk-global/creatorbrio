@@ -228,7 +228,8 @@ function TabBar({ pathname, fixed }: { pathname: string; fixed: boolean }) {
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const editor = pathname.startsWith("/carousel/");
+  // The editor itself; a project's research screen (#253) is an ordinary page.
+  const editor = /^\/carousel\/[^/]+\/?$/.test(pathname);
   const studio = pathname === "/studio" || pathname.startsWith("/studio/");
   const workspace = editor || studio;
   const key = editor ? KEY_EDITOR : KEY_PAGES;

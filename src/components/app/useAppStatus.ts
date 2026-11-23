@@ -11,6 +11,8 @@ export interface AppStatus {
   claude: { available: boolean };
   imageGeneration: { configured: boolean };
   designAgent?: DesignAgentStatus;
+  /** Topic research (#252): whether web search has a key. Research from the person's links needs none. */
+  research?: { search: { configured: boolean } };
 }
 
 /** What `/api/status` says about this computer, or null until it answers (#175). */
