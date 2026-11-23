@@ -30,7 +30,8 @@ interface Message {
 interface ChatPanelProps {
   carouselId: string;
   referenceImages?: ReferenceImage[];
-  claudeAvailable: boolean;
+  /** Null until the editor's Claude check has answered; the composer treats that as available. */
+  claudeAvailable: boolean | null;
   onStreamStart?: () => void;
   onStreamEnd?: () => void;
   chatInputRef?: React.RefObject<HTMLTextAreaElement | null>;
@@ -38,6 +39,11 @@ interface ChatPanelProps {
   continuation?: ContinuationOffer | null;
   /** Words waiting in the message box when the editor opens (#175); the person sends them. */
   initialDraft?: string;
+  /**
+   * A message sent once when the chat opens: the person pressed "Confirm and
+   * create design" on the research screen (#253), which is their request to design.
+   */
+  autoSend?: string;
 }
 
 /** What a Continue shows as the user's message; the server ignores the text. */
@@ -52,12 +58,15 @@ export function ChatPanel({
   chatInputRef,
   continuation = null,
   initialDraft,
+  autoSend,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stage, setStage] = useState<ReturnType<typeof reduceChatRun>["stage"]>(null);
+  // Which carousel's history is in state; the automatic send waits for it.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -74,6 +83,7 @@ export function ChatPanel({
       // ignore corrupted data
     }
     setMessages(Array.isArray(stored) ? stored : []);
+    setLoadedFor(carouselId);
   }, [carouselId]);
 
   // Persist messages to localStorage
@@ -239,7 +249,18 @@ export function ChatPanel({
     [isStreaming, sessionId, carouselId, onStreamStart, onStreamEnd, persistMessages]
   );
 
-  if (!claudeAvailable) {
+  // The research screen's confirmation is sent once, after this carousel's
+  // history and session are loaded and the Claude check has answered that
+  // Claude is available, so it continues the same conversation and is not
+  // spent on a refusal.
+  const autoSent = useRef(false);
+  useEffect(() => {
+    if (!autoSend || autoSent.current || loadedFor !== carouselId || claudeAvailable !== true) return;
+    autoSent.current = true;
+    void handleSend(autoSend);
+  }, [autoSend, handleSend, loadedFor, carouselId, claudeAvailable]);
+
+  if (claudeAvailable === false) {
     return (
       <div className="h-full flex flex-col items-center justify-center p-6 text-center">
         <Plug className="h-10 w-10 text-muted-foreground mb-3" />

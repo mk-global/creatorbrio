@@ -1,6 +1,6 @@
 # Topic research
 
-This page describes how CreatorBrio researches a topic for a carousel and how the direction the person confirms reaches the design (#252).
+This page describes how CreatorBrio researches a topic for a carousel, the screen the person uses for it, and how the direction the person confirms reaches the design (#252, #253).
 It describes only what is merged.
 
 ## Status
@@ -9,7 +9,7 @@ It describes only what is merged.
 |---|---|
 | Research run on the server: search, page reading, synthesis and the quote check | Implemented |
 | Confirmed research in the Visual Director's input and the Design Agent's task | Implemented |
-| Research screen and the New project entry point | Planned under #253 |
+| Research screen and the New project entry point | Implemented |
 
 ## Decisions it follows
 
@@ -38,6 +38,8 @@ flowchart TD
 
 `POST /api/carousels/[id]/research` with `{ topic, links? }` starts a run and answers 202 at once with the running record; the run goes on in the server's process.
 A carousel has one run at a time, and a second start answers 409.
+A start the server refuses answers 400 with `{ error }`, or 404 with "Project not found." for an unknown project, before anything is searched or read.
+When Settings fixes the problem, Claude Code being unavailable or an invalid `RESEARCH_MAX_BUDGET_USD`, the body also carries `code` (`claude_unavailable` or `budget_setting_invalid`) so the screen can link to that Settings row; every other refusal carries no `code`.
 Starting new research replaces the previous result with the next revision's running record; the snapshot the person confirmed stays.
 The record moves through the stages `searching`, `reading` and `synthesizing`, and ends `ready` or `failed` with a code and a message the person can act on.
 `POST /api/carousels/[id]/research/cancel` stops it; the run records itself as stopped, and nothing else on the carousel changes.
@@ -107,6 +109,32 @@ Researching again starts a new revision and keeps that snapshot until the person
 
 Confirming is a workflow step, not a binding approval.
 Under the default Design Agent profile's local trust (FD-K), the agent reaches the app's API with the person's permissions, so a confirmation is not proof that a person made it; a binding, agent-proof approval arrives with the publishing gates.
+
+## The research screen
+
+`/carousel/[id]/research` is an ordinary page of the app shell (#253).
+A person reaches it from **Research a topic** in New project's "Start from" choice, from **Research it** beside Home's idea field, or from **Research** in the editor's toolbar.
+New project hands the topic and links to the screen through this tab's `sessionStorage`, as it hands a first message to the editor, and the screen starts research once on arrival.
+
+The screen polls the research record while a run is in progress, so a reload or a second tab shows the same run, and **Stop** cancels it.
+A failure shows the server's message, and the form keeps the topic and links so they can be changed.
+Failures the same request may get past, such as a busy search service, pages that could not be read or an interrupted run, also offer **Try again**.
+A refused search key, an invalid spending setting and a missing Claude Code link to the Settings row that fixes them, in the notice of a run that failed and, for the last two, in the message of a start that was refused.
+If the research cannot be read at all, the notice offers **Try again** to read it again.
+A ready run shows the findings quoted in a source with their quotes and source links, the findings that were not checked (marked as left out of the design), what the pages do not establish, every page read and every page that could not be read.
+The screen says that a quote found in a page shows the words are there, not that the finding is true.
+
+The suggested direction is a form the person can change, and each field grows to show everything it holds.
+**Confirm and create design** is the only thing that confirms: Enter in a field never does, and the button waits until the project's format has loaded, so the format's words are never left out.
+It confirms exactly what is in the form and opens the editor, which sends one message: the format's own words, if it has any, then "Design it from the confirmed research.".
+That is the one handoff that sends: the person's confirmation is their request to design.
+The handoff names the revision and confirmation time the server answered with, and is kept in this tab's `sessionStorage` per project.
+The editor reads and clears it once, whether or not it uses it, so a reload never sends it again.
+It sends the message only when the carousel still holds that exact confirmed direction and the editor's check of Claude Code has finished without finding it missing.
+A key left behind for the confirmation the carousel still holds, because the editor was not opened after the confirmation, is sent on the next visit to that editor in the same tab, since it is still the person's own confirmed request.
+A key for a confirmation the carousel no longer holds sends nothing.
+A person who leaves the screen before the answer arrives hands nothing over and sends nothing, although the server has confirmed the direction.
+**Research again** starts a new revision with the same or different words and links.
 
 ## From confirmed research to the design
 

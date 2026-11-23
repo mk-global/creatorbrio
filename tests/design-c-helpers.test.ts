@@ -3,7 +3,7 @@ import { editedPhrase } from "@/lib/relative-time";
 import { sampleSlideHtml } from "@/lib/format-samples";
 import { exportFormatsFor } from "@/lib/export-formats";
 import { FORMATS, PROJECT_FORMATS, SIZE_NAMES, countLabel, sizePixels } from "@/lib/formats";
-import { clearDraft, clearIdea, handOffDraft, handOffIdea, readDraft, readIdea } from "@/lib/new-project-handoff";
+import { clearDesignStart, clearDraft, clearIdea, handOffDesignStart, handOffDraft, handOffIdea, readDesignStart, readDraft, readIdea } from "@/lib/new-project-handoff";
 
 // The pure helpers behind the Design C screens (#175): how an edit time is
 // worded, the sample slides drawn for a brand, the Export menu's order, the
@@ -145,6 +145,22 @@ describe("new project handoff", () => {
     expect(readDraft("a")).toBe("");
     expect(readDraft("b")).toBe("second");
     expect([...store.keys()]).toEqual(["creatorbrio:draft:b"]);
+  });
+
+  it("keeps a design start per project with the confirmation it was made for, and trusts nothing malformed", () => {
+    const store = stubSession();
+    const start = { message: "Design it from the confirmed research.", revision: 2, confirmedAt: "2026-11-23T10:02:00.000Z" };
+    handOffDesignStart("a", start);
+    expect(readDesignStart("a")).toEqual(start);
+    expect(readDesignStart("a")).toEqual(start);
+    expect(readDesignStart("b")).toBeNull();
+    clearDesignStart("a");
+    expect(readDesignStart("a")).toBeNull();
+    // A bare message, or a record without what binds it to a confirmation, is not a design start.
+    for (const bad of ["Design it from the confirmed research.", "{}", JSON.stringify({ message: "x", revision: 1 }), JSON.stringify({ ...start, revision: "2" }), JSON.stringify({ ...start, message: " " })]) {
+      store.set("creatorbrio:design-start:a", bad);
+      expect(readDesignStart("a")).toBeNull();
+    }
   });
 
   it("survives storage that throws, as a blocked or full sessionStorage does", () => {

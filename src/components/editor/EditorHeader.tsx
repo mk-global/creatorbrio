@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRef, useState } from "react";
-import { ArrowLeft, BookmarkPlus, ChevronDown, CopyPlus, Ellipsis, Maximize2, MessageSquare, Ratio as RatioIcon, ScanLine, Trash2 } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, ChevronDown, CopyPlus, Ellipsis, Maximize2, MessageSquare, Ratio as RatioIcon, ScanLine, Search, Trash2 } from "lucide-react";
 import { Swatches } from "@/components/app/BrandSwitcher";
 import { Menu } from "@/components/app/Menu";
 import { brandDisplayName } from "@/lib/brand-display";
@@ -165,6 +165,9 @@ export function EditorHeader({
         >
           <MessageSquare className="size-4" aria-hidden="true" /> Chat
         </button>
+        <Link href={`/carousel/${encodeURIComponent(carousel.id)}/research`} className="btn btn-ghost btn-sm shrink-0">
+          <Search className="size-4" aria-hidden="true" /> Research
+        </Link>
         <span className="meta ml-auto hidden shrink-0 px-2 text-graphite sm:inline">
           {sizePixels(carousel.aspectRatio)}, {carousel.slides.length} of {def.maxSlides} {def.maxSlides === 1 ? def.unit.one : def.unit.many}
         </span>

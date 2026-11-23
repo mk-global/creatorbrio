@@ -578,7 +578,10 @@ describe("a research run", () => {
         return { ok: true, output: synthesis.validateSynthesis(modelOutput(), request.pages)!, usage: { costUsd: 0, durationMs: 1 } };
       },
     });
-    expect((await start(carousel.id, { topic: "x" })).status).toBe(400);
+    const tooShort = await start(carousel.id, { topic: "x" });
+    expect(tooShort.status).toBe(400);
+    // Only the refusals Settings fixes carry a code.
+    expect(tooShort.body).not.toHaveProperty("code");
     expect((await start(carousel.id, { topic: "ok topic", links: ["https://a.example/1", "https://a.example/2", "https://a.example/3", "https://a.example/4"] })).status).toBe(400);
     expect((await start(carousel.id, { topic: "ok topic", links: ["http://127.0.0.1/private"] })).status).toBe(400);
     expect((await start("missing", { topic: "ok topic" })).status).toBe(404);
@@ -600,6 +603,8 @@ describe("a research run", () => {
       const refused = await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
       expect(refused.status).toBe(400);
       expect(refused.body.error).toBe(run.RESEARCH_FAILURE_MESSAGES.budget_setting_invalid);
+      // The code lets the screen link to the Settings row that fixes it.
+      expect(refused.body).toEqual({ error: run.RESEARCH_FAILURE_MESSAGES.budget_setting_invalid, code: "budget_setting_invalid" });
     } finally {
       delete process.env[synthesis.RESEARCH_BUDGET_ENV];
     }
@@ -615,6 +620,8 @@ describe("a research run", () => {
     const refused = await start(carousel.id, { topic: "calmer evenings" });
     expect(refused.status).toBe(400);
     expect(refused.body.error).toBe(run.RESEARCH_FAILURE_MESSAGES.claude_unavailable);
+    // The code lets the screen link to the Settings row that fixes it.
+    expect(refused.body).toEqual({ error: run.RESEARCH_FAILURE_MESSAGES.claude_unavailable, code: "claude_unavailable" });
     expect(seen).toEqual({ queries: [], links: [], requests: [] });
     expect(await read(carousel.id)).toBeNull();
   });

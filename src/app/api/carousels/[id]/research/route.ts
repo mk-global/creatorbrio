@@ -11,7 +11,7 @@ type Params = { params: Promise<{ id: string }> };
 function respond(result: ResearchResponse, okStatus = 200): NextResponse {
   return result.ok
     ? NextResponse.json({ research: result.research }, { status: okStatus, headers: NO_STORE })
-    : NextResponse.json({ error: result.error }, { status: result.status, headers: NO_STORE });
+    : NextResponse.json({ error: result.error, ...(result.code ? { code: result.code } : {}) }, { status: result.status, headers: NO_STORE });
 }
 
 /**
@@ -32,7 +32,9 @@ export async function GET(_request: Request, { params }: Params) {
 
 /**
  * Starts research: `{ topic, links? }`, at most three links. Answers 202 with
- * the running record; 409 while research already runs for the carousel.
+ * the running record; 409 while research already runs for the carousel. A
+ * refusal that Settings fixes (Claude Code unavailable, an invalid spending
+ * setting) also carries its failure `code`, next to `error`.
  */
 export async function POST(request: Request, { params }: Params) {
   const { id } = await params;

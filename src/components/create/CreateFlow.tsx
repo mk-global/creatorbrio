@@ -8,12 +8,14 @@ import { ProjectFrame } from "@/components/library/ProjectFrame";
 import { templateBrandId, templateFirstSlide } from "@/components/library/useLibrary";
 import { brandDisplayName } from "@/lib/brand-display";
 import { countLabel, DEFAULT_FORMAT, FORMATS, formatOf, isProjectFormat, type ProjectFormat } from "@/lib/formats";
-import { clearIdea, handOffDraft, readIdea } from "@/lib/new-project-handoff";
+import { clearIdea, handOffDraft, handOffResearch, readIdea } from "@/lib/new-project-handoff";
 import type { ProjectSummary } from "@/lib/project-summary";
 import type { Brand } from "@/types/brand";
 import type { AspectRatio } from "@/types/carousel";
 import type { Template } from "@/types/template";
 import { FormatChoice, SizeChoice } from "./FormatChoice";
+import { useAppStatus } from "@/components/app/useAppStatus";
+import { linksFrom, ResearchFields, researchReady } from "@/components/research/ResearchStart";
 
 const EXAMPLES: Record<ProjectFormat, string> = {
   "instagram-carousel": "five pour-over mistakes and how to fix them",
@@ -49,7 +51,7 @@ export function CreateFlow({
   templates: Template[];
   templatesError: string | null;
   projects: ProjectSummary[];
-  params: { format: string | null; template: string | null; fromIdea: boolean };
+  params: { format: string | null; template: string | null; fromIdea: boolean; research?: boolean };
 }) {
   const router = useRouter();
   const initialTemplate = templates.find((t) => t.id === params.template);
@@ -58,7 +60,12 @@ export function CreateFlow({
   const [format, setFormat] = useState<ProjectFormat>(startFormat);
   const [brandId, setBrandId] = useState(() => (initialTemplate && templateBrandId(initialTemplate, defaultBrandId)) || initialBrand.id);
   const [size, setSize] = useState<AspectRatio>(initialTemplate?.aspectRatio ?? FORMATS[startFormat].defaultSize);
-  const [source, setSource] = useState<"description" | "template">(initialTemplate ? "template" : "description");
+  const [source, setSource] = useState<"description" | "research" | "template">(
+    initialTemplate ? "template" : params.research ? "research" : "description"
+  );
+  const [links, setLinks] = useState("");
+  const status = useAppStatus();
+  const searchConfigured = status ? (status.research?.search.configured ?? false) : null;
   const [templateId, setTemplateId] = useState(initialTemplate?.id ?? "");
   const [about, setAbout] = useState(() => (params.fromIdea ? readIdea() : ""));
   // The idea is now in the form; it is not offered again on the next visit.
@@ -76,6 +83,8 @@ export function CreateFlow({
   const template = available.find((t) => t.id === templateId);
   const chosenSize: AspectRatio = source === "template" && template ? template.aspectRatio : def.sizes.includes(size) ? size : def.defaultSize;
   const derivedName = source === "template" && template ? template.name : nameFrom(about, format);
+  const research = researchReady(about, links, searchConfigured);
+  const blocked = (source === "template" && !template) || (source === "research" && !research.ok);
 
   const pickFormat = (id: ProjectFormat) => {
     setFormat(id);
@@ -85,7 +94,7 @@ export function CreateFlow({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (busy || (source === "template" && !template)) return;
+    if (busy || blocked) return;
     setBusy(true);
     setError(null);
     try {
@@ -94,6 +103,12 @@ export function CreateFlow({
         source === "template" && template
           ? await post<{ id: string }>(`/api/templates/${encodeURIComponent(template.id)}/use`, { name: finalName })
           : await post<{ id: string }>("/api/carousels", { name: finalName, aspectRatio: chosenSize, brandId, format });
+      if (source === "research") {
+        // The research screen starts research on arrival; nothing is designed until the person confirms a direction.
+        handOffResearch(created.id, { topic: about.trim(), links: linksFrom(links) });
+        router.push(`/carousel/${encodeURIComponent(created.id)}/research`);
+        return;
+      }
       // The format's words, and the description, wait in the editor's message box; nothing is sent.
       const draft = source === "description" ? `${def.composerPrefix}${about.trim()}` : def.composerPrefix;
       if (draft.trim()) handOffDraft(created.id, draft);
@@ -107,7 +122,11 @@ export function CreateFlow({
   return (
     <form onSubmit={(e) => void submit(e)} className="max-w-[980px]">
       <h1 className="type-title">New project</h1>
-      <p className="mt-2 text-graphite">Two choices, then the editor. Nothing is designed until you press Send there.</p>
+      <p className="mt-2 text-graphite">
+        {source === "research"
+          ? "Two choices, then research. Nothing is designed until you confirm a direction."
+          : "Two choices, then the editor. Nothing is designed until you press Send there."}
+      </p>
       <p className="mt-4 text-[13px] font-semibold text-graphite sm:hidden" aria-live="polite">
         Step {step} of 2
       </p>
@@ -171,12 +190,12 @@ export function CreateFlow({
 
         <fieldset className="mt-8">
           <legend className="mb-2 text-[14px] font-semibold">Start from</legend>
-          <div className="inline-flex rounded-lg bg-hover p-1">
-            {(["description", "template"] as const).map((s) => (
+          <div className="inline-flex max-w-full flex-wrap rounded-lg bg-hover p-1">
+            {(["description", "research", "template"] as const).map((s) => (
               <label key={s} className="cursor-pointer">
                 <input type="radio" name="source" className="peer sr-only" checked={source === s} onChange={() => setSource(s)} />
                 <span className="flex h-9 items-center rounded-md px-4 text-[14px] font-medium text-graphite peer-checked:bg-sheet peer-checked:text-ink peer-checked:shadow-[0_1px_2px_color-mix(in_srgb,var(--color-ink)_15%,transparent)] peer-focus-visible:outline-2 peer-focus-visible:outline-ink">
-                  {s === "description" ? "A description" : `A template (${available.length})`}
+                  {s === "description" ? "A description" : s === "research" ? "Research a topic" : `A template (${available.length})`}
                 </span>
               </label>
             ))}
@@ -201,6 +220,11 @@ export function CreateFlow({
                 {def.composerPrefix && <>, after the words &ldquo;{def.composerPrefix.trim().replace(/\.$/, "")}&rdquo;</>}. You can change it
                 before sending.
               </p>
+            </div>
+          ) : source === "research" ? (
+            <div className="mt-5">
+              <ResearchFields topic={about} onTopic={setAbout} links={links} onLinks={setLinks} searchConfigured={searchConfigured} idPrefix="create-research" />
+              {research.reason && <p className="mt-3 text-[13px] text-graphite">{research.reason}</p>}
             </div>
           ) : templatesError ? (
             <p className="mt-5 max-w-[60ch] text-alert">Templates couldn&apos;t be loaded: {templatesError}</p>
@@ -256,8 +280,8 @@ export function CreateFlow({
           {capitalFirst(withA(`${chosenSize} ${def.name}`))} for <span className="font-semibold text-white">{brandDisplayName(brand)}</span>
           {source === "template" && template ? <>, starting from &ldquo;{template.name}&rdquo;</> : null}.
         </p>
-        <button type="submit" className="btn btn-create" disabled={busy || (source === "template" && !template)}>
-          {busy ? "Creating…" : "Create and open editor"}
+        <button type="submit" className="btn btn-create" disabled={busy || blocked}>
+          {busy ? "Creating…" : source === "research" ? "Create and research" : "Create and open editor"}
         </button>
       </div>
     </form>
