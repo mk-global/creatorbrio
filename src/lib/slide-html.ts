@@ -114,10 +114,97 @@ function escapeAttribute(value: string): string {
 }
 
 /**
- * Wraps slide body HTML into a full HTML document at the correct dimensions.
- * This is THE shared rendering contract between preview (iframe) and export
- * (Puppeteer).
+ * Whether `name` may be asked of the preview font route (#249): letters and
+ * digits in words separated by single spaces, the form of Google Fonts family
+ * names, every family the font picker offers among them, and nothing that
+ * could change the request the server makes.
  */
+export function isFontFamilyName(name: string): boolean {
+  return name.length <= 64 && /^[A-Za-z0-9]+(?: [A-Za-z0-9]+)*$/.test(name);
+}
+
+/** The preview font route's address for one family, with its italic cut when the slide needs one. */
+export function previewFontCssUrl(family: string, italic: boolean): string {
+  return `/api/fonts/css?family=${encodeURIComponent(family)}${italic ? "&italic=1" : ""}`;
+}
+
+/**
+ * Whether `origin` is what `window.location.origin` is for the app: `http` or
+ * `https`, a host name or IPv4 address, and an optional port, with no path.
+ * Nothing else may reach a Content-Security-Policy.
+ */
+const APP_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/;
+
+/**
+ * The Content-Security-Policy of a preview document (#249). A slide shown in
+ * the app loads only from CreatorBrio itself (uploaded images, and its fonts
+ * through the preview font route) and from inline `data:` and styles.
+ *
+ * CreatorBrio is named by its exact origin, never by `'self'`. The preview's
+ * `sandbox=""` frame has an opaque origin, and what `'self'` then means is
+ * left to each browser, so the policy states the origin itself, which the
+ * caller takes from `window.location.origin`. The app page's own policy
+ * applies as well, since a `srcdoc` frame inherits it, so both must allow what
+ * a slide loads.
+ */
+export function previewDocumentCsp(origin: string): string {
+  if (!APP_ORIGIN.test(origin)) {
+    throw new Error("A preview document needs the app's origin, such as http://localhost:3000.");
+  }
+  return `default-src 'none'; img-src ${origin} data:; media-src ${origin} data:; font-src ${origin} data:; style-src ${origin} 'unsafe-inline'; base-uri 'none'; form-action 'none'`;
+}
+
+/**
+ * Turns off DNS prefetch for the preview document. It is placed before the
+ * slide, and a declaration in the slide does not turn it back on.
+ */
+const DNS_PREFETCH_OFF = `<meta http-equiv="x-dns-prefetch-control" content="off">`;
+
+/**
+ * Attributes put first in each start tag of a frame, embedded object, image or
+ * picture source. The HTML parser keeps the first of two attributes with the
+ * same name, so the slide's own address or candidate list is dropped while the
+ * element keeps its box, as an export's empty frame does. An image keeps its
+ * `src`. The parser reads an `image` start tag in HTML as `img`, so it takes
+ * the same attribute, which an SVG `image` ignores.
+ */
+const INERT_ATTRIBUTES: Record<string, string> = {
+  iframe: "src=about:blank srcdoc",
+  frame: "src=about:blank",
+  object: "data",
+  embed: "src",
+  img: "srcset",
+  image: "srcset",
+  source: "srcset",
+};
+
+/** The attribute that ends the text inserted into a start tag. */
+const INERT_END = "data-inert";
+
+/**
+ * Makes the slide's frames, embedded objects, image candidate lists and links
+ * inert for the preview (#249), by tag name as the HTML tokenizer reads it:
+ * ASCII letters in any case, ended by whitespace, `/`, `>` or the end of the
+ * slide. Only the document shown is changed; the stored slide is not.
+ *
+ * A link is renamed to `basefont`, an obsolete element that the parser treats
+ * exactly as it treats `link` (void, never shown) and that does nothing.
+ *
+ * The inserted text is `INERT_ATTRIBUTES` and then `INERT_END`, separated by
+ * spaces, with no quotes, no `<` or `>`, and no `=` except in the fixed
+ * `src=about:blank` of a frame's attributes. It ends in an attribute of its
+ * own, `INERT_END`, so a value that follows in the slide belongs to that
+ * attribute and never to an inert one. Wherever the pattern matches outside a
+ * tag (in text or inside an attribute value) it can only add these same
+ * attributes or rename text.
+ */
+function inertEmbeddedContent(html: string): string {
+  return html.replace(/<(iframe|frame|object|embed|img|image|source|link)(?=[\t\n\f\r />]|$)/gi, (tag, name: string) => {
+    const element = name.toLowerCase();
+    return element === "link" ? "<basefont" : `${tag} ${INERT_ATTRIBUTES[element]} ${INERT_END}`;
+  });
+}
+
 /**
  * The Content-Security-Policy of an export document (#196): everything a slide
  * shows is inlined before it loads, so only `data:` images, fonts and media
@@ -129,15 +216,27 @@ function escapeAttribute(value: string): string {
 export const EXPORT_DOCUMENT_CSP =
   "default-src 'none'; img-src data:; font-src data:; media-src data:; style-src 'unsafe-inline'; frame-src *; base-uri 'none'; form-action 'none'";
 
-export function wrapSlideHtml(
-  slideHtml: string,
-  aspectRatio: AspectRatio,
-  options?: { inlineFontCss?: string; forExport?: boolean }
-): string {
+/**
+ * How a slide document is built. An export carries its fonts inlined and loads
+ * nothing; a preview names the app's origin, which only the browser knows
+ * (`window.location.origin`), so every caller of the preview form passes it
+ * once it has mounted.
+ */
+export type SlideDocumentOptions =
+  | { forExport: true; inlineFontCss?: string }
+  | { forExport?: false; previewOrigin: string };
+
+/**
+ * Wraps slide body HTML into a full HTML document at the correct dimensions.
+ * This is THE shared rendering contract between preview (iframe) and export
+ * (Puppeteer).
+ */
+export function wrapSlideHtml(slideHtml: string, aspectRatio: AspectRatio, options: SlideDocumentOptions): string {
   const { width, height } = DIMENSIONS[aspectRatio];
 
-  let fontBlock = "";
-  if (options?.forExport) {
+  let fontBlock: string;
+  let body = slideHtml;
+  if (options.forExport) {
     // An export document loads nothing from the network: its fonts are the
     // inlined ones or none, never a stylesheet link, under a policy that
     // refuses anything not inlined.
@@ -147,23 +246,20 @@ export function wrapSlideHtml(
     ]
       .filter(Boolean)
       .join("\n  ");
-  } else if (options?.inlineFontCss) {
-    // For export: self-contained base64 @font-face CSS, no network needed.
-    fontBlock = `<style>${options.inlineFontCss}</style>`;
   } else {
-    // For preview: one stylesheet per family, plus a separate italic sheet when
-    // the slide needs one. A stylesheet the browser cannot fetch is ignored, so
-    // a family without an italic design still renders its upright faces.
-    const families = extractFontFamilies(slideHtml);
+    // For preview (#249): DNS prefetch off, the preview policy for the app's
+    // origin, then one stylesheet per family from CreatorBrio's own font
+    // route, which answers with the export's inlined font CSS, the italic cut
+    // included when the slide needs one.
     const italic = usesItalic(slideHtml);
-    fontBlock = families
-      .flatMap((family) => {
-        const links = [googleFontsUrl(family)];
-        if (italic) links.push(googleFontsUrl(family, { italic: true }));
-        return links;
-      })
-      .map((href) => `<link href="${escapeAttribute(href)}" rel="stylesheet">`)
-      .join("\n  ");
+    fontBlock = [
+      DNS_PREFETCH_OFF,
+      `<meta http-equiv="Content-Security-Policy" content="${previewDocumentCsp(options.previewOrigin)}">`,
+      ...extractFontFamilies(slideHtml)
+        .filter(isFontFamilyName)
+        .map((family) => `<link href="${escapeAttribute(previewFontCssUrl(family, italic))}" rel="stylesheet">`),
+    ].join("\n  ");
+    body = inertEmbeddedContent(slideHtml);
   }
 
   return `<!DOCTYPE html>
@@ -178,7 +274,7 @@ export function wrapSlideHtml(
   </style>
 </head>
 <body>
-  ${slideHtml}
+  ${body}
 </body>
 </html>`;
 }

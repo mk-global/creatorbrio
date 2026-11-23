@@ -167,7 +167,8 @@ How the page works is described in [docs/architecture/video-studio-page.md](docs
   The design agent runs under your Claude Code configuration, so your own Claude Code settings and instructions, and this repository's `CLAUDE.md`, also apply to it ([#156](https://github.com/mk-global/creatorbrio/issues/156)).
   The planning step is isolated from them.
 - **Research.** Links you paste are fetched to read their text, and the design agent may fetch web pages while it researches a topic.
-- **Fonts.** The preview and the export load typefaces from Google Fonts.
+- **Fonts.** CreatorBrio's server fetches the typefaces the preview and the export use from Google Fonts; the preview loads them from the server, never from Google itself.
+  The brand font picker still loads the typefaces it shows from Google Fonts, in the app's own page.
 - **Generated images** go only to the image service on this machine; any other address is refused.
 - **The Video Studio** sends nothing out: it uses FFmpeg and Chromium locally, with bundled fonts.
 
@@ -283,7 +284,7 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/templates.json` | Saved templates |
 | `data/style-presets.json` | Style presets the design agent can save |
 | `data/staged-actions.json` | Records for an internal API that the UI does not use |
-| `data/.font-cache/` | Cached Google Fonts used by export |
+| `data/.font-cache/` | Cached Google Fonts used by the preview and export |
 | `data/design-agent-sessions.json` | Which Claude sessions each carousel's contained Design Agent may resume (only with the contained profile) |
 | `data/generation-runs.json` | Whether each carousel's last chat run finished, and its last creative run, including a plan kept for 24 hours so a run stopped before design can be retried |
 | `data/asset-staging/` | Generated images waiting to be added to a carousel; removed once added, or after 24 hours |

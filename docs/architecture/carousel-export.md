@@ -38,7 +38,7 @@ Slide HTML is untrusted, so only a reference to one file directly under `/upload
 It never follows a link or leaves the real uploads folder, and the bytes must be a PNG, JPEG or WebP image, labelled by what they are.
 Any other reference is left as it is and never read; in the export it does not load.
 
-The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined.
+The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined; the preview takes the same CSS through its font route (see below).
 It inlines every font file a stylesheet names, whatever its address looks like: Google serves some families, such as its Helvetica and Georgia substitutes, from addresses that do not end in `.woff2`, which were once left for the export browser to download.
 A cached stylesheet that still names a remote font file is fetched again and replaced.
 Each font request is abandoned when nothing arrives for 10 seconds, headers or body, rather than after a fixed total, so a large family that downloads steadily is never cut off ([#200](https://github.com/mk-global/creatorbrio/issues/200)).
@@ -56,7 +56,36 @@ Three layers refuse it, each covering what the others cannot:
   Frames are left to the browser's refusal, which leaves them empty, because a frame the policy refused would show Chromium's error page in the slide.
 
 A page that is no longer the slide's own document when it is about to be captured is never captured; the export fails with a message naming the problem.
-The preview is unchanged.
+
+## The preview loads only from CreatorBrio
+
+Showing a slide in the editor, the full-screen preview or the library never makes the browser contact a server other than CreatorBrio itself ([#249](https://github.com/mk-global/creatorbrio/issues/249)).
+The preview document is the same `wrapSlideHtml()` contract in an `<iframe sandbox="" srcdoc>`, with four differences from the export document, made only in the document shown, never in the stored slide:
+
+- It carries a Content-Security-Policy, `previewDocumentCsp()` in [`src/lib/slide-html.ts`](../../src/lib/slide-html.ts), that allows images, fonts and media only from CreatorBrio's own origin and from `data:`, styles only from that origin and inline, and no base address or form target.
+  The policy names the origin and never `'self'`, because what `'self'` means in a sandboxed frame, whose origin is opaque, differs between browsers.
+  The origin is an argument of the preview form of `wrapSlideHtml()`, which `SlideRenderer` and `SlideFace` give from `window.location.origin`.
+  Both build the document, and draw the frame, only once they have mounted in the browser, so a server render emits no frame and no policy without the origin (`tests/preview-frame-server-render.test.ts`).
+  The frame also inherits the app page's own policy, so a load must pass both.
+- The slide's frames, embedded objects, image candidate lists and links are made inert in the preview.
+  An attribute that loads nothing (`src=about:blank` and an empty `srcdoc` for a frame, an empty `data` or `src` for an object or embed, an empty `srcset` for an image or a picture source) is put first in each such start tag, followed by an attribute of its own, `data-inert`, which ends the inserted text.
+  The HTML parser keeps the first of two attributes with the same name, so a frame keeps its box and stays empty, as in an export, and an image keeps its `src`.
+  A link is renamed to `basefont`, an obsolete element the parser treats exactly like `link` and that does nothing.
+- Its head turns DNS prefetch off before the slide, and a declaration in the slide does not turn it back on.
+- Its fonts come from `GET /api/fonts/css`, one stylesheet per family, which answers with the export's inlined CSS from `getInlinedFontCSS()`, with the same cache and fetch limits, the italic cut included when the slide renders italics.
+  Requests for the same family and cut that arrive while it is being built share that one fetch, since every slide frame on a page asks at once; the upright and italic cuts of a family are separate requests, as in the export.
+  Within one stylesheet each font file is fetched once, however many `@font-face` rules name it.
+  The route takes only a family name of letters and digits in single-spaced words, so it cannot be made to fetch any other address, and the request guard in [`src/proxy.ts`](../../src/proxy.ts) stands in front of it as for every API route.
+  Its CSS carries the fonts as `data:` URLs, so the app's page policy allows `data:` fonts on every page (`next.config.ts`).
+
+`tests/preview-network.test.ts` shows each slide shape in its catalogue in that document, under the app's real page policy, in Chromium, with outside host names resolved to a local listener, which records every connection, including one made for a load that is then refused.
+Every shape has a control, the same slide in the document and page policy used before, which the listener must see; shapes it cannot see even then are run but not counted as tested.
+Each case also checks that its frame rendered the preview document, so a broken case page cannot pass for lack of anything to observe.
+One case reads the parsed document and checks that the address attributes of the rewritten elements hold nothing from the slide.
+
+The same shapes, controls and listener were also run in Debian's Chromium 156, Playwright's Chromium 159, Firefox ESR 153, Playwright's Firefox 159 and Playwright's WebKit 27.2, against pages served on both `127.0.0.1` and `localhost`.
+In each of them the listener saw no connection from the preview for the shapes in that catalogue whose control it saw.
+The preview was also checked by hand in Safari, with no outside request observed.
 
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.

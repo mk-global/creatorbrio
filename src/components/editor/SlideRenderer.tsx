@@ -31,11 +31,6 @@ export function SlideRenderer({
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
   const { width: slideW, height: slideH } = DIMENSIONS[aspectRatio];
 
-  const srcDoc = useMemo(
-    () => wrapSlideHtml(html, aspectRatio),
-    [html, aspectRatio]
-  );
-
   const measure = useCallback(() => {
     const el = outerRef.current;
     if (!el) return;
@@ -59,6 +54,16 @@ export function SlideRenderer({
     ? Math.min(dims.w / slideW, dims.h / slideH)
     : 0;
 
+  // The preview document names the app's origin in its policy (#249), which
+  // only the browser knows. `dims` is set from an effect, so the document is
+  // built, and the frame drawn, only once the component has mounted there; a
+  // server render emits neither.
+  const mounted = scale > 0;
+  const srcDoc = useMemo(
+    () => (mounted ? wrapSlideHtml(html, aspectRatio, { previewOrigin: window.location.origin }) : ""),
+    [mounted, html, aspectRatio]
+  );
+
   const scaledW = Math.floor(slideW * scale);
   const scaledH = Math.floor(slideH * scale);
 
@@ -74,7 +79,7 @@ export function SlideRenderer({
         ...style,
       }}
     >
-      {scale > 0 && (
+      {mounted && (
         <div
           style={{
             width: scaledW,
