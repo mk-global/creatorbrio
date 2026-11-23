@@ -13,17 +13,22 @@ export function contentSecurityPolicy(fontSources: readonly string[]): string {
   ].join("; ");
 }
 
-export const APP_FONT_SOURCES = ["'self'", "https://fonts.gstatic.com"] as const;
+/**
+ * Slide previews (#249) are `<iframe sandbox="" srcdoc>` documents, which
+ * inherit the page's policy, and carry their fonts as `data:` URLs from the
+ * preview font route, so every page allows `data:` fonts.
+ */
+export const APP_FONT_SOURCES = ["'self'", "https://fonts.gstatic.com", "data:"] as const;
 
 /**
  * The Video Studio page (#150) shows the caption and graphics overlay in an
  * `<iframe sandbox="" srcdoc>`, which inherits this page's policy; the overlay
- * carries its bundled fonts as `data:` URLs, so only this page also allows
- * `data:` fonts. Every other page keeps the policy above unchanged. The two
- * rules match disjoint paths: two policies on one response would both apply,
- * so the Studio rule could not widen anything.
+ * carries its bundled fonts as `data:` URLs. It had its own rule when only it
+ * allowed `data:` fonts; since #249 every page does, and the Studio rule sends
+ * the same policy. The two rules match disjoint paths: two policies on one
+ * response would both apply, so the Studio rule could not widen anything.
  */
-export const STUDIO_FONT_SOURCES = [...APP_FONT_SOURCES, "data:"] as const;
+export const STUDIO_FONT_SOURCES = APP_FONT_SOURCES;
 
 /** Every path except `/studio` and below it. */
 export const APP_PAGES_SOURCE = "/((?!studio(?:/|$)).*)";

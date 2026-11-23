@@ -71,7 +71,7 @@ The page draws that plan, not its own interpretation of the timeline.
 - **The overlay** is the export's own document, re-seeked to the playhead (`previewOverlayAt()`) in two `sandbox=""` iframes that swap when the next frame has loaded, about 12 times a second while playing and exactly on pause or seek.
   It runs no script, as in the export.
 - **Fonts.** The overlay document embeds its fonts as `data:` URLs.
-  The app's Content-Security-Policy allows `data:` fonts on `/studio` only; every other page keeps the stricter rule (`next.config.ts`, tested in `tests/app-csp.test.ts`).
+  The app's Content-Security-Policy allows `data:` fonts on every page, since slide previews carry their fonts the same way ([#249](https://github.com/mk-global/creatorbrio/issues/249)); `/studio` still has its own rule, which now sends the same policy (`next.config.ts`, tested in `tests/app-csp.test.ts`).
 - **Gain above 1** cannot be played by a media element and is played at 1; no Studio edit produces one today.
 
 ### Timeline

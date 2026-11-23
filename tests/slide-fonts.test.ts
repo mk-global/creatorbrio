@@ -4,6 +4,8 @@ import {
   usesItalic,
   googleFontsUrl,
   wrapSlideHtml,
+  EXPORT_DOCUMENT_CSP,
+  PREVIEW_DOCUMENT_CSP,
 } from "@/lib/slide-html";
 
 describe("extractFontFamilies", () => {
@@ -144,10 +146,10 @@ describe("googleFontsUrl", () => {
 describe("wrapSlideHtml font loading", () => {
   const slide = `<h1 style="font-family: 'Cormorant Garamond', serif">Hook</h1>`;
 
-  it("links a stylesheet for the family the slide declares", () => {
+  it("links the family the slide declares from CreatorBrio's own font route, never from Google (#249)", () => {
     const doc = wrapSlideHtml(slide, "4:5");
-    expect(doc).toContain("fonts.googleapis.com");
-    expect(doc).toContain("family=Cormorant%20Garamond");
+    expect(doc).toContain(`<link href="/api/fonts/css?family=Cormorant%20Garamond" rel="stylesheet">`);
+    expect(doc).not.toContain("fonts.googleapis.com");
   });
 
   it("requests one stylesheet per family so one rejection cannot break the rest", () => {
@@ -158,18 +160,19 @@ describe("wrapSlideHtml font loading", () => {
     expect(doc.match(/<link /g)).toHaveLength(2);
   });
 
-  it("adds an italic stylesheet only when the slide renders italics", () => {
-    expect(wrapSlideHtml(slide, "4:5")).not.toContain("ital,wght");
+  it("asks for the italic cut only when the slide renders italics", () => {
+    expect(wrapSlideHtml(slide, "4:5")).not.toContain("italic=1");
 
     const italicSlide = `<h1 style="font-family: 'Cormorant Garamond', serif"><em>Hook</em></h1>`;
     const doc = wrapSlideHtml(italicSlide, "4:5");
-    expect(doc).toContain("ital,wght");
-    expect(doc.match(/<link /g)).toHaveLength(2);
+    expect(doc).toContain(`<link href="/api/fonts/css?family=Cormorant%20Garamond&amp;italic=1" rel="stylesheet">`);
+    expect(doc.match(/<link /g)).toHaveLength(1);
   });
 
-  it("escapes the ampersands in stylesheet URLs", () => {
-    const doc = wrapSlideHtml(slide, "4:5");
-    expect(doc).toContain("&amp;display=swap");
+  it("does not link a family name the font route would refuse", () => {
+    const doc = wrapSlideHtml(`<p style="font-family: 'Inter', 'a/b', 'x&y'">a</p>`, "4:5");
+    expect(doc.match(/<link /g)).toHaveLength(1);
+    expect(doc).toContain("family=Inter");
   });
 
   it("uses inlined CSS instead of network links when exporting", () => {
@@ -184,5 +187,57 @@ describe("wrapSlideHtml font loading", () => {
     const doc = wrapSlideHtml(slide, "9:16");
     expect(doc).toContain("width: 1080px");
     expect(doc).toContain("height: 1920px");
+  });
+});
+
+describe("wrapSlideHtml preview document (#249)", () => {
+  const head = (doc: string) => doc.slice(0, doc.indexOf("<body>"));
+  const body = (doc: string) => doc.slice(doc.indexOf("<body>"));
+
+  it("carries the preview policy in its head, and an export document carries only the export policy", () => {
+    const preview = wrapSlideHtml("<p>x</p>", "1:1");
+    expect(head(preview)).toContain(`<meta http-equiv="Content-Security-Policy" content="${PREVIEW_DOCUMENT_CSP}">`);
+    expect(PREVIEW_DOCUMENT_CSP).toBe(
+      "default-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+    );
+    const exported = wrapSlideHtml("<p>x</p>", "1:1", { forExport: true });
+    expect(exported).toContain(EXPORT_DOCUMENT_CSP);
+    expect(exported).not.toContain(PREVIEW_DOCUMENT_CSP);
+  });
+
+  it("puts inert attributes first in each frame, object and embed start tag, and renames each link, in any letter case", () => {
+    const slideHtml = [
+      `<iframe src="https://example.test/a" width="300" height="200"></iframe>`,
+      `<IfRaMe\nSRC="https://example.test/b"></IfRaMe>`,
+      `<iframe/src="https://example.test/c">`,
+      `<frame src="https://example.test/d">`,
+      `<object data="https://example.test/e" width="10"></object>`,
+      `<EMBED src="https://example.test/f">`,
+      `<LINK rel="preconnect" href="https://example.test">`,
+      `<link>`,
+    ].join("");
+    expect(body(wrapSlideHtml(slideHtml, "1:1"))).toContain(
+      [
+        `<iframe src=about:blank srcdoc src="https://example.test/a" width="300" height="200"></iframe>`,
+        `<IfRaMe src=about:blank srcdoc\nSRC="https://example.test/b"></IfRaMe>`,
+        `<iframe src=about:blank srcdoc/src="https://example.test/c">`,
+        `<frame src=about:blank src="https://example.test/d">`,
+        `<object data data="https://example.test/e" width="10"></object>`,
+        `<EMBED src src="https://example.test/f">`,
+        `<basefont rel="preconnect" href="https://example.test">`,
+        `<basefont>`,
+      ].join("")
+    );
+  });
+
+  it("matches only those tag names, and a start tag cut off by the end of the slide", () => {
+    const others = `<frameset><iframes><linked><objects><embedded><img src="/uploads/a.png"><p>iframe link</p>`;
+    expect(body(wrapSlideHtml(others, "1:1"))).toContain(others);
+    expect(body(wrapSlideHtml("<p>x</p><iframe", "1:1"))).toContain("<p>x</p><iframe src=about:blank srcdoc\n</body>");
+  });
+
+  it("leaves the slide unchanged in an export document, whose browser keeps frames empty itself", () => {
+    const slideHtml = `<iframe src="https://example.test/a"></iframe><link rel="preconnect" href="https://example.test">`;
+    expect(wrapSlideHtml(slideHtml, "1:1", { forExport: true })).toContain(slideHtml);
   });
 });

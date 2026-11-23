@@ -38,7 +38,7 @@ Slide HTML is untrusted, so only a reference to one file directly under `/upload
 It never follows a link or leaves the real uploads folder, and the bytes must be a PNG, JPEG or WebP image, labelled by what they are.
 Any other reference is left as it is and never read; in the export it does not load.
 
-The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined.
+The slide's Google Fonts are inlined the same way, by `getInlinedFontCSS()` in [`src/lib/fonts.ts`](../../src/lib/fonts.ts), and cached under `data/.font-cache/` once every file of a family has been inlined; the preview takes the same CSS through its font route (see below).
 It inlines every font file a stylesheet names, whatever its address looks like: Google serves some families, such as its Helvetica and Georgia substitutes, from addresses that do not end in `.woff2`, which were once left for the export browser to download.
 A cached stylesheet that still names a remote font file is fetched again and replaced.
 Each font request is abandoned when nothing arrives for 10 seconds, headers or body, rather than after a fixed total, so a large family that downloads steadily is never cut off ([#200](https://github.com/mk-global/creatorbrio/issues/200)).
@@ -56,7 +56,26 @@ Three layers refuse it, each covering what the others cannot:
   Frames are left to the browser's refusal, which leaves them empty, because a frame the policy refused would show Chromium's error page in the slide.
 
 A page that is no longer the slide's own document when it is about to be captured is never captured; the export fails with a message naming the problem.
-The preview is unchanged.
+
+## The preview loads only from CreatorBrio
+
+Showing a slide in the editor, the full-screen preview or the library never makes the browser contact a server other than CreatorBrio itself ([#249](https://github.com/mk-global/creatorbrio/issues/249)).
+The preview document is the same `wrapSlideHtml()` contract in an `<iframe sandbox="" srcdoc>`, with three differences from the export document, made only in the document shown, never in the stored slide:
+
+- It carries a Content-Security-Policy, `PREVIEW_DOCUMENT_CSP` in [`src/lib/slide-html.ts`](../../src/lib/slide-html.ts), that allows images, fonts and media only from CreatorBrio itself and from `data:`, styles only from CreatorBrio and inline, and no base address or form target.
+  In the sandboxed frame, whose origin is opaque, Chromium still takes `'self'` to be the app's origin, so uploaded images load.
+  The frame also inherits the app page's own policy, so a load must pass both.
+- The slide's frames, embedded objects and links are made inert, because a frame connects to its host before its load is refused, and a link hint such as `preconnect` is not governed by the policy at all.
+  An attribute that loads nothing (`src=about:blank` and an empty `srcdoc` for a frame, an empty `data` or `src` for an object or embed) is put first in each such start tag, and the HTML parser keeps the first of two attributes with the same name, so a frame keeps its box and stays empty, as in an export.
+  A link is renamed to `basefont`, an obsolete element the parser treats exactly like `link` and that does nothing, because an inert attribute put first did not stop a `preconnect` in Chromium without the policy: its preload scanner reads links ahead of the parser.
+- Its fonts come from `GET /api/fonts/css`, one stylesheet per family, which answers with the export's inlined CSS from `getInlinedFontCSS()`, with the same cache and fetch limits, the italic cut included when the slide renders italics.
+  Requests for a family that arrive while it is being fetched share that one fetch, since every slide frame on a page asks at once.
+  The route takes only a family name of letters and digits in single-spaced words, so it cannot be made to fetch any other address, and the request guard in [`src/proxy.ts`](../../src/proxy.ts) stands in front of it as for every API route.
+  Its CSS carries the fonts as `data:` URLs, so the app's page policy allows `data:` fonts on every page (`next.config.ts`).
+
+`tests/preview-network.test.ts` shows each slide shape in that document, under the app's real page policy, in Chromium, with outside host names resolved to a local listener, which records every connection, including one made for a load that is then refused.
+Every shape has a control, the same slide in the document and page policy used before, which the listener must see; shapes it cannot see even then are run but not counted as tested.
+Other browsers are not measured.
 
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.
