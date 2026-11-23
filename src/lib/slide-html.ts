@@ -155,23 +155,18 @@ export function previewDocumentCsp(origin: string): string {
 }
 
 /**
- * Turns off DNS prefetch for the preview document: Firefox resolves the host
- * of every link in a shown slide, which the policy does not govern. Once it is
- * off, Firefox ignores a later declaration that turns it on, so a slide cannot
- * undo this one, which is placed before the slide.
+ * Turns off DNS prefetch for the preview document. It is placed before the
+ * slide, and a declaration in the slide does not turn it back on.
  */
 const DNS_PREFETCH_OFF = `<meta http-equiv="x-dns-prefetch-control" content="off">`;
 
 /**
- * Attributes put first in each start tag of an element that can open a
- * connection when it is shown although the document's policy refuses its load:
- * a frame connects to its host before the refusal, and some browsers fetch an
- * image candidate in `srcset` without the policy's check. The HTML parser
- * keeps the first of two attributes with the same name, so the slide's own
- * address or candidate list is dropped while the element keeps its box, as an
- * export's empty frame does. An image keeps its `src`. The parser reads an
- * `image` start tag in HTML as `img`, so it takes the same attribute, which an
- * SVG `image` ignores.
+ * Attributes put first in each start tag of a frame, embedded object, image or
+ * picture source. The HTML parser keeps the first of two attributes with the
+ * same name, so the slide's own address or candidate list is dropped while the
+ * element keeps its box, as an export's empty frame does. An image keeps its
+ * `src`. The parser reads an `image` start tag in HTML as `img`, so it takes
+ * the same attribute, which an SVG `image` ignores.
  */
 const INERT_ATTRIBUTES: Record<string, string> = {
   iframe: "src=about:blank srcdoc",
@@ -183,26 +178,29 @@ const INERT_ATTRIBUTES: Record<string, string> = {
   source: "srcset",
 };
 
+/** The attribute that ends the text inserted into a start tag. */
+const INERT_END = "data-inert";
+
 /**
- * Makes the slide's frames, embedded objects, responsive image sources and
- * links inert for the preview (#249), by tag name as the HTML tokenizer reads
- * it: ASCII letters in any case, ended by whitespace, `/`, `>` or the end of
- * the slide. Only the document shown is changed; the stored slide is not.
+ * Makes the slide's frames, embedded objects, image candidate lists and links
+ * inert for the preview (#249), by tag name as the HTML tokenizer reads it:
+ * ASCII letters in any case, ended by whitespace, `/`, `>` or the end of the
+ * slide. Only the document shown is changed; the stored slide is not.
  *
- * A link hint such as `preconnect` is not governed by the policy at all, and an
- * inert `rel` put first did not stop one in Chromium 156 without the policy,
- * since its preload scanner reads links ahead of the parser. So a link is
- * renamed instead, to `basefont`, an obsolete element that the parser treats
+ * A link is renamed to `basefont`, an obsolete element that the parser treats
  * exactly as it treats `link` (void, never shown) and that does nothing.
  *
- * The inserted text has no quotes and no `>`, so wherever the pattern matches
- * outside a tag (in text or inside an attribute value) it can only add these
- * same inert attributes or rename text.
+ * The inserted text is `INERT_ATTRIBUTES` and then `INERT_END`, separated by
+ * spaces, with no quotes, no `=` and no `>`. It ends in an attribute of its
+ * own, `INERT_END`, so a value that follows in the slide belongs to that
+ * attribute and never to an inert one. Wherever the pattern matches outside a
+ * tag (in text or inside an attribute value) it can only add these same
+ * attributes or rename text.
  */
 function inertEmbeddedContent(html: string): string {
   return html.replace(/<(iframe|frame|object|embed|img|image|source|link)(?=[\t\n\f\r />]|$)/gi, (tag, name: string) => {
     const element = name.toLowerCase();
-    return element === "link" ? "<basefont" : `${tag} ${INERT_ATTRIBUTES[element]}`;
+    return element === "link" ? "<basefont" : `${tag} ${INERT_ATTRIBUTES[element]} ${INERT_END}`;
   });
 }
 

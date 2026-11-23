@@ -1,6 +1,7 @@
 /**
- * Slide previews open no connection to any host but CreatorBrio itself
- * (#249), and still show an ordinary slide's uploaded images and fonts.
+ * Slide previews open no connection to any host but CreatorBrio itself for
+ * each markup shape listed here (#249), and still show an ordinary slide's
+ * uploaded images and fonts.
  *
  * Each case is the real `wrapSlideHtml()` preview document in an
  * `<iframe sandbox="" srcdoc>`, built as `SlideRenderer` builds it, in a page
@@ -61,6 +62,20 @@ function shapes(at: string): Record<string, string> {
     srcset: `<img srcset="${at}/srcset 1x" width="40" height="40">`,
     sizes: `<img sizes="10px" srcset="${at}/sizes 10w" width="40" height="40">`,
     imageTag: `<image srcset="${at}/image-tag 1x" width="40" height="40">`,
+    // Unusual markup straight after the tag names the preview rewrites. The
+    // control document leaves most of it inert, so those shapes are listed in
+    // UNOBSERVED and are tested by the product case alone.
+    oddImg: `<img ="${at}/odd-img 1x" width="40" height="40">`,
+    oddImgNewline: `<img\n="${at}/odd-img-newline 1x" width="40" height="40">`,
+    oddImgSizes: `<img ="${at}/odd-sizes 10w" sizes="10px" width="40" height="40">`,
+    oddImageTag: `<image ="${at}/odd-image 1x" width="40" height="40">`,
+    oddPicture: `<picture><source ="${at}/odd-picture"><img width="40" height="40"></picture>`,
+    oddFrameImg: `<iframe ="&lt;img src=${at}/odd-frame-img width=40 height=40&gt;" width="100" height="60"></iframe>`,
+    oddFrameFrame: `<iframe ="&lt;iframe src=${at}/odd-frame-frame width=100 height=60&gt;&lt;/iframe&gt;" width="200" height="120"></iframe>`,
+    oddFramePreconnect: `<iframe ="&lt;link rel=preconnect href=${at}&gt;" width="100" height="60"></iframe>`,
+    oddFrameDnsPrefetch: `<iframe ="&lt;link rel=dns-prefetch href=${at}&gt;" width="100" height="60"></iframe>`,
+    oddFrameTab: `<iframe\t="&lt;img srcset='${at}/odd-tab 1x' width=40 height=40&gt;&lt;link rel=preconnect href=${at}&gt;" width="100" height="60"></iframe>`,
+    oddFrameSlash: `<iframe/="&lt;link rel=preconnect href=${at}&gt;" width="100" height="60"></iframe>`,
     picture: `<picture><source srcset="${at}/picture"><img width="40" height="40"></picture>`,
     cssBackground: `<div style="width:40px;height:40px;background:url(${at}/bg)"></div>`,
     imageSet: `<div style="width:40px;height:40px;background-image:image-set(url(${at}/set) 1x)"></div>`,
@@ -121,6 +136,8 @@ const UNOBSERVED = new Set([
   "frame", "frameset", "object", "embed", "video", "audio", "track", "stylesheet", "cssImport", "fontFace",
   "icon", "manifest", "modulePreload", "prerender", "dnsPrefetch", "svgUse", "svgFilter", "script", "refresh",
   "anchor", "anchorPrefetchOn", "svgAnchor",
+  "oddImg", "oddImgNewline", "oddImgSizes", "oddImageTag", "oddPicture", "oddFramePreconnect", "oddFrameDnsPrefetch",
+  "oddFrameTab", "oddFrameSlash",
 ]);
 
 const OUTSIDE = "outside.test";
@@ -326,7 +343,7 @@ describe.skipIf(!browserPath && !inCi)("slide preview network in Chromium (#249)
     expect(missing).toEqual([]);
   }, 120_000);
 
-  it("the slide preview opens no connection to an outside host for any shape", async () => {
+  it("the slide preview opens no connection to an outside host for any shape in the catalogue", async () => {
     const { hosts, unrendered } = await showEveryShape(browser!, "product");
     expect(unrendered).toEqual([]);
     expect(hosts).toEqual([]);
@@ -366,6 +383,37 @@ describe.skipIf(!browserPath && !inCi)("slide preview network in Chromium (#249)
     );
     expect(image).toEqual({ complete: true, width: 24, height: 16 });
     expect(connections.slice(before)).toEqual([]);
+  }, 60_000);
+
+  it("leaves nothing from the slide in the address attributes of the elements the preview rewrites, whatever follows their names", async () => {
+    const marker = "slide-marker.example";
+    const tags = ["iframe", "object", "embed", "img", "image", "source"];
+    const followers = [" ", "\t", "\n", "\f", "\r", "/"];
+    const slide = tags
+      .flatMap((tag) =>
+        followers.map((follower) => `<${tag}${follower}="${marker}/a 1x" width="10" height="10">${tag === "iframe" ? "</iframe>" : ""}`)
+      )
+      .concat([
+        `<IFRAME ="${marker}/b" title="<img ="${marker}/c">"></IFRAME>`,
+        `<p title=<img ="${marker}/d" src="/uploads/${UPLOAD}">x</p>`,
+        `<iframe/="${marker}/e"><iframe\n="&lt;iframe ="${marker}/f"&gt;"></iframe></iframe>`,
+      ])
+      .join("");
+    const seen = await show(browser!, serve("attributes", slide, "product"), (frame) =>
+      frame.evaluate((needle) => {
+        const guarded = [...document.querySelectorAll("iframe, frame, object, embed, img, source")];
+        return {
+          count: guarded.length,
+          leaks: guarded.flatMap((element) =>
+            ["src", "srcdoc", "data", "srcset"]
+              .filter((name) => (element.getAttribute(name) ?? "").includes(needle))
+              .map((name) => `${element.localName}[${name}]`)
+          ),
+        };
+      }, marker)
+    );
+    expect(seen!.count).toBeGreaterThanOrEqual(tags.length * followers.length);
+    expect(seen!.leaks).toEqual([]);
   }, 60_000);
 
   it("gives an italic slide its italic cut", async () => {

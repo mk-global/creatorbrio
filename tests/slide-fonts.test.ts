@@ -239,7 +239,7 @@ describe("wrapSlideHtml preview document (#249)", () => {
     expect(wrapSlideHtml("<p>x</p>", "1:1", { forExport: true })).not.toContain("x-dns-prefetch-control");
   });
 
-  it("puts inert attributes first in each frame, object, embed, image and source start tag, and renames each link, in any letter case", () => {
+  it("puts inert attributes first in each frame, object, embed, image and source start tag, ends them with an attribute of their own, and renames each link, in any letter case", () => {
     const slideHtml = [
       `<iframe src="https://example.test/a" width="300" height="200"></iframe>`,
       `<IfRaMe\nSRC="https://example.test/b"></IfRaMe>`,
@@ -259,30 +259,62 @@ describe("wrapSlideHtml preview document (#249)", () => {
     ].join("");
     expect(body(wrapSlideHtml(slideHtml, "1:1", PREVIEW))).toContain(
       [
-        `<iframe src=about:blank srcdoc src="https://example.test/a" width="300" height="200"></iframe>`,
-        `<IfRaMe src=about:blank srcdoc\nSRC="https://example.test/b"></IfRaMe>`,
-        `<iframe src=about:blank srcdoc/src="https://example.test/c">`,
-        `<frame src=about:blank src="https://example.test/d">`,
-        `<object data data="https://example.test/e" width="10"></object>`,
-        `<EMBED src src="https://example.test/f">`,
+        `<iframe src=about:blank srcdoc data-inert src="https://example.test/a" width="300" height="200"></iframe>`,
+        `<IfRaMe src=about:blank srcdoc data-inert\nSRC="https://example.test/b"></IfRaMe>`,
+        `<iframe src=about:blank srcdoc data-inert/src="https://example.test/c">`,
+        `<frame src=about:blank data-inert src="https://example.test/d">`,
+        `<object data data-inert data="https://example.test/e" width="10"></object>`,
+        `<EMBED src data-inert src="https://example.test/f">`,
         `<basefont rel="preconnect" href="https://example.test">`,
         `<basefont>`,
-        `<img srcset srcset="https://example.test/g 1x" src="/uploads/a.png" width="40">`,
-        `<IMG srcset\nSrcSet="https://example.test/h 1x" sizes="10px">`,
-        `<picture><source srcset srcset="https://example.test/i"><img srcset/srcset="https://example.test/j"></picture>`,
-        `<SOURCE srcset media="(min-width: 1px)" srcset="https://example.test/k">`,
-        `<img srcset>`,
-        `<IMAGE srcset srcset="https://example.test/l 1x">`,
-        `<svg><image srcset href="https://example.test/m"/></svg>`,
+        `<img srcset data-inert srcset="https://example.test/g 1x" src="/uploads/a.png" width="40">`,
+        `<IMG srcset data-inert\nSrcSet="https://example.test/h 1x" sizes="10px">`,
+        `<picture><source srcset data-inert srcset="https://example.test/i"><img srcset data-inert/srcset="https://example.test/j"></picture>`,
+        `<SOURCE srcset data-inert media="(min-width: 1px)" srcset="https://example.test/k">`,
+        `<img srcset data-inert>`,
+        `<IMAGE srcset data-inert srcset="https://example.test/l 1x">`,
+        `<svg><image srcset data-inert href="https://example.test/m"/></svg>`,
       ].join("")
     );
+  });
+
+  it("ends the inserted text in an attribute of its own, after every delimiter a tag name can have", () => {
+    const inserted: Record<string, string> = {
+      iframe: "src=about:blank srcdoc data-inert",
+      frame: "src=about:blank data-inert",
+      object: "data data-inert",
+      embed: "src data-inert",
+      img: "srcset data-inert",
+      image: "srcset data-inert",
+      source: "srcset data-inert",
+    };
+    // What may follow a tag name: whitespace of every kind, a slash, `>` or the end of the slide.
+    const followers = [" ", "\t", "\n", "\f", "\r", "/", ">", ""];
+    for (const [tag, text] of Object.entries(inserted)) {
+      for (const follower of followers) {
+        for (const rest of [`="https://example.test/x 1x"`, `\n="&lt;link rel=preconnect href=https://example.test&gt;"`, ` = x`, ``]) {
+          // A tag name is ended by what follows it, so nothing follows only when the slide ends or whitespace comes next.
+          if (follower === "" && rest !== "" && !/^\s/.test(rest)) continue;
+          const slideHtml = `<${tag}${follower}${rest}`;
+          const out = body(wrapSlideHtml(slideHtml, "1:1", PREVIEW));
+          expect(out, JSON.stringify(slideHtml)).toContain(`<${tag} ${text}${follower}${rest}`);
+        }
+        // Mixed case, and two matches in one start tag (the second is inside an attribute value).
+        if (follower === "") continue;
+        const mixed = `<${tag.toUpperCase()}${follower}="a" title="<${tag}${follower}b">`;
+        const out = body(wrapSlideHtml(mixed, "1:1", PREVIEW));
+        expect(out, JSON.stringify(mixed)).toContain(`<${tag.toUpperCase()} ${text}${follower}="a" title="<${tag} ${text}${follower}b">`);
+      }
+    }
+    const start = body(wrapSlideHtml(`<iframe ="&lt;img src=https://example.test/x&gt;">`, "1:1", PREVIEW));
+    expect(start).toContain(`<iframe src=about:blank srcdoc data-inert ="&lt;img src=https://example.test/x&gt;">`);
   });
 
   it("matches only those tag names, and a start tag cut off by the end of the slide", () => {
     const others = `<frameset><iframes><linked><objects><embedded><images><imgs><sources><p>iframe link img image source</p>`;
     expect(body(wrapSlideHtml(others, "1:1", PREVIEW))).toContain(others);
-    expect(body(wrapSlideHtml("<p>x</p><iframe", "1:1", PREVIEW))).toContain("<p>x</p><iframe src=about:blank srcdoc\n</body>");
-    expect(body(wrapSlideHtml("<p>x</p><img", "1:1", PREVIEW))).toContain("<p>x</p><img srcset\n</body>");
+    expect(body(wrapSlideHtml("<p>x</p><iframe", "1:1", PREVIEW))).toContain("<p>x</p><iframe src=about:blank srcdoc data-inert\n</body>");
+    expect(body(wrapSlideHtml("<p>x</p><img", "1:1", PREVIEW))).toContain("<p>x</p><img srcset data-inert\n</body>");
   });
 
   it("leaves the slide unchanged in an export document, whose browser keeps frames empty itself", () => {
