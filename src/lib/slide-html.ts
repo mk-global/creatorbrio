@@ -191,7 +191,8 @@ const INERT_END = "data-inert";
  * exactly as it treats `link` (void, never shown) and that does nothing.
  *
  * The inserted text is `INERT_ATTRIBUTES` and then `INERT_END`, separated by
- * spaces, with no quotes, no `=` and no `>`. It ends in an attribute of its
+ * spaces, with no quotes, no `<` or `>`, and no `=` except in the fixed
+ * `src=about:blank` of a frame's attributes. It ends in an attribute of its
  * own, `INERT_END`, so a value that follows in the slide belongs to that
  * attribute and never to an inert one. Wherever the pattern matches outside a
  * tag (in text or inside an attribute value) it can only add these same
