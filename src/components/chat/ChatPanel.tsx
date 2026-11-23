@@ -64,6 +64,8 @@ export function ChatPanel({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stage, setStage] = useState<ReturnType<typeof reduceChatRun>["stage"]>(null);
+  // Which carousel's history is in state; the automatic send waits for it.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -80,6 +82,7 @@ export function ChatPanel({
       // ignore corrupted data
     }
     setMessages(Array.isArray(stored) ? stored : []);
+    setLoadedFor(carouselId);
   }, [carouselId]);
 
   // Persist messages to localStorage
@@ -245,13 +248,14 @@ export function ChatPanel({
     [isStreaming, sessionId, carouselId, onStreamStart, onStreamEnd, persistMessages]
   );
 
-  // The research screen's confirmation is sent once, after this carousel's history is loaded.
+  // The research screen's confirmation is sent once, after this carousel's
+  // history and session are loaded, so it continues the same conversation.
   const autoSent = useRef(false);
   useEffect(() => {
-    if (!autoSend || autoSent.current) return;
+    if (!autoSend || autoSent.current || loadedFor !== carouselId || !claudeAvailable) return;
     autoSent.current = true;
     void handleSend(autoSend);
-  }, [autoSend, handleSend]);
+  }, [autoSend, handleSend, loadedFor, carouselId, claudeAvailable]);
 
   if (!claudeAvailable) {
     return (

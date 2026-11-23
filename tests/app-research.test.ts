@@ -189,7 +189,10 @@ describe.skipIf(SKIP)("research in a browser", () => {
     await Promise.all([page.waitForNavigation({ waitUntil: "load" }), page.click("button[type=submit].btn-create")]);
     expect(new URL(page.url()).pathname).toBe(`/carousel/${id}`);
     await page.waitForFunction(() => document.body.innerText.includes("Design it from the confirmed research."), { timeout: 15_000 });
-    await page.waitForNetworkIdle({ idleTime: 500, timeout: 20_000 });
+    // The stub refuses the run; wait until the server says it has ended.
+    await expect
+      .poll(async () => (await api<{ generating: boolean }>(`/api/carousels/${id}/generation`)).body.generating, { timeout: 30_000, interval: 250 })
+      .toBe(false);
     expect(chatBodies).toHaveLength(1);
     expect(JSON.parse(chatBodies[0])).toMatchObject({ carouselId: id, message: "Design it from the confirmed research." });
 
@@ -212,7 +215,8 @@ describe.skipIf(SKIP)("research in a browser", () => {
     const created = await api<{ id: string }>(`/api/carousels`, { method: "POST", body: JSON.stringify({ name: "Phone", aspectRatio: "4:5" }) });
     await seed(created.body.id, readyResearch(1));
     const page = await openPage(375, 812);
-    for (const where of ["/create?start=research", `/carousel/${created.body.id}/research`]) {
+    // `from=idea` opens New project on its details step on a phone, where the research fields are.
+    for (const where of ["/create?start=research&from=idea", `/carousel/${created.body.id}/research`]) {
       await page.goto(`${app.url}${where}`, { waitUntil: "networkidle0" });
       await page.waitForSelector("h1");
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);

@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { useApp } from "@/components/app/AppContext";
 import { PageNotice } from "@/components/app/PageNotice";
 import { useAppStatus } from "@/components/app/useAppStatus";
+import { ConfirmedSummary } from "@/components/research/ConfirmedSummary";
 import { DirectionForm } from "@/components/research/DirectionForm";
 import { ResearchFindings } from "@/components/research/ResearchFindings";
 import { ResearchProgress } from "@/components/research/ResearchProgress";
@@ -17,6 +18,13 @@ import { FORMATS, formatOf } from "@/lib/formats";
 import { clearResearchRequest, handOffDesignStart, readResearchRequest } from "@/lib/new-project-handoff";
 import type { Carousel } from "@/types/carousel";
 import type { CarouselResearch, ResearchDirection } from "@/types/research";
+
+/** Why web search failed when research went on with the person's links alone. */
+const SEARCH_FAILED: Record<string, string> = {
+  search_key_refused: "Brave Search refused the API key",
+  search_rate_limited: "Brave Search is limiting requests",
+  search_unavailable: "Brave Search could not be reached",
+};
 
 /** Failures that the same request may get past, so "Try again" is offered first. */
 const RETRYABLE = new Set(["search_rate_limited", "search_unavailable", "synthesis_failed", "synthesis_timed_out", "interrupted", "cancelled", "research_failed"]);
@@ -142,9 +150,22 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
                 }
               >
                 {research.failure?.message}
-                {research.confirmed && " The direction you confirmed earlier is kept."}
+                {research.failure?.code === "search_key_refused" && (
+                  <>
+                    {" "}
+                    <Link href="/settings#research" className="font-semibold underline underline-offset-4">
+                      Web search settings
+                    </Link>
+                  </>
+                )}
               </PageNotice>
+              {research.confirmed && <ConfirmedSummary confirmed={research.confirmed} />}
             </div>
+          )}
+          {editing && research?.result && (
+            <p className="mt-8 max-w-[640px] text-[14px] text-graphite">
+              Researching again replaces the findings shown now. A direction you confirmed stays in use until you confirm a new one.
+            </p>
           )}
           {(!request || research || startError) && (
             <ResearchStart
@@ -209,10 +230,26 @@ function ReadyView({
           Research again
         </button>
       </div>
-      {research.confirmed && !confirmedHere && (
-        <p className="mt-3 text-[13px] text-graphite">
-          You confirmed a direction from earlier research. It stays in use until you confirm this one.
+      {result.searchFailure && (
+        <p className="mt-3 max-w-[70ch] text-[14px]">
+          {SEARCH_FAILED[result.searchFailure] ?? "Web search failed"}, so only your links were read.
+          {result.searchFailure === "search_key_refused" && (
+            <>
+              {" "}
+              <Link href="/settings#research" className="font-semibold underline underline-offset-4">
+                Web search settings
+              </Link>
+            </>
+          )}
         </p>
+      )}
+      {research.confirmed && !confirmedHere && (
+        <>
+          <p className="mt-3 text-[13px] text-graphite">
+            You confirmed a direction from earlier research. It stays in use until you confirm this one.
+          </p>
+          <ConfirmedSummary confirmed={research.confirmed} />
+        </>
       )}
 
       <div className="mt-10">
