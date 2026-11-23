@@ -4,7 +4,7 @@
  * `legacy` is the agent as it ran before M1: the arguments in
  * `designAgentArgs`, the person's own Claude Code configuration, the full
  * process environment and the repository as its working folder. It stays the
- * default until the contained profile is qualified and activated (#237).
+ * default (FD-K).
  *
  * `contained` is the controlled, versioned profile. Everything that decides
  * what the agent can load, use, read, write and reach is a pure function of

@@ -29,7 +29,7 @@ function DesignAgentDetail({ status }: { status?: DesignAgentStatus }) {
     return status.profile === "invalid" ? (
       <p>CREATORBRIO_DESIGN_AGENT_PROFILE in .env.local is neither legacy nor contained, so designs are refused until it is corrected.</p>
     ) : (
-      <p>The Design Agent runs with your own Claude Code configuration and without the sandbox. The contained profile is being qualified and is not yet switched on.</p>
+      <p>The Design Agent runs with your own Claude Code configuration and without the sandbox. The contained profile is off by default, optional and not qualified.</p>
     );
   }
   if (!status.available) {
@@ -43,9 +43,10 @@ function DesignAgentDetail({ status }: { status?: DesignAgentStatus }) {
   return (
     <>
       <p>
-        The Design Agent runs inside Claude Code&apos;s sandbox on Claude Code {status.cliVersion}: it can reach only its own carousel through CreatorBrio, write only that
-        carousel&apos;s folder, and cannot read your home folder or CreatorBrio&apos;s files.
+        The Design Agent runs inside Claude Code&apos;s sandbox on Claude Code {status.cliVersion}. It is set up to reach only its own carousel through CreatorBrio, write only its own
+        folders, and not read your home folder or CreatorBrio&apos;s files.
       </p>
+      <p>This is not qualified. On Linux, its shell can also write the shared temporary folders.</p>
       {status.versionWarning && <p>{status.versionWarning} Run <code>npm run doctor</code> to check it.</p>}
     </>
   );

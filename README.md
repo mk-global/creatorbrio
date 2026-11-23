@@ -95,7 +95,7 @@ CreatorBrio is developed on macOS, and CI runs on Linux.
 Windows has code paths for starting the app but is not tested, and `/stop` does not work there.
 
 The contained Design Agent profile, which is off by default, opt-in and not qualified, has stricter requirements.
-macOS is the platform it is being activated on first.
+If it is ever activated, macOS is the first platform ([AD-48](docs/roadmap/content-platform/DECISION-REGISTER.md)).
 On Linux it runs with **bubblewrap and socat** installed (for example `sudo apt install bubblewrap socat`), but it is unsupported there, because Claude Code's sandbox leaves the shared temporary folders writable on Linux; Debian 12 is the only Linux it has been tested on.
 It is not available on native Windows or WSL2, which have not been tested.
 It has been tested on Claude Code 2.1.328, refuses versions older than 2.1.219, and warns about any other version.

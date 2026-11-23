@@ -68,17 +68,20 @@ flowchart LR
 ## Phase 1: agent containment and security corrections (first milestone)
 
 - **Impact:** the Design Agent can no longer be steered by a web page into reading secrets or acting outside CreatorBrio; its behavior no longer depends on whoever's Claude Code settings are on the machine.
+  That is the contained profile's design target; it is not claimed for the default profile, which runs under local trust, and the contained profile is not qualified (founder decision FD-K, 2026-11-23).
   It also reduces, for the Design Agent, the exposure that `docs/architecture/video-production-api.md` records: a process running as the same operating-system user, today's Design Agent with its shell included, can read every local secret.
   It does not close that exposure, because separating a process from the person needs operating-system account separation and M1 is not an operating-system account boundary ([RFC section 7.4](ARCHITECTURE-RFC.md#74-agent-containment-precondition-for-any-credential-in-reach)).
 - **Reuses:** the Visual Director's isolation flags, the source-retrieval boundary, the Production API's run-token model, the acceptance harness, Claude Code's documented sandbox and settings controls (sources and dates in [RFC section 7.4](ARCHITECTURE-RFC.md#74-agent-containment-precondition-for-any-credential-in-reach)).
 - **New:** the agent-only listener (or typed tools) that confines the agent's API authority to its run's carousel (AD-46); a refusal to start on a Claude CLI older than 2.1.219, which `strictAllowlist` needs; the contained execution profile, an explicit environment, a stable per-carousel working folder, outside the repository, with writes confined to it so a follow-up message still resumes the same session, sandbox configuration with its network limited to the agent's API address and port (the agent-only listener, AD-46) (Route A of RFC 7.4 with `strictAllowlist` on, or Route B, typed tools over MCP, if the feasibility proof fails) and read denial, web fetch disabled with linked pages retrieved by the server and handed to the agent as delimited untrusted text, the Claude CLI version T1 last passed on recorded in the profile with a visible warning when it differs, the T1 harness; then typed tools over MCP (WS8 and G8).
 - **Depends on:** issues #156 and #186; WS8 and G8 for the second step, which M1 itself needs if the feasibility proof selects Route B.
 - **Gates:** the network feasibility proof passed on the publishing host (macOS) and Linux, and on WSL2 where a test host exists, otherwise WSL2 reported unavailable until proven (AD-35), before the rest of M1 proceeds; T1 baseline recorded against today's agent and passed after the change; the acceptance harness shows no material quality regression, or the founder accepts the measured change (FQ-4); budget approved (FQ-5).
+  These are the gates as first set; the founder reduced M1's scope on 2026-11-23 (FD-K), which stopped T1 after the change, so see [First milestone](#first-milestone-m1-contain-the-design-agent) for what M1 now requires.
 - **Acceptance:** see [First milestone](#first-milestone-m1-contain-the-design-agent), whose scope the founder reduced on 2026-11-23 (FD-K).
 - **Operations:** sandbox prerequisites on Linux and on WSL2 on Windows (bubblewrap, socat and the seccomp filter) become documented requirements, per the vendor's [sandboxing documentation](https://code.claude.com/docs/en/sandboxing.md) (retrieved 2026-11-17).
   If any of them is missing, the Design Agent is reported unavailable with setup guidance, as on native Windows, and the doctor command checks for all three and tests the Unix socket refusal itself.
 - **Risks:** design quality may drop without free web access or the shell; mitigated by measuring and by research moving into the server's retrieval step.
-  The agent loses its own topic research until phase 2's research job returns it, and native Windows without WSL2, or Linux and WSL2 without the sandbox prerequisites, lose the Design Agent; both are deliberate capability changes (see [First milestone](#first-milestone-m1-contain-the-design-agent)).
+  Under the contained profile, the agent loses its own topic research until phase 2's research job returns it, and native Windows without WSL2, or Linux and WSL2 without the sandbox prerequisites, lose the Design Agent; both are deliberate capability changes (see [First milestone](#first-milestone-m1-contain-the-design-agent)).
+  They apply to the contained profile, if it is ever activated, and not to the default profile, which keeps its shell and web fetch (FD-K).
 - **Deferred:** OS-account separation (only if typed tools fail on quality, or T1's keychain canary on the publishing host requires it, AD-45).
 
 ## Phase 2: shared research and approval contracts
@@ -199,15 +202,15 @@ The goal below stays the contained profile's design target; it is not claimed fo
 The evidence recorded in this section stays as it was measured, with its corrections, and nothing that was not measured is claimed.
 
 Kept, as merged:
-- The contained profile and its tests: the stable Creative Agent configuration (no setting sources, a pinned model and effort, a strict MCP configuration, only `Bash` and `Read`), the run-scoped agent-only listener (AD-46), server-side retrieval of linked pages, the run lifecycle and cleanup, the server-owned home, the dedicated sign-in with the credential scrub, and one contained server per data folder.
-  These protect a run only when `CREATORBRIO_DESIGN_AGENT_PROFILE=contained` is set; the default profile does not use them.
+- The contained profile and its tests: the stable Creative Agent configuration (no setting sources, a pinned model and effort, a strict MCP configuration, only `Bash` and `Read`), the run-scoped agent-only listener (AD-46), handing the linked pages' text to the agent, the contained run's process-group stop and folder cleanup, the server-owned home, the dedicated sign-in with the credential scrub, and one contained server per data folder.
+  These apply only when `CREATORBRIO_DESIGN_AGENT_PROFILE=contained` is set; the default profile does not use them.
 - The stand-in qualification tools (`eval/sandbox-route/`) and the T1 harness (`eval/t1/`), as they are, with no further development.
-- The protections that apply to every profile: the server listens on the loopback address only, the request guard, sandboxed slide frames that run no script, the sealed export, upload and font fetch limits, and the core functionality and regression tests.
+- What applies to every profile: the server listens on the loopback address only, the request guard, sandboxed slide frames that run no script, the export browser, which loads nothing from the network, upload and font fetch limits, the server's retrieval of the linked pages (the Visual Director plans from it; only handing the page text to the agent is contained-only), the run lifecycle (one active run per carousel, the execution deadline and the inactivity limit), and the core functionality and regression tests.
 
 Stopped or deferred:
 - FD-J's qualification: T1 after the change, paid real-model runs and the creative-quality comparison.
   M1's model spend closes at about USD 38 of the USD 100 cap, and the USD 50 reserve is unspent.
-- The remaining stand-in checks (#244), the T1 harness gaps (#235), and the T1 baseline and post-change runs (#221).
+- The remaining stand-in checks (#244), the T1 harness gaps (#235), and T1 after the change (#221).
 - Detailed Keychain, CLI-internal and Linux sandbox qualification, further persistence-detector work and general sandbox-proof infrastructure.
 - Multi-user support for local installations, and SaaS tenancy, roles, infrastructure and operational security, which phase 7 implements.
 - The contained profile's activation and the legacy profile's removal (#237).
@@ -379,8 +382,9 @@ Under FD-K (2026-11-23) that qualification is stopped: the items above are defer
 **Risks.**
 
 - Design quality may drop without the shell and web fetch; mitigated by the acceptance harness and the founder's decision in FQ-4.
-- The agent loses its own web research on a topic until phase 2's research job returns it; supplied URLs keep working through server retrieval.
-  This is a deliberate, temporary capability change.
+- Under the contained profile only, the agent loses its own web research on a topic until phase 2's research job returns it; supplied URLs keep working through server retrieval.
+  The default profile keeps its own web fetch.
+  This is a deliberate, temporary capability change of the contained profile.
 - The vendor's sandbox does not run on native Windows, and WSL2 is untested, so on Windows the Design Agent is reported unavailable with setup guidance.
   This is a deliberate capability change; Windows is untested today (README).
 - On Linux without bubblewrap or socat the Design Agent is likewise reported unavailable with setup guidance; checking the seccomp filter and testing the Unix socket refusal itself are open activation items (#227).

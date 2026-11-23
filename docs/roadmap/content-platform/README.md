@@ -1,7 +1,7 @@
 # Content automation platform
 
 **Status:** Revision 3, validated for implementation readiness under [#218](https://github.com/mk-global/creatorbrio/issues/218) (revision 2 under [#216](https://github.com/mk-global/creatorbrio/issues/216)).
-Founder decisions FD-A to FD-I are ACCEPTED product requirements; the architecture, migration and sequence are PROPOSED until accepted in the [decision register](DECISION-REGISTER.md).
+Founder decisions FD-A to FD-I are ACCEPTED product requirements, and FD-J and FD-K are ACCEPTED scope decisions (FD-K, 2026-11-23, supersedes FD-J and reduced the first milestone); the architecture, migration and sequence are PROPOSED until accepted in the [decision register](DECISION-REGISTER.md).
 Nothing here authorizes implementation by itself; each milestone needs its own admitted issues.
 
 **Date:** 2026-11-18.
@@ -37,6 +37,7 @@ It stays local-first and open source, and later serves a hosted edition and mobi
 - Foundations that immutable records would make costly to retrofit are designed now: person identity in approvals and other attributed records, a permission model that separates review from approval and publishing authority, connections and destinations with several accounts per brand, and identifiers linking research, content, packages, publications and performance (AD-38 to AD-41).
 - Insights and community engagement are separate modules, the editorial plan is distinct from the publisher's schedule, and a read-only performance readback moves to phase 5 (AD-42 to AD-44).
 - The live publisher cutover waits for the containment proof to pass on the publishing host, a separate process is no longer described as credential isolation, and M1 also confines what the agent may change through CreatorBrio's own API (FD-I, AD-45, AD-46).
+  FD-K (2026-11-23) stopped T1, so what gates the cutover now is an open founder question (FQ-10), and FD-I stands unchanged until it is answered.
 
 ## What changed from the proposal merged in #215
 
@@ -45,6 +46,7 @@ It stays local-first and open source, and later serves a hosted edition and mobi
 - The Social Automation publisher, assessed read-only, supplies the publishing domain: its fingerprinted package is the frozen publication manifest and its runner is the one publication scheduler.
 - The workflow engine, PostgreSQL, tenancy, outbox and mobile client move to the stages that need them; the local product uses domain state and durable jobs.
 - Agent containment is the first milestone, because a process running as the person's operating-system user, today's Design Agent with its shell included, can read every local secret (see the [Production API documentation](../../architecture/video-production-api.md#what-this-does-and-does-not-protect-against)), and it is a precondition for integrating publishing.
+  The founder reduced that milestone on 2026-11-23 (FD-K): the contained profile stays dark, opt-in and not qualified, the default profile runs under local trust, and M1 closes on its merged implementation, a fix for the slide preview's outside requests and verification of the core workflows.
 - Self-hosted publishing is bring-your-own-app by founder decision (FD-D), replacing the review's open question on publishing distribution.
 
 ## Authority and change control
