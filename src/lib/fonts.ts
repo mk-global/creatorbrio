@@ -292,12 +292,22 @@ async function fetchAndInlineFont(
   // Every file must be inlined: the export page loads nothing from the network,
   // so a file that could not be fetched makes the whole variant unavailable,
   // rendered with the fallback font and never cached half-inlined (#200).
+  //
+  // A stylesheet names one file in many `@font-face` rules (Inter names 7
+  // files in 42 rules, one rule per unicode range and weight), so each address
+  // is fetched once, in the order it first appears, and its bytes are reused
+  // for every rule that names it.
+  const inlined = new Map<string, string>();
   for (const match of matches) {
     const fontUrl = match[1];
-    const fontResponse = await fetchFontResource(fontUrl);
-    if (!fontResponse.ok) return null;
-    const base64 = fontResponse.bytes.toString("base64");
-    css = css.replace(fontUrl, `data:${fontResponse.type || "font/woff2"};base64,${base64}`);
+    let dataUrl = inlined.get(fontUrl);
+    if (dataUrl === undefined) {
+      const fontResponse = await fetchFontResource(fontUrl);
+      if (!fontResponse.ok) return null;
+      dataUrl = `data:${fontResponse.type || "font/woff2"};base64,${fontResponse.bytes.toString("base64")}`;
+      inlined.set(fontUrl, dataUrl);
+    }
+    css = css.replace(fontUrl, dataUrl);
   }
 
   // Ensure font-display: block for deterministic rendering

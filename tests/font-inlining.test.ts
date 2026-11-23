@@ -17,6 +17,19 @@ const requests: string[] = [];
 const KIT_CSS =
   "@font-face { font-family: 'Kit'; font-style: normal; font-weight: 400; src: url(https://fonts.gstatic.com/l/font?kit=abc&skey=1&v=v10) format('woff2'); }";
 
+/**
+ * A stylesheet that names each of three files in four rules, one rule per
+ * weight, the way Google's answer for a family with many unicode ranges names
+ * the same file again and again.
+ */
+const RULE_COUNT = 12;
+const FILE_COUNT = 3;
+const rangesRule = (n: number, src: string) =>
+  `@font-face { font-family: 'Ranges'; font-style: normal; font-weight: ${100 * (1 + Math.floor(n / FILE_COUNT))}; font-display: swap; src: url(${src}) format('woff2'); }`;
+const rangesCss = (src: (file: number) => string) =>
+  Array.from({ length: RULE_COUNT }, (_, n) => rangesRule(n, src(n % FILE_COUNT))).join("\n");
+const RANGES_CSS = rangesCss((file) => `https://fonts.gstatic.com/r/${file}.woff2`);
+
 beforeAll(async () => {
   server = createServer((req, res) => {
     requests.push(req.url!);
@@ -28,6 +41,15 @@ beforeAll(async () => {
     if (url.pathname === "/l/font") {
       res.writeHead(200, { "content-type": "font/woff2" });
       return void res.end(Buffer.from([9, 9, 9]));
+    }
+    if (url.pathname === "/css2" && url.searchParams.get("family")?.startsWith("Ranges")) {
+      res.writeHead(200, { "content-type": "text/css" });
+      return void res.end(RANGES_CSS);
+    }
+    const file = /^\/r\/(\d)\.woff2$/.exec(url.pathname)?.[1];
+    if (file !== undefined) {
+      res.writeHead(200, { "content-type": "font/woff2" });
+      return void res.end(Buffer.from([Number(file), Number(file), Number(file)]));
     }
     res.writeHead(400);
     res.end();
@@ -71,6 +93,20 @@ describe("font inlining for a no-network export (#196)", () => {
     expect(css).toContain("src: url(data:font/woff2;base64,CQkJ) format('woff2')");
     expect(css).not.toContain("fonts.gstatic.com");
     expect(requests.filter((r) => r.startsWith("/l/font"))).toHaveLength(1);
+  });
+
+  it("fetches each font file once however many rules name it, and inlines every rule exactly as before (#249)", async () => {
+    const { getInlinedFontCSS } = await import("@/lib/fonts");
+    const css = await getInlinedFontCSS(["Ranges"]);
+
+    // The output is what fetching once per rule produced: every rule's address
+    // replaced by that file's bytes, and font-display made `block`.
+    const dataUrl = (file: number) => `data:font/woff2;base64,${Buffer.from([file, file, file]).toString("base64")}`;
+    expect(css).toBe(rangesCss(dataUrl).replace(/font-display: swap/g, "font-display: block"));
+
+    const fontRequests = requests.filter((r) => r.startsWith("/r/"));
+    expect(fontRequests.sort()).toEqual(Array.from({ length: FILE_COUNT }, (_, file) => `/r/${file}.woff2`));
+    expect(requests.filter((r) => r.startsWith("/css2"))).toHaveLength(1);
   });
 
   it("fetches again a cached stylesheet that still names a remote font file, and replaces it", async () => {

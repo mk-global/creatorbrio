@@ -311,7 +311,7 @@ describe("CreatorBrio's identity never reaches a person's brand", () => {
   });
 
   it("wraps slides for preview and export without any product colour or font", () => {
-    const wrapped = wrapSlideHtml(sampleSlideHtml("instagram-carousel", BRANDS[1]), "4:5").toUpperCase();
+    const wrapped = wrapSlideHtml(sampleSlideHtml("instagram-carousel", BRANDS[1]), "4:5", { previewOrigin: "http://localhost:3000" }).toUpperCase();
     for (const hex of productHex) expect(wrapped).not.toContain(hex);
     expect(wrapped).not.toMatch(/INSTRUMENT SANS|GEIST|--BRAND-|--COLOR-CROP|--COLOR-CREATE/);
   });

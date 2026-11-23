@@ -80,7 +80,12 @@ export function SlideFace({ html, aspectRatio, title = "Slide preview" }: { html
   const [scale, setScale] = useState(0);
   const [near, setNear] = useState(false);
   const { width, height } = DIMENSIONS[aspectRatio];
-  const srcDoc = useMemo(() => (near ? wrapSlideHtml(html, aspectRatio) : ""), [near, html, aspectRatio]);
+  // `near` is set only by an observer in the browser, so a server render builds no document: the preview
+  // names the app's origin in its policy (#249), which only the browser knows.
+  const srcDoc = useMemo(
+    () => (near ? wrapSlideHtml(html, aspectRatio, { previewOrigin: window.location.origin }) : ""),
+    [near, html, aspectRatio]
+  );
 
   useEffect(() => {
     const el = box.current;

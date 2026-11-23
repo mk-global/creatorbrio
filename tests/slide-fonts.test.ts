@@ -5,7 +5,7 @@ import {
   googleFontsUrl,
   wrapSlideHtml,
   EXPORT_DOCUMENT_CSP,
-  PREVIEW_DOCUMENT_CSP,
+  previewDocumentCsp,
 } from "@/lib/slide-html";
 
 describe("extractFontFamilies", () => {
@@ -143,11 +143,15 @@ describe("googleFontsUrl", () => {
   });
 });
 
+/** The app's origin as the browser reports it (`window.location.origin`), for a preview document. */
+const APP_ORIGIN = "http://localhost:3000";
+const PREVIEW = { previewOrigin: APP_ORIGIN };
+
 describe("wrapSlideHtml font loading", () => {
   const slide = `<h1 style="font-family: 'Cormorant Garamond', serif">Hook</h1>`;
 
   it("links the family the slide declares from CreatorBrio's own font route, never from Google (#249)", () => {
-    const doc = wrapSlideHtml(slide, "4:5");
+    const doc = wrapSlideHtml(slide, "4:5", PREVIEW);
     expect(doc).toContain(`<link href="/api/fonts/css?family=Cormorant%20Garamond" rel="stylesheet">`);
     expect(doc).not.toContain("fonts.googleapis.com");
   });
@@ -156,21 +160,21 @@ describe("wrapSlideHtml font loading", () => {
     const twoFamilies = `
       <h1 style="font-family: 'Cormorant Garamond', serif">a</h1>
       <p style="font-family: 'Inter', sans-serif">b</p>`;
-    const doc = wrapSlideHtml(twoFamilies, "4:5");
+    const doc = wrapSlideHtml(twoFamilies, "4:5", PREVIEW);
     expect(doc.match(/<link /g)).toHaveLength(2);
   });
 
   it("asks for the italic cut only when the slide renders italics", () => {
-    expect(wrapSlideHtml(slide, "4:5")).not.toContain("italic=1");
+    expect(wrapSlideHtml(slide, "4:5", PREVIEW)).not.toContain("italic=1");
 
     const italicSlide = `<h1 style="font-family: 'Cormorant Garamond', serif"><em>Hook</em></h1>`;
-    const doc = wrapSlideHtml(italicSlide, "4:5");
+    const doc = wrapSlideHtml(italicSlide, "4:5", PREVIEW);
     expect(doc).toContain(`<link href="/api/fonts/css?family=Cormorant%20Garamond&amp;italic=1" rel="stylesheet">`);
     expect(doc.match(/<link /g)).toHaveLength(1);
   });
 
   it("does not link a family name the font route would refuse", () => {
-    const doc = wrapSlideHtml(`<p style="font-family: 'Inter', 'a/b', 'x&y'">a</p>`, "4:5");
+    const doc = wrapSlideHtml(`<p style="font-family: 'Inter', 'a/b', 'x&y'">a</p>`, "4:5", PREVIEW);
     expect(doc.match(/<link /g)).toHaveLength(1);
     expect(doc).toContain("family=Inter");
   });
@@ -178,13 +182,14 @@ describe("wrapSlideHtml font loading", () => {
   it("uses inlined CSS instead of network links when exporting", () => {
     const doc = wrapSlideHtml(slide, "4:5", {
       inlineFontCss: "@font-face{font-family:'Cormorant Garamond';src:url(data:font/woff2;base64,AA)}",
+      forExport: true,
     });
     expect(doc).not.toContain("fonts.googleapis.com");
     expect(doc).toContain("@font-face");
   });
 
   it("still applies the aspect ratio's exact pixel dimensions", () => {
-    const doc = wrapSlideHtml(slide, "9:16");
+    const doc = wrapSlideHtml(slide, "9:16", PREVIEW);
     expect(doc).toContain("width: 1080px");
     expect(doc).toContain("height: 1920px");
   });
@@ -194,18 +199,47 @@ describe("wrapSlideHtml preview document (#249)", () => {
   const head = (doc: string) => doc.slice(0, doc.indexOf("<body>"));
   const body = (doc: string) => doc.slice(doc.indexOf("<body>"));
 
-  it("carries the preview policy in its head, and an export document carries only the export policy", () => {
-    const preview = wrapSlideHtml("<p>x</p>", "1:1");
-    expect(head(preview)).toContain(`<meta http-equiv="Content-Security-Policy" content="${PREVIEW_DOCUMENT_CSP}">`);
-    expect(PREVIEW_DOCUMENT_CSP).toBe(
-      "default-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+  it("carries the preview policy for the app's origin in its head, and an export document carries only the export policy", () => {
+    const preview = wrapSlideHtml("<p>x</p>", "1:1", PREVIEW);
+    expect(head(preview)).toContain(`<meta http-equiv="Content-Security-Policy" content="${previewDocumentCsp(APP_ORIGIN)}">`);
+    expect(previewDocumentCsp(APP_ORIGIN)).toBe(
+      "default-src 'none'; img-src http://localhost:3000 data:; media-src http://localhost:3000 data:; font-src http://localhost:3000 data:; style-src http://localhost:3000 'unsafe-inline'; base-uri 'none'; form-action 'none'"
     );
     const exported = wrapSlideHtml("<p>x</p>", "1:1", { forExport: true });
     expect(exported).toContain(EXPORT_DOCUMENT_CSP);
-    expect(exported).not.toContain(PREVIEW_DOCUMENT_CSP);
+    expect(exported).not.toContain(previewDocumentCsp(APP_ORIGIN));
   });
 
-  it("puts inert attributes first in each frame, object and embed start tag, and renames each link, in any letter case", () => {
+  it("names the app's exact origin in the preview policy and never 'self', which only some browsers read as the app in a sandboxed frame", () => {
+    for (const origin of ["http://localhost:3000", "http://127.0.0.1:41873", "https://creatorbrio.example", "http://localhost"]) {
+      const policy = previewDocumentCsp(origin);
+      expect(policy).not.toContain("'self'");
+      for (const directive of ["img-src", "media-src", "font-src", "style-src"]) {
+        expect(policy).toContain(`${directive} ${origin} `);
+      }
+      expect(wrapSlideHtml("<p>x</p>", "1:1", { previewOrigin: origin })).not.toContain("'self'");
+    }
+  });
+
+  it("refuses to build a preview policy from anything but an http or https origin", () => {
+    for (const origin of ["", "null", "'self'", "http://localhost:3000/", "http://localhost:3000/a", "localhost:3000", "http://a b", "http://a;b", "http://a'b", "http://[::1]:3000", "ftp://localhost", "http://localhost:3000 *"]) {
+      expect(() => previewDocumentCsp(origin), origin).toThrow(/origin/);
+    }
+    // Written for a caller outside the type system, which gives no origin.
+    expect(() => wrapSlideHtml("<p>x</p>", "1:1", {} as never)).toThrow(/origin/);
+    expect(() => wrapSlideHtml("<p>x</p>", "1:1", { inlineFontCss: "p{}" } as never)).toThrow(/origin/);
+  });
+
+  it("turns DNS prefetch off in the head, before the policy and the slide", () => {
+    const preview = wrapSlideHtml(`<meta http-equiv="x-dns-prefetch-control" content="on"><a href="https://example.test/">x</a>`, "1:1", PREVIEW);
+    const off = `<meta http-equiv="x-dns-prefetch-control" content="off">`;
+    expect(head(preview)).toContain(off);
+    expect(preview.indexOf(off)).toBeLessThan(preview.indexOf("Content-Security-Policy"));
+    expect(preview.indexOf(off)).toBeLessThan(preview.indexOf(`content="on"`));
+    expect(wrapSlideHtml("<p>x</p>", "1:1", { forExport: true })).not.toContain("x-dns-prefetch-control");
+  });
+
+  it("puts inert attributes first in each frame, object, embed, image and source start tag, and renames each link, in any letter case", () => {
     const slideHtml = [
       `<iframe src="https://example.test/a" width="300" height="200"></iframe>`,
       `<IfRaMe\nSRC="https://example.test/b"></IfRaMe>`,
@@ -215,8 +249,15 @@ describe("wrapSlideHtml preview document (#249)", () => {
       `<EMBED src="https://example.test/f">`,
       `<LINK rel="preconnect" href="https://example.test">`,
       `<link>`,
+      `<img srcset="https://example.test/g 1x" src="/uploads/a.png" width="40">`,
+      `<IMG\nSrcSet="https://example.test/h 1x" sizes="10px">`,
+      `<picture><source srcset="https://example.test/i"><img/srcset="https://example.test/j"></picture>`,
+      `<SOURCE media="(min-width: 1px)" srcset="https://example.test/k">`,
+      `<img>`,
+      `<IMAGE srcset="https://example.test/l 1x">`,
+      `<svg><image href="https://example.test/m"/></svg>`,
     ].join("");
-    expect(body(wrapSlideHtml(slideHtml, "1:1"))).toContain(
+    expect(body(wrapSlideHtml(slideHtml, "1:1", PREVIEW))).toContain(
       [
         `<iframe src=about:blank srcdoc src="https://example.test/a" width="300" height="200"></iframe>`,
         `<IfRaMe src=about:blank srcdoc\nSRC="https://example.test/b"></IfRaMe>`,
@@ -226,14 +267,22 @@ describe("wrapSlideHtml preview document (#249)", () => {
         `<EMBED src src="https://example.test/f">`,
         `<basefont rel="preconnect" href="https://example.test">`,
         `<basefont>`,
+        `<img srcset srcset="https://example.test/g 1x" src="/uploads/a.png" width="40">`,
+        `<IMG srcset\nSrcSet="https://example.test/h 1x" sizes="10px">`,
+        `<picture><source srcset srcset="https://example.test/i"><img srcset/srcset="https://example.test/j"></picture>`,
+        `<SOURCE srcset media="(min-width: 1px)" srcset="https://example.test/k">`,
+        `<img srcset>`,
+        `<IMAGE srcset srcset="https://example.test/l 1x">`,
+        `<svg><image srcset href="https://example.test/m"/></svg>`,
       ].join("")
     );
   });
 
   it("matches only those tag names, and a start tag cut off by the end of the slide", () => {
-    const others = `<frameset><iframes><linked><objects><embedded><img src="/uploads/a.png"><p>iframe link</p>`;
-    expect(body(wrapSlideHtml(others, "1:1"))).toContain(others);
-    expect(body(wrapSlideHtml("<p>x</p><iframe", "1:1"))).toContain("<p>x</p><iframe src=about:blank srcdoc\n</body>");
+    const others = `<frameset><iframes><linked><objects><embedded><images><imgs><sources><p>iframe link img image source</p>`;
+    expect(body(wrapSlideHtml(others, "1:1", PREVIEW))).toContain(others);
+    expect(body(wrapSlideHtml("<p>x</p><iframe", "1:1", PREVIEW))).toContain("<p>x</p><iframe src=about:blank srcdoc\n</body>");
+    expect(body(wrapSlideHtml("<p>x</p><img", "1:1", PREVIEW))).toContain("<p>x</p><img srcset\n</body>");
   });
 
   it("leaves the slide unchanged in an export document, whose browser keeps frames empty itself", () => {

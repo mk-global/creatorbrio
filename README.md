@@ -168,6 +168,7 @@ How the page works is described in [docs/architecture/video-studio-page.md](docs
   The planning step is isolated from them.
 - **Research.** Links you paste are fetched to read their text, and the design agent may fetch web pages while it researches a topic.
 - **Fonts.** CreatorBrio's server fetches the typefaces the preview and the export use from Google Fonts; the preview loads them from the server, never from Google itself.
+  The brand font picker still loads the typefaces it shows from Google Fonts, in the app's own page.
 - **Generated images** go only to the image service on this machine; any other address is refused.
 - **The Video Studio** sends nothing out: it uses FFmpeg and Chromium locally, with bundled fonts.
 

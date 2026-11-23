@@ -60,22 +60,31 @@ A page that is no longer the slide's own document when it is about to be capture
 ## The preview loads only from CreatorBrio
 
 Showing a slide in the editor, the full-screen preview or the library never makes the browser contact a server other than CreatorBrio itself ([#249](https://github.com/mk-global/creatorbrio/issues/249)).
-The preview document is the same `wrapSlideHtml()` contract in an `<iframe sandbox="" srcdoc>`, with three differences from the export document, made only in the document shown, never in the stored slide:
+The preview document is the same `wrapSlideHtml()` contract in an `<iframe sandbox="" srcdoc>`, with four differences from the export document, made only in the document shown, never in the stored slide:
 
-- It carries a Content-Security-Policy, `PREVIEW_DOCUMENT_CSP` in [`src/lib/slide-html.ts`](../../src/lib/slide-html.ts), that allows images, fonts and media only from CreatorBrio itself and from `data:`, styles only from CreatorBrio and inline, and no base address or form target.
-  In the sandboxed frame, whose origin is opaque, Chromium still takes `'self'` to be the app's origin, so uploaded images load.
+- It carries a Content-Security-Policy, `previewDocumentCsp()` in [`src/lib/slide-html.ts`](../../src/lib/slide-html.ts), that allows images, fonts and media only from CreatorBrio's own origin and from `data:`, styles only from that origin and inline, and no base address or form target.
+  The policy names the origin and never `'self'`, because what `'self'` means in a sandboxed frame, whose origin is opaque, differs between browsers.
+  The origin is an argument of the preview form of `wrapSlideHtml()`, which `SlideRenderer` and `SlideFace` give from `window.location.origin`.
+  Both build the document, and draw the frame, only once they have mounted in the browser, so a server render emits no frame and no policy without the origin (`tests/preview-frame-server-render.test.ts`).
   The frame also inherits the app page's own policy, so a load must pass both.
-- The slide's frames, embedded objects and links are made inert, because a frame connects to its host before its load is refused, and a link hint such as `preconnect` is not governed by the policy at all.
-  An attribute that loads nothing (`src=about:blank` and an empty `srcdoc` for a frame, an empty `data` or `src` for an object or embed) is put first in each such start tag, and the HTML parser keeps the first of two attributes with the same name, so a frame keeps its box and stays empty, as in an export.
+- The slide's frames, embedded objects, image candidate lists and links are made inert, because a frame connects to its host before its load is refused, some browsers fetch an image candidate without the policy's check, and a link hint such as `preconnect` is not governed by the policy at all.
+  An attribute that loads nothing (`src=about:blank` and an empty `srcdoc` for a frame, an empty `data` or `src` for an object or embed, an empty `srcset` for an image or a picture source) is put first in each such start tag, and the HTML parser keeps the first of two attributes with the same name, so a frame keeps its box and stays empty, as in an export, and an image keeps its `src`.
   A link is renamed to `basefont`, an obsolete element the parser treats exactly like `link` and that does nothing, because an inert attribute put first did not stop a `preconnect` in Chromium without the policy: its preload scanner reads links ahead of the parser.
+- Its head turns DNS prefetch off before the slide, because Firefox otherwise resolves the host of every link in a shown slide, which the policy does not govern.
+  Once it is off, Firefox ignores a later declaration that turns it on, so a slide cannot undo it.
 - Its fonts come from `GET /api/fonts/css`, one stylesheet per family, which answers with the export's inlined CSS from `getInlinedFontCSS()`, with the same cache and fetch limits, the italic cut included when the slide renders italics.
-  Requests for a family that arrive while it is being fetched share that one fetch, since every slide frame on a page asks at once.
+  Requests for the same family and cut that arrive while it is being built share that one fetch, since every slide frame on a page asks at once; the upright and italic cuts of a family are separate requests, as in the export.
+  Within one stylesheet each font file is fetched once, however many `@font-face` rules name it.
   The route takes only a family name of letters and digits in single-spaced words, so it cannot be made to fetch any other address, and the request guard in [`src/proxy.ts`](../../src/proxy.ts) stands in front of it as for every API route.
   Its CSS carries the fonts as `data:` URLs, so the app's page policy allows `data:` fonts on every page (`next.config.ts`).
 
 `tests/preview-network.test.ts` shows each slide shape in that document, under the app's real page policy, in Chromium, with outside host names resolved to a local listener, which records every connection, including one made for a load that is then refused.
 Every shape has a control, the same slide in the document and page policy used before, which the listener must see; shapes it cannot see even then are run but not counted as tested.
-Other browsers are not measured.
+Each case also checks that its frame rendered the preview document, so a broken case page cannot pass for lack of anything to observe.
+
+The same shapes, controls and listener were also run in Debian's Chromium 156, Playwright's Chromium 159, Firefox ESR 153, Playwright's Firefox 159 and Playwright's WebKit 27.2, against pages served on both `127.0.0.1` and `localhost`.
+In each of them the listener saw no connection from the preview for any shape whose control it saw.
+The preview was also checked by hand in Safari, with no outside request observed.
 
 `POST /api/carousels/[id]/export` answers in one of three ways.
 Without a `format`, or with `?format=png`, it answers with a ZIP of PNGs, as it always has.

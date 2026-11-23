@@ -129,37 +129,65 @@ export function previewFontCssUrl(family: string, italic: boolean): string {
 }
 
 /**
- * The Content-Security-Policy of a preview document (#249). A slide shown in
- * the app loads only from CreatorBrio itself (uploaded images, and its fonts
- * through the preview font route) and from inline `data:` and styles. In the
- * preview's `sandbox=""` frame, whose origin is opaque, Chromium still takes
- * `'self'` to be the app's origin, which `tests/preview-network.test.ts`
- * measures. The app page's own policy applies as well, since a `srcdoc` frame
- * inherits it, so both must allow what a slide loads.
+ * Whether `origin` is what `window.location.origin` is for the app: `http` or
+ * `https`, a host name or IPv4 address, and an optional port, with no path.
+ * Nothing else may reach a Content-Security-Policy.
  */
-export const PREVIEW_DOCUMENT_CSP =
-  "default-src 'none'; img-src 'self' data:; media-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+const APP_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/;
 
 /**
- * Attributes put first in each start tag of a frame or embedded object, which
- * can open a connection when it is shown although the document's policy
- * refuses its load: a frame connects to its host before the refusal. The HTML
- * parser keeps the first of two attributes with the same name, so the slide's
- * own address is dropped while the element keeps its box, as an export's empty
- * frame does.
+ * The Content-Security-Policy of a preview document (#249). A slide shown in
+ * the app loads only from CreatorBrio itself (uploaded images, and its fonts
+ * through the preview font route) and from inline `data:` and styles.
+ *
+ * CreatorBrio is named by its exact origin, never by `'self'`. The preview's
+ * `sandbox=""` frame has an opaque origin, and what `'self'` then means is
+ * left to each browser, so the policy states the origin itself, which the
+ * caller takes from `window.location.origin`. The app page's own policy
+ * applies as well, since a `srcdoc` frame inherits it, so both must allow what
+ * a slide loads.
+ */
+export function previewDocumentCsp(origin: string): string {
+  if (!APP_ORIGIN.test(origin)) {
+    throw new Error("A preview document needs the app's origin, such as http://localhost:3000.");
+  }
+  return `default-src 'none'; img-src ${origin} data:; media-src ${origin} data:; font-src ${origin} data:; style-src ${origin} 'unsafe-inline'; base-uri 'none'; form-action 'none'`;
+}
+
+/**
+ * Turns off DNS prefetch for the preview document: Firefox resolves the host
+ * of every link in a shown slide, which the policy does not govern. Once it is
+ * off, Firefox ignores a later declaration that turns it on, so a slide cannot
+ * undo this one, which is placed before the slide.
+ */
+const DNS_PREFETCH_OFF = `<meta http-equiv="x-dns-prefetch-control" content="off">`;
+
+/**
+ * Attributes put first in each start tag of an element that can open a
+ * connection when it is shown although the document's policy refuses its load:
+ * a frame connects to its host before the refusal, and some browsers fetch an
+ * image candidate in `srcset` without the policy's check. The HTML parser
+ * keeps the first of two attributes with the same name, so the slide's own
+ * address or candidate list is dropped while the element keeps its box, as an
+ * export's empty frame does. An image keeps its `src`. The parser reads an
+ * `image` start tag in HTML as `img`, so it takes the same attribute, which an
+ * SVG `image` ignores.
  */
 const INERT_ATTRIBUTES: Record<string, string> = {
   iframe: "src=about:blank srcdoc",
   frame: "src=about:blank",
   object: "data",
   embed: "src",
+  img: "srcset",
+  image: "srcset",
+  source: "srcset",
 };
 
 /**
- * Makes the slide's frames, embedded objects and links inert for the preview
- * (#249), by tag name as the HTML tokenizer reads it: ASCII letters in any
- * case, ended by whitespace, `/`, `>` or the end of the slide. Only the
- * document shown is changed; the stored slide is not.
+ * Makes the slide's frames, embedded objects, responsive image sources and
+ * links inert for the preview (#249), by tag name as the HTML tokenizer reads
+ * it: ASCII letters in any case, ended by whitespace, `/`, `>` or the end of
+ * the slide. Only the document shown is changed; the stored slide is not.
  *
  * A link hint such as `preconnect` is not governed by the policy at all, and an
  * inert `rel` put first did not stop one in Chromium 156 without the policy,
@@ -172,17 +200,12 @@ const INERT_ATTRIBUTES: Record<string, string> = {
  * same inert attributes or rename text.
  */
 function inertEmbeddedContent(html: string): string {
-  return html.replace(/<(iframe|frame|object|embed|link)(?=[\t\n\f\r />]|$)/gi, (tag, name: string) => {
+  return html.replace(/<(iframe|frame|object|embed|img|image|source|link)(?=[\t\n\f\r />]|$)/gi, (tag, name: string) => {
     const element = name.toLowerCase();
     return element === "link" ? "<basefont" : `${tag} ${INERT_ATTRIBUTES[element]}`;
   });
 }
 
-/**
- * Wraps slide body HTML into a full HTML document at the correct dimensions.
- * This is THE shared rendering contract between preview (iframe) and export
- * (Puppeteer).
- */
 /**
  * The Content-Security-Policy of an export document (#196): everything a slide
  * shows is inlined before it loads, so only `data:` images, fonts and media
@@ -194,16 +217,27 @@ function inertEmbeddedContent(html: string): string {
 export const EXPORT_DOCUMENT_CSP =
   "default-src 'none'; img-src data:; font-src data:; media-src data:; style-src 'unsafe-inline'; frame-src *; base-uri 'none'; form-action 'none'";
 
-export function wrapSlideHtml(
-  slideHtml: string,
-  aspectRatio: AspectRatio,
-  options?: { inlineFontCss?: string; forExport?: boolean }
-): string {
+/**
+ * How a slide document is built. An export carries its fonts inlined and loads
+ * nothing; a preview names the app's origin, which only the browser knows
+ * (`window.location.origin`), so every caller of the preview form passes it
+ * once it has mounted.
+ */
+export type SlideDocumentOptions =
+  | { forExport: true; inlineFontCss?: string }
+  | { forExport?: false; previewOrigin: string };
+
+/**
+ * Wraps slide body HTML into a full HTML document at the correct dimensions.
+ * This is THE shared rendering contract between preview (iframe) and export
+ * (Puppeteer).
+ */
+export function wrapSlideHtml(slideHtml: string, aspectRatio: AspectRatio, options: SlideDocumentOptions): string {
   const { width, height } = DIMENSIONS[aspectRatio];
 
-  let fontBlock = "";
+  let fontBlock: string;
   let body = slideHtml;
-  if (options?.forExport) {
+  if (options.forExport) {
     // An export document loads nothing from the network: its fonts are the
     // inlined ones or none, never a stylesheet link, under a policy that
     // refuses anything not inlined.
@@ -213,16 +247,15 @@ export function wrapSlideHtml(
     ]
       .filter(Boolean)
       .join("\n  ");
-  } else if (options?.inlineFontCss) {
-    // For export: self-contained base64 @font-face CSS, no network needed.
-    fontBlock = `<style>${options.inlineFontCss}</style>`;
   } else {
-    // For preview (#249): the preview policy, then one stylesheet per family
-    // from CreatorBrio's own font route, which answers with the export's
-    // inlined font CSS, the italic cut included when the slide needs one.
+    // For preview (#249): DNS prefetch off, the preview policy for the app's
+    // origin, then one stylesheet per family from CreatorBrio's own font
+    // route, which answers with the export's inlined font CSS, the italic cut
+    // included when the slide needs one.
     const italic = usesItalic(slideHtml);
     fontBlock = [
-      `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_DOCUMENT_CSP}">`,
+      DNS_PREFETCH_OFF,
+      `<meta http-equiv="Content-Security-Policy" content="${previewDocumentCsp(options.previewOrigin)}">`,
       ...extractFontFamilies(slideHtml)
         .filter(isFontFamilyName)
         .map((family) => `<link href="${escapeAttribute(previewFontCssUrl(family, italic))}" rel="stylesheet">`),

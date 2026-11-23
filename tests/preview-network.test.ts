@@ -26,7 +26,7 @@ import path from "node:path";
 import puppeteer, { type Browser, type Frame, type Page } from "puppeteer";
 import sharp from "sharp";
 import { APP_FONT_SOURCES, contentSecurityPolicy } from "../next.config";
-import { wrapSlideHtml } from "@/lib/slide-html";
+import { previewDocumentCsp, wrapSlideHtml } from "@/lib/slide-html";
 import { appBrowser, inCi } from "./helpers/app-browser";
 import { fetchThrough, PROBE_FAMILY, startFakeFontSource, type FakeFontSource } from "./helpers/fake-font-source";
 
@@ -60,6 +60,7 @@ function shapes(at: string): Record<string, string> {
     lazyImg: `<img loading="lazy" src="${at}/lazy" width="40" height="40">`,
     srcset: `<img srcset="${at}/srcset 1x" width="40" height="40">`,
     sizes: `<img sizes="10px" srcset="${at}/sizes 10w" width="40" height="40">`,
+    imageTag: `<image srcset="${at}/image-tag 1x" width="40" height="40">`,
     picture: `<picture><source srcset="${at}/picture"><img width="40" height="40"></picture>`,
     cssBackground: `<div style="width:40px;height:40px;background:url(${at}/bg)"></div>`,
     imageSet: `<div style="width:40px;height:40px;background-image:image-set(url(${at}/set) 1x)"></div>`,
@@ -107,6 +108,9 @@ function shapes(at: string): Record<string, string> {
     prerender: `<link rel="prerender" href="${at}/prerender">`,
     dnsPrefetch: `<link rel="dns-prefetch" href="${at}">`,
     svgUse: `<svg width="40" height="40"><use href="${at}/svg-use#a"/></svg>`,
+    anchor: `<a href="${at}/anchor">Read more</a>`,
+    anchorPrefetchOn: `<meta http-equiv="x-dns-prefetch-control" content="on"><a href="${at}/anchor-on">Read more</a>`,
+    svgAnchor: `<svg width="40" height="40"><a href="${at}/svg-anchor"><rect width="40" height="40"/></a></svg>`,
     svgFilter: `<div style="width:40px;height:40px;background:#16a085;filter:url(${at}/filter#f)"></div>`,
     script: `<script src="${at}/script"></script>`,
     refresh: `<meta http-equiv="refresh" content="0;url=${at}/refresh">`,
@@ -116,6 +120,7 @@ function shapes(at: string): Record<string, string> {
 const UNOBSERVED = new Set([
   "frame", "frameset", "object", "embed", "video", "audio", "track", "stylesheet", "cssImport", "fontFace",
   "icon", "manifest", "modulePreload", "prerender", "dnsPrefetch", "svgUse", "svgFilter", "script", "refresh",
+  "anchor", "anchorPrefetchOn", "svgAnchor",
 ]);
 
 const OUTSIDE = "outside.test";
@@ -197,7 +202,7 @@ function serve(name: string, slideHtml: string, mode: Mode): string {
     pathname,
     mode === "control"
       ? { policy: PAGE_POLICY_BEFORE, srcdoc: documentBefore(slideHtml) }
-      : { policy: contentSecurityPolicy(APP_FONT_SOURCES), srcdoc: wrapSlideHtml(slideHtml, "4:5") }
+      : { policy: contentSecurityPolicy(APP_FONT_SOURCES), srcdoc: wrapSlideHtml(slideHtml, "4:5", { previewOrigin: appOrigin }) }
   );
   return appOrigin + pathname;
 }
@@ -218,17 +223,36 @@ async function show<T>(browser: Browser, url: string, inspect?: (frame: Frame) =
   }
 }
 
-/** Shows every shape in one mode, a few at a time, and returns the hosts the listener saw. */
-async function showEveryShape(browser: Browser, mode: Mode): Promise<{ hosts: (string | null)[] }> {
+/**
+ * What a slide frame shows once its case has loaded: its readiness and the
+ * policy its document carries. A case whose page is broken has no frame, or a
+ * frame without its document, and must fail rather than pass for lack of
+ * anything to observe.
+ */
+const rendered = (frame: Frame) =>
+  frame.evaluate(() => ({
+    state: document.readyState,
+    url: location.href,
+    policy: document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute("content") ?? null,
+  }));
+
+/** Shows every shape in one mode, a few at a time, and returns the hosts the listener saw and the shapes whose frame did not render. */
+async function showEveryShape(browser: Browser, mode: Mode): Promise<{ hosts: (string | null)[]; unrendered: string[] }> {
   const before = connections.length;
   const names = Object.keys(shapes(""));
+  const unrendered: string[] = [];
   for (let i = 0; i < names.length; i += 8) {
     await Promise.all(
-      names.slice(i, i + 8).map((name) => show(browser, serve(name, shapes(`https://${hostFor(name, mode)}`)[name], mode)))
+      names.slice(i, i + 8).map(async (name) => {
+        const seen = await show(browser, serve(name, shapes(`https://${hostFor(name, mode)}`)[name], mode), rendered);
+        // A control's document carries no policy of its own; a product's carries the preview policy for the app.
+        const policy = mode === "product" ? previewDocumentCsp(appOrigin) : null;
+        if (seen?.state !== "complete" || seen.url !== "about:srcdoc" || seen.policy !== policy) unrendered.push(name);
+      })
     );
   }
   await new Promise((resolve) => setTimeout(resolve, 500));
-  return { hosts: connections.slice(before).map((c) => c.host) };
+  return { hosts: connections.slice(before).map((c) => c.host), unrendered };
 }
 
 let fontSource: FakeFontSource;
@@ -293,16 +317,18 @@ describe.skipIf(!browserPath && !inCi)("slide preview network in Chromium (#249)
       headless: true,
       args: ["--no-sandbox", `--host-resolver-rules=MAP *.${OUTSIDE} 127.0.0.1:${port}, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1`],
     });
-  });
+  }, 60_000);
 
   it("the listener sees each shape's outside host in the document and page policy used before (the controls work)", async () => {
-    const { hosts } = await showEveryShape(browser!, "control");
+    const { hosts, unrendered } = await showEveryShape(browser!, "control");
+    expect(unrendered).toEqual([]);
     const missing = Object.keys(shapes("")).filter((name) => !UNOBSERVED.has(name) && !hosts.includes(hostFor(name, "control")));
     expect(missing).toEqual([]);
   }, 120_000);
 
   it("the slide preview opens no connection to an outside host for any shape", async () => {
-    const { hosts } = await showEveryShape(browser!, "product");
+    const { hosts, unrendered } = await showEveryShape(browser!, "product");
+    expect(unrendered).toEqual([]);
     expect(hosts).toEqual([]);
   }, 120_000);
 
@@ -325,6 +351,20 @@ describe.skipIf(!browserPath && !inCi)("slide preview network in Chromium (#249)
     expect(seen!.faces.some((face) => face.style === "italic")).toBe(false);
     expect(appRequests).toContain(`/uploads/${UPLOAD}`);
     expect(appRequests).toContain("/api/fonts/css?family=Probe%20Sans");
+    expect(connections.slice(before)).toEqual([]);
+  }, 60_000);
+
+  it("shows an image's own source when the slide also names outside candidates, and contacts no one", async () => {
+    const before = connections.length;
+    const host = hostFor("srcsetsrc", "product");
+    const slide = `<img id="upload" src="/uploads/${UPLOAD}" srcset="https://${host}/a 1x, https://${host}/b 2x" width="240" height="160">`;
+    const image = await show(browser!, serve("srcsetsrc", slide, "product"), (frame) =>
+      frame.evaluate(() => {
+        const element = document.getElementById("upload") as HTMLImageElement;
+        return { complete: element.complete, width: element.naturalWidth, height: element.naturalHeight };
+      })
+    );
+    expect(image).toEqual({ complete: true, width: 24, height: 16 });
     expect(connections.slice(before)).toEqual([]);
   }, 60_000);
 
