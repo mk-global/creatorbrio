@@ -73,15 +73,15 @@ export const RESEARCH_FAILURE_MESSAGES: Record<ResearchFailureCode, string> = {
   no_readable_pages:
     "None of the pages could be read, so there is nothing to research from. Try again, or add links to public pages that show their text without a sign-in.",
   claude_unavailable: "Research needs Claude Code on this computer, signed in. Connect it in Settings, then try again.",
-  synthesis_failed: "Claude could not turn the pages into findings this time. Try again; nothing on the project changed.",
+  synthesis_failed: "Claude could not turn the pages into findings this time. Try again; your slides and any direction you confirmed are unchanged.",
   synthesis_timed_out: "Reading the pages took longer than the 3-minute limit. Try again, or use fewer or shorter links.",
   budget_exceeded:
     "Research stopped at the spending limit set in RESEARCH_MAX_BUDGET_USD. Raise the limit or use fewer links, then try again.",
   budget_setting_invalid:
     "RESEARCH_MAX_BUDGET_USD in .env.local is not a valid amount. Set a positive number such as 0.50, or remove it, then restart CreatorBrio.",
-  cancelled: "You stopped the research. Nothing on the project changed.",
+  cancelled: "You stopped the research. Your slides and any direction you confirmed are unchanged.",
   interrupted: "Research stopped because CreatorBrio was restarted. Start it again.",
-  research_failed: "Research failed unexpectedly. Try again; nothing on the project changed.",
+  research_failed: "Research failed unexpectedly. Try again; your slides and any direction you confirmed are unchanged.",
 };
 
 const SYNTHESIS_FAILURES: Record<Exclude<SynthesisFailureCode, "cancelled">, ResearchFailureCode> = {
