@@ -8,24 +8,31 @@
  * carousel, the token stops working when the run ends, and the run's
  * temporary folder is gone.
  *
+ * Its sign-in is a synthetic token in a private file under its own disposable
+ * root, named by the token-file setting, so the default file (the person's own
+ * token) is never chosen, and the launch is refused before the CLI starts
+ * unless its model API address is the loopback stand-in (#246).
+ *
  * Run it only on a disposable host (the Linux container or the macOS VM).
  *
  *   node --import ./eval/t1/register.mjs eval/sandbox-route/end-to-end.ts [--claude path]
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { agentListenerPort, stopAgentListener } from "../../src/lib/agent-listener";
+import { AGENT_TOKEN_FILE_ENV } from "../../src/lib/agent-sign-in";
 import { AGENT_WORKSPACES_ENV } from "../../src/lib/agent-workspace";
 import { createCarousel, getCarousel } from "../../src/lib/carousels";
 import { buildSystemPrompt } from "../../src/lib/chat-system-prompt";
 import { prepareContainedLaunch } from "../../src/lib/contained-launch";
 import { startAppRoutesServer } from "../../tests/helpers/app-routes-server";
 import { PROMPT_BASELINE_CASES } from "../../tests/fixtures/prompt-baseline/cases";
-import { standInEnv, startStandIn } from "./stand-in";
+import { assertStandInModelApi, standInEnv, startStandIn } from "./stand-in";
 
 const SLIDE_MARKER = "CREATORBRIO_END_TO_END_SLIDE";
 
@@ -34,6 +41,22 @@ export function createSlideCommand(systemPrompt: string, html: string): string {
   const block = /### Create a slide:\n([\s\S]*?)\n\n/.exec(systemPrompt)?.[1];
   if (!block || !block.includes("YOUR_HTML_HERE")) throw new Error("The prompt has no Create a slide command");
   return block.replace("YOUR_HTML_HERE", html);
+}
+
+/**
+ * The environment the run launches the contained CLI from: the loopback
+ * stand-in's address, and a synthetic sign-in token in a private file under
+ * `root` (outside the repository, the data folder and the agent folders),
+ * which the token-file setting names. With the setting present the default
+ * file under the person's home is never consulted, so a token the person keeps
+ * there cannot be chosen.
+ */
+export function endToEndEnv(input: { root: string; port: number }): NodeJS.ProcessEnv {
+  const secrets = path.join(input.root, "secrets");
+  mkdirSync(secrets, { mode: 0o700 });
+  const tokenFile = path.join(secrets, "design-agent-token");
+  writeFileSync(tokenFile, `sk-ant-oat01-e2e-${randomBytes(16).toString("hex")}\n`, { mode: 0o600 });
+  return standInEnv({ PATH: process.env.PATH, HOME: homedir(), LANG: process.env.LANG ?? "C.UTF-8", [AGENT_TOKEN_FILE_ENV]: tokenFile } as unknown as NodeJS.ProcessEnv, input.port);
 }
 
 async function main() {
@@ -68,8 +91,15 @@ async function main() {
       appOrigin: app.origin,
       tokenTtlMs: 120_000,
       repoDir: repo,
-      env: standInEnv({ PATH: process.env.PATH, HOME: homedir(), LANG: process.env.LANG ?? "C.UTF-8" } as unknown as NodeJS.ProcessEnv, stand.port),
+      env: endToEndEnv({ root, port: stand.port }),
     });
+    // The CLI starts only with its model API address on the loopback stand-in: its sign-in token must go nowhere else.
+    try {
+      assertStandInModelApi(launch.env);
+    } catch (error) {
+      await launch.finish();
+      throw error;
+    }
     const tempDir = launch.env.CLAUDE_CODE_TMPDIR;
     const token = launch.env.CREATORBRIO_AGENT_GRANT;
     const exit = await new Promise<number>((resolve) => {

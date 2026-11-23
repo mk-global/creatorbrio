@@ -13,7 +13,9 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runDirNameLength, serverTempRoot } from "@/lib/agent-workspace";
-import { SIGN_IN_STORE_ENV } from "@/lib/design-agent-profile";
+import { AGENT_TOKEN_FILE_ENV } from "@/lib/agent-sign-in";
+import { MODEL_API_URL_ENV } from "@/lib/design-agent-profile";
+import { claimContainedServer, releaseContainedServer, resetContainedServerForTests } from "@/lib/contained-server";
 import type { BrandConfig } from "@/types/brand";
 import { CHAT_ERROR_MESSAGES, createChatStreamParser, type ChatStreamEvent } from "@/lib/chat-stream";
 import { boundConversation } from "@/lib/agent-sessions";
@@ -21,7 +23,7 @@ import { CAROUSEL_BEING_DELETED_ERROR, isGenerating, reserveForDeletion } from "
 import * as agentProcesses from "@/lib/agent-processes";
 import * as agentSessions from "@/lib/agent-sessions";
 import * as agentWorkspace from "@/lib/agent-workspace";
-import { stubDirector } from "./helpers/stub-director";
+import { stubDirector, typographyPlanFor } from "./helpers/stub-director";
 import { startAppRoutesServer, type AppRoutesServer } from "./helpers/app-routes-server";
 import net from "node:net";
 import { retrieveSources } from "@/lib/source-retrieval";
@@ -91,6 +93,14 @@ const call = (method, target, body) => new Promise((resolve) => {
     setInterval(() => {}, 1000);
     return;
   }
+  if (scenario === "stderr-cap") {
+    // Error output in the writes the test planned, a moment apart so that the app reads each as a chunk of its own, and then a failure.
+    for (const chunk of JSON.parse(fs.readFileSync(path.join(dir, "stderr-chunks.json"), "utf8"))) {
+      process.stderr.write(chunk);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    process.exit(1);
+  }
   const results = { slides: [] };
   for (let i = 1; i <= 3; i++) results.slides.push(await call("POST", "/api/carousels/" + id + "/slides", { html: "<h1>Slide " + i + "</h1>" }));
   const other = fs.readFileSync(path.join(dir, "other"), "utf8");
@@ -100,11 +110,15 @@ const call = (method, target, body) => new Promise((resolve) => {
   results.deleteOwn = await call("DELETE", "/api/carousels/" + id);
   rec("results.json", results);
   fs.writeFileSync(path.join(process.cwd(), "notes.txt"), "kept between turns");
-  out({ type: "assistant", message: { type: "message", content: [{ type: "text", text: "My token is " + token }] } });
+  // The agent repeats both of its secrets, its listener token and the sign-in token it was started with: neither may be relayed or logged (#246).
+  const signIn = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  out({ type: "assistant", message: { type: "message", content: [{ type: "text", text: "My token is " + token + " and my sign-in token is " + signIn }] } });
   process.stderr.write("debug: token " + token.slice(0, 10));
   process.stderr.write(token.slice(10) + " end\\n");
+  process.stderr.write("debug: sign-in " + signIn.slice(0, 14));
+  process.stderr.write(signIn.slice(14) + " end\\n");
   if (scenario === "fail") process.exit(1);
-  out({ type: "result", subtype: "success", is_error: false, session_id: "${SESSION}", result: "Designed 3 slides with " + token });
+  out({ type: "result", subtype: "success", is_error: false, session_id: "${SESSION}", result: "Designed 3 slides with " + token + " and " + signIn });
   process.exit(0);
 })();
 `;
@@ -124,6 +138,9 @@ let app: AppRoutesServer;
 let workdir: string;
 let agentsRoot: string;
 let fakeDir: string;
+let secretsDir: string;
+let tokenFile: string;
+const SIGN_IN_TOKEN = "sk-ant-oat01-synthetic-dedicated-token-for-tests";
 let originalCwd: string;
 let director: ReturnType<typeof stubDirector>;
 const originalRetrieve = creativeRunDeps.retrieveSources;
@@ -144,6 +161,10 @@ beforeEach(async () => {
   originalCwd = process.cwd();
   workdir = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-contained-")));
   agentsRoot = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-agents-")));
+  // The contained CLI's own sign-in (#246): a synthetic token in a private file outside the repository and the agent folders.
+  secretsDir = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-secrets-")));
+  tokenFile = path.join(secretsDir, "design-agent-token");
+  await writeFile(tokenFile, `${SIGN_IN_TOKEN}\n`, { mode: 0o600 });
   await mkdir(path.join(workdir, "data"), { recursive: true });
   await mkdir(path.join(workdir, "public", "uploads"), { recursive: true });
   await writeFile(path.join(workdir, "data", "brand.json"), JSON.stringify(BRAND));
@@ -155,7 +176,11 @@ beforeEach(async () => {
   process.env.CREATORBRIO_DESIGN_AGENT_PROFILE = "contained";
   process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agentsRoot;
   process.env.SYNTHETIC_APP_SECRET = "synthetic-secret-value";
+  process.env[AGENT_TOKEN_FILE_ENV] = tokenFile;
   process.chdir(workdir);
+  // This server owns the data folder and the agent folders, as the contained server's start makes it (#246).
+  resetContainedServerForTests();
+  expect(await claimContainedServer({ dataDir: path.join(workdir, "data"), agentsRoot, repoDir: workdir })).toEqual({ owned: true });
   app.received.length = 0;
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -173,12 +198,16 @@ afterEach(async () => {
       // Already exited, or never started.
     }
   }
+  releaseContainedServer();
+  resetContainedServerForTests();
   process.chdir(originalCwd);
   delete process.env.CREATORBRIO_DESIGN_AGENT_PROFILE;
   delete process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES;
   delete process.env.SYNTHETIC_APP_SECRET;
+  delete process.env[AGENT_TOKEN_FILE_ENV];
   await rm(workdir, { recursive: true, force: true });
   await rm(agentsRoot, { recursive: true, force: true });
+  await rm(secretsDir, { recursive: true, force: true });
 });
 
 const play = (scenario: string) => writeFile(path.join(fakeDir, "scenario"), scenario);
@@ -315,12 +344,197 @@ describe("a contained design run", () => {
     expect(env.HOME).toBe(home);
     expect((await stat(home)).mode & 0o777).toBe(0o700);
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
-    // The person's sign-in is named by the store's own location, never by moving the CLI's state into their folder.
-    expect(env[SIGN_IN_STORE_ENV]).toBe(personConfig);
+    // Nothing points the CLI at the person's sign-in store any more (#246).
+    expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
+    expect(await readdir(home)).toEqual([]);
     const argv = await recordedJson<string[]>("argv.json");
     const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]);
     expect(settings.sandbox.filesystem.denyRead).toContain(home);
     expect(settings.permissions.deny).toContain(`Read(/${home}/**)`);
+  });
+
+  it("signs the CLI in with its own token from its file, and with no credential the server holds (#246)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const saved = { key: process.env.ANTHROPIC_API_KEY, auth: process.env.ANTHROPIC_AUTH_TOKEN, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN };
+    Object.assign(process.env, { ANTHROPIC_API_KEY: "synthetic-server-key", ANTHROPIC_AUTH_TOKEN: "synthetic-server-auth", CLAUDE_CODE_OAUTH_TOKEN: "synthetic-server-oauth" });
+    let raw = "";
+    try {
+      ({ raw } = await postChat({ carouselId: own.id }));
+    } finally {
+      for (const [name, value] of [["ANTHROPIC_API_KEY", saved.key], ["ANTHROPIC_AUTH_TOKEN", saved.auth], ["CLAUDE_CODE_OAUTH_TOKEN", saved.oauth]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    const env = await recordedJson<Record<string, string>>("env.json");
+    // The one trailing newline is dropped.
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SIGN_IN_TOKEN);
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe("1");
+    expect(JSON.stringify(env)).not.toMatch(/synthetic-server-/);
+    // The file is denied to the shell and the Read tool by name, and the token appears in no argument, chat event or log line.
+    const argv = await recordedJson<string[]>("argv.json");
+    const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]);
+    expect(settings.sandbox.filesystem.denyRead).toContain(tokenFile);
+    expect(settings.permissions.deny).toContain(`Read(/${tokenFile})`);
+    expect(argv.join(" ")).not.toContain(SIGN_IN_TOKEN);
+    expect(raw).not.toContain(SIGN_IN_TOKEN);
+    const logged = [console.error, console.warn, console.info].flatMap((fn) => vi.mocked(fn).mock.calls).map((call) => JSON.stringify(call));
+    expect(logged.join("\n")).not.toContain(SIGN_IN_TOKEN);
+  });
+
+  it("never sends the server's own model API address to the CLI, and gives it one only from CreatorBrio's setting (#246)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const saved = { base: process.env.ANTHROPIC_BASE_URL, own: process.env[MODEL_API_URL_ENV] };
+    const restore = () => {
+      for (const [name, value] of [["ANTHROPIC_BASE_URL", saved.base], [MODEL_API_URL_ENV, saved.own]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    };
+    try {
+      // The person's own Claude Code gateway, in the server's shell: the contained token must not follow it.
+      process.env.ANTHROPIC_BASE_URL = "https://gateway.example.test";
+      delete process.env[MODEL_API_URL_ENV];
+      const first = await postChat({ carouselId: own.id });
+      expect(first.events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
+      const withoutSetting = await recordedJson<Record<string, string>>("env.json");
+      expect(withoutSetting.CLAUDE_CODE_OAUTH_TOKEN).toBe(SIGN_IN_TOKEN);
+      expect(withoutSetting).not.toHaveProperty("ANTHROPIC_BASE_URL");
+      expect(JSON.stringify(withoutSetting)).not.toContain("gateway.example.test");
+      // CreatorBrio's own setting is mapped to the CLI's variable, and wins over the server's.
+      await rm(path.join(fakeDir, "pid"), { force: true });
+      process.env[MODEL_API_URL_ENV] = "http://127.0.0.1:4321";
+      await postChat({ carouselId: own.id });
+      const withSetting = await recordedJson<Record<string, string>>("env.json");
+      expect(withSetting.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:4321");
+      expect(withSetting).not.toHaveProperty(MODEL_API_URL_ENV);
+      expect(JSON.stringify(withSetting)).not.toContain("gateway.example.test");
+    } finally {
+      restore();
+    }
+  });
+
+  it("refuses to start, before the agent runs or a conversation folder is made, with an invalid model API setting, naming the setting and never its value (#246)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const saved = process.env[MODEL_API_URL_ENV];
+    try {
+      for (const value of ["gateway.example.test", "ftp://gateway.example.test", "http://user:synthetic-pass@gateway.example.test"]) {
+        process.env[MODEL_API_URL_ENV] = value;
+        await rm(path.join(fakeDir, "argv.json"), { force: true });
+        const { events, raw } = await postChat({ carouselId: own.id });
+        await expect(stat(path.join(fakeDir, "argv.json"))).rejects.toThrow();
+        await expect(stat(path.join(agentsRoot, own.id))).rejects.toThrow();
+        const refused = events.find((e) => e.type === "error") as { code: string; message: string };
+        expect(refused).toMatchObject({ code: "agent_unavailable", message: expect.stringMatching(new RegExp(`${MODEL_API_URL_ENV}.*absolute http or https address.*The slides were not changed`)) });
+        expect(raw).not.toMatch(/synthetic-pass|gateway\.example\.test/);
+        const logged = [console.error, console.warn, console.info].flatMap((fn) => vi.mocked(fn).mock.calls).map((call) => JSON.stringify(call));
+        expect(logged.join("\n")).not.toMatch(/synthetic-pass|gateway\.example\.test/);
+      }
+    } finally {
+      if (saved === undefined) delete process.env[MODEL_API_URL_ENV];
+      else process.env[MODEL_API_URL_ENV] = saved;
+    }
+  });
+
+  it("refuses to launch, with the run released, when the folders setting changes during planning, and leaves the folders it never claimed untouched (#246)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    // As the server starts it: the folders from the settings, which are read again on every request.
+    releaseContainedServer();
+    resetContainedServerForTests();
+    expect(await claimContainedServer({ dataDir: path.join(workdir, "data"), repoDir: workdir })).toEqual({ owned: true });
+    // Planning (the stubbed Director) takes as long as it takes: meanwhile the setting is changed to folders this server never took charge of.
+    const unclaimed = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-unclaimed-agents-")));
+    director.restore();
+    director = stubDirector((request) => {
+      process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = unclaimed;
+      return typographyPlanFor(request);
+    });
+    try {
+      await rm(path.join(fakeDir, "argv.json"), { force: true });
+      const { events, raw } = await postChat({ carouselId: own.id });
+      expect(director.requests).toHaveLength(1);
+      const refused = events.find((e) => e.type === "error") as { code: string; message: string };
+      expect(refused).toMatchObject({ code: "agent_unavailable", message: expect.stringMatching(/no longer the ones this server took charge of when it started.*Restart CreatorBrio after changing CREATORBRIO_DESIGN_AGENT_WORKSPACES.*The slides were not changed/) });
+      expect(raw).not.toContain(unclaimed);
+      expect(events.at(-1)).toEqual({ type: "done", sessionId: null });
+      // The agent never started, and nothing was made in either root.
+      await expect(stat(path.join(fakeDir, "argv.json"))).rejects.toThrow();
+      expect(await readdir(unclaimed)).toEqual([]);
+      expect(await readdir(agentsRoot)).not.toContain(own.id);
+      // The run is released: the carousel is free, its slides unchanged, no run token live, and a later design (once the setting is back) goes through.
+      expect(isGenerating(own.id)).toBe(false);
+      expect((await getCarousel(own.id))?.slides ?? []).toHaveLength(0);
+      expect(liveGrantCount()).toBe(0);
+      const logged = [console.error, console.warn, console.info].flatMap((fn) => vi.mocked(fn).mock.calls).map((call) => JSON.stringify(call));
+      expect(logged.join("\n")).not.toContain(unclaimed);
+      process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agentsRoot;
+      director.restore();
+      director = stubDirector();
+      const again = await postChat({ carouselId: own.id });
+      expect(again.events.at(-1)).toEqual({ type: "done", sessionId: SESSION });
+      expect(await readdir(unclaimed)).toEqual([]);
+    } finally {
+      process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agentsRoot;
+      await rm(unclaimed, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to start, before the agent runs or a conversation folder is made, without a usable token file (#246)", async () => {
+    await play("success");
+    const { own } = await newCarousels();
+    const refusedWith = async () => {
+      await rm(path.join(fakeDir, "argv.json"), { force: true });
+      const { events, raw } = await postChat({ carouselId: own.id });
+      await expect(stat(path.join(fakeDir, "argv.json"))).rejects.toThrow();
+      await expect(stat(path.join(agentsRoot, own.id))).rejects.toThrow();
+      expect(raw).not.toContain(secretsDir);
+      return events.find((e) => e.type === "error") as { code: string; message: string };
+    };
+    await chmod(tokenFile, 0o644);
+    expect(await refusedWith()).toMatchObject({ code: "agent_unavailable", message: expect.stringMatching(/can be read or changed by other accounts.*chmod 600/) });
+    await rm(tokenFile);
+    expect(await refusedWith()).toMatchObject({ code: "agent_unavailable", message: expect.stringMatching(/no sign-in token of its own.*claude setup-token.*CREATORBRIO_DESIGN_AGENT_TOKEN_FILE names/) });
+  });
+
+  it("refuses to delete a carousel while another contained server owns the folders (#246)", async () => {
+    const { own } = await newCarousels();
+    // As if another server held the records: this one never claimed them.
+    releaseContainedServer();
+    resetContainedServerForTests();
+    const res = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), { params: Promise.resolve({ id: own.id }) });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/did not take charge of the contained Design Agent's folders/);
+    expect(await getCarousel(own.id)).toBeTruthy();
+  });
+
+  it("refuses to delete a carousel once the agent folders' setting names other folders than this server claimed, and deletes again when it is changed back (#246)", async () => {
+    const { own } = await newCarousels();
+    // As the server starts it: the folders from the settings, which are read again on every request.
+    releaseContainedServer();
+    resetContainedServerForTests();
+    expect(await claimContainedServer({ dataDir: path.join(workdir, "data"), repoDir: workdir })).toEqual({ owned: true });
+    const other = await realpath(await mkdtemp(path.join(tmpdir(), "creatorbrio-other-agents-")));
+    process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = other;
+    try {
+      const res = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), { params: Promise.resolve({ id: own.id }) });
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toMatch(/no longer the ones this server took charge of when it started.*Restart CreatorBrio after changing CREATORBRIO_DESIGN_AGENT_WORKSPACES/);
+      expect(error).not.toContain(other);
+      expect(await getCarousel(own.id)).toBeTruthy();
+      process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agentsRoot;
+      const again = await deleteCarouselRoute(new Request(`${app.origin}/api/carousels/${own.id}`, { method: "DELETE" }), { params: Promise.resolve({ id: own.id }) });
+      expect(again.status).toBe(200);
+    } finally {
+      process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = agentsRoot;
+      await rm(other, { recursive: true, force: true });
+    }
   });
 
   it("refuses to start, before the agent runs, when the server-owned home holds a shell startup file (#242)", async () => {
@@ -333,21 +547,56 @@ describe("a contained design run", () => {
     await expect(stat(path.join(fakeDir, "argv.json"))).rejects.toThrow();
   });
 
-  it("never relays or logs its token, even when the agent repeats it, and the token stops working", async () => {
+  it("never relays or logs its token or its sign-in token, even when the agent repeats them, and the token stops working", async () => {
     await play("fail");
     const { own } = await newCarousels();
     const { raw, events } = await postChat({ carouselId: own.id });
     const token = (await recordedJson<Record<string, string>>("env.json")).CREATORBRIO_AGENT_GRANT;
 
+    // The agent was started with the sign-in token (so that echoing it is a real leak), and echoed it in a reply and in its error output.
+    expect((await recordedJson<Record<string, string>>("env.json")).CLAUDE_CODE_OAUTH_TOKEN).toBe(SIGN_IN_TOKEN);
     expect(raw).not.toContain(token);
-    expect(events).toContainEqual({ type: "token", text: "My token is [redacted]" });
+    expect(raw).not.toContain(SIGN_IN_TOKEN);
+    expect(events).toContainEqual({ type: "token", text: "My token is [redacted] and my sign-in token is [redacted]" });
     expect(events).toContainEqual(expect.objectContaining({ type: "error", code: "agent_failed" }));
     const logged = JSON.stringify([vi.mocked(console.error).mock.calls, vi.mocked(console.warn).mock.calls, vi.mocked(console.info).mock.calls]);
     expect(logged).toContain("debug: token [redacted] end");
+    expect(logged).toContain("debug: sign-in [redacted] end");
     expect(logged).not.toContain(token);
+    expect(logged).not.toContain(SIGN_IN_TOKEN);
 
     const port = Number(/localhost:(\d+)/.exec((await recordedJson<string[]>("argv.json")).join(" "))![1]);
     expect(await callListener(port, token, `/api/carousels/${own.id}`)).toBe(401);
+  });
+
+  it("never logs any part of a secret that the agent's error output splits across the log's size limit, or across its writes (#246)", async () => {
+    // A sign-in token as long as a real one, 108 characters, in the token file the run reads.
+    const secret = `sk-ant-oat01-${"Qz7_-".repeat(19)}`.slice(0, 108);
+    expect(secret).toHaveLength(108);
+    await writeFile(tokenFile, `${secret}\n`, { mode: 0o600 });
+    const LIMIT = 8192;
+    // Every 20-character piece of it: none may reach a log.
+    const pieces = Array.from({ length: secret.length - 19 }, (_, i) => secret.slice(i, i + 20));
+    const logged = () => String(vi.mocked(console.error).mock.calls.find((call) => call[0] === "[chat] Claude subprocess exited non-zero")?.[1]?.stderr);
+    for (const early of [false, true]) {
+      for (const head of [1, 54, 107]) {
+        const label = `${early ? "a whole secret first, then " : ""}${head} characters at the limit`;
+        vi.mocked(console.error).mockClear();
+        await play("stderr-cap");
+        // The first write ends with the first `head` characters of the secret, at the limit; the rest of it comes in the next write, and more after that.
+        // With a whole secret first, redaction shortens the text, so the limit falls inside the same characters either way.
+        const chunks = [...(early ? [`early ${secret} early-end\n`] : []), `${"x".repeat(LIMIT - head)}${secret.slice(0, head)}`, `${secret.slice(head)} done\n`, `${"z".repeat(50)}\n`];
+        await writeFile(path.join(fakeDir, "stderr-chunks.json"), JSON.stringify(chunks));
+        const { own } = await newCarousels();
+        const { events } = await postChat({ carouselId: own.id });
+        expect(events, label).toContainEqual(expect.objectContaining({ type: "error", code: "agent_failed" }));
+        const text = logged();
+        // Something was logged, so the check is not met by logging nothing, and the secret that was whole is redacted.
+        expect(text, label).toContain("x".repeat(100));
+        if (early) expect(text, label).toContain("early [redacted] early-end");
+        for (const piece of pieces) expect(text.includes(piece), `${label}: ${piece}`).toBe(false);
+      }
+    }
   });
 
   it("revokes the token when the person stops the run, and stores it in no run record (#226)", async () => {
@@ -591,8 +840,11 @@ describe("a contained design run", () => {
     expect(JSON.stringify(logged[0])).not.toContain(agentsRoot);
   });
 
-  it("creates nothing outside the data folder when the legacy profile deletes a carousel", async () => {
+  it("creates nothing outside the data folder when the legacy profile deletes a carousel, with no ownership claim of this server's to lean on", async () => {
     const { own } = await newCarousels();
+    // A legacy server takes no record, so this server gives its own claim back: a legacy delete that consulted ownership would be refused here.
+    releaseContainedServer();
+    resetContainedServerForTests();
     const unused = path.join(workdir, "no-agent-folders");
     process.env.CREATORBRIO_DESIGN_AGENT_WORKSPACES = unused;
     delete process.env.CREATORBRIO_DESIGN_AGENT_PROFILE;

@@ -13,6 +13,7 @@ import {
   armValidity,
   assessRun,
   collectEnvironment,
+  CONTROL_GATED_PROBES,
   CONTROL_TARGETS,
   containmentFindings,
   controlProblems,
@@ -21,6 +22,7 @@ import {
   expectedProbeIds,
   formatArmReport,
   formatRunReport,
+  gateOnControl,
   hitRecorder,
   judgeReadTool,
   launchEnvs,
@@ -692,6 +694,51 @@ describe("the positive control the run itself must hold", () => {
     expect(verdictOf(obsOf(), true, assessRun({ control: GOOD_CONTROL, strayHits: [] })).routeA).toBe("pass");
     const escape = hit({ server: "decoy", probe: "decoy_proxy_no_origin" });
     expect(verdictOf(obsOf({ hits: [listenerHit, escape] }), true, problems).routeA).toBe("fail");
+  });
+});
+
+describe("a refused read or write counts only where the control reached the same probe (#246)", () => {
+  const reads = ["read_data_canary", "read_browser_canary", "read_repo_file", "read_env_canary", "read_process_env"];
+  /** An arm's lines where every read and write is refused, and the control's where the given reads found their canary. */
+  const sandboxedObs = () => obsOf();
+  const controlReaching = (reached: string[]) =>
+    observe({
+      arm: "control",
+      os: "linux",
+      lines: fullLines("linux", "control", Object.fromEntries(reached.map((id) => [id, { ok: true, detail: `sha256=${HASH}` }]))),
+      hits: controlHits,
+      armWindow: WINDOW,
+      planted: PLANTED,
+      writesFound: Object.fromEntries(reached.filter((id) => id.startsWith("write_")).map((id) => [id, true])),
+    });
+
+  it("gates every read and write but the run's own folder, and no network probe", () => {
+    expect(CONTROL_GATED_PROBES).toEqual(expect.arrayContaining([...reads, "write_repo", "write_data", "write_home", "write_tmpdir", "write_tmp", "write_other_carousel"]));
+    expect(CONTROL_GATED_PROBES).not.toContain("write_work");
+    expect(CONTROL_GATED_PROBES.some((probe) => probe in NETWORK_PROBES || probe.startsWith("external_") || probe === "dns_lookup")).toBe(false);
+  });
+
+  it("keeps a refusal when the control reached the probe, and makes it untested when it did not", () => {
+    const control = controlReaching(["read_data_canary", "read_repo_file", "write_repo"]);
+    const gated = gateOnControl(sandboxedObs(), control);
+    for (const probe of ["read_data_canary", "read_repo_file", "write_repo"]) expect(outcomeOf(gated, probe), probe).toBe("refused");
+    for (const probe of ["read_browser_canary", "read_env_canary", "read_process_env", "write_data", "write_home", "write_tmpdir", "write_tmp", "write_other_carousel"]) {
+      expect(outcomeOf(gated, probe), probe).toBe("untested");
+    }
+    expect(untestedProbes(gated)).toEqual(expect.arrayContaining(["read_process_env", "write_data"]));
+    expect(gated.find((o) => o.probe === "read_process_env")?.evidence).toMatch(/the control did not reach this probe in the same run, so its refusal proves nothing/);
+    // Nothing else changes: the network probes and the own-folder write keep their outcomes.
+    const plain = sandboxedObs();
+    for (const probe of [...Object.keys(NETWORK_PROBES), "write_work", "dns_lookup"]) expect(outcomeOf(gated, probe), probe).toBe(outcomeOf(plain, probe));
+  });
+
+  it("makes every refusal untested without a control, and never hides a read or write that went through", () => {
+    const withoutControl = gateOnControl(sandboxedObs(), null);
+    for (const probe of CONTROL_GATED_PROBES.filter((p) => expectedProbeIds("linux").includes(p))) expect(outcomeOf(withoutControl, probe), probe).toBe("untested");
+    const escape = obsOf({ lines: fullLines("linux", "candidate", { read_data_canary: { ok: true, detail: `sha256=${HASH}` } }) });
+    expect(outcomeOf(escape, "read_data_canary")).toBe("reached");
+    expect(containmentFindings(gateOnControl(escape, null))).toEqual(["read_data_canary"]);
+    expect(containmentFindings(gateOnControl(escape, controlReaching([])))).toEqual(["read_data_canary"]);
   });
 });
 

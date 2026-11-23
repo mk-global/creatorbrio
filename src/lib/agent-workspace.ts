@@ -47,16 +47,16 @@
  * process's access; on Linux nothing the agent started survives its run, and
  * a folder is never removed while its run is live (see the carousel delete
  * route). That exclusion is the run slot, which lives in one server process's
- * memory, so it holds within one server process: running more than one
- * contained server over the same data or agent folders is not supported
- * before activation (#237). What could not be deleted stays in quarantine for
+ * memory, so it holds within one server process, and only one contained
+ * server at a time owns the data and agent folders (`claimContainedServer`,
+ * src/lib/contained-server.ts, #246). What could not be deleted stays in quarantine for
  * the sweep at the next server start (`sweepLeftoverFolders`), which first
  * stops the processes earlier servers' runs left working in these folders.
  */
 import { constants } from "node:fs";
 import { execFile } from "node:child_process";
 import { randomInt, randomUUID } from "node:crypto";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, realpath, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stopStrayProcesses, defaultProbe, type ProcessProbe } from "@/lib/agent-processes";
@@ -107,7 +107,7 @@ async function mkdirPrivate(dir: string): Promise<void> {
 }
 
 /** The resolved root, created owner-only on first use, refused inside the repository or around it. */
-async function resolvedRoot(root: string, repoDir: string): Promise<string> {
+export async function resolvedRoot(root: string, repoDir: string): Promise<string> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const realRoot = await realpath(root);
   const realRepo = await realpath(repoDir);
@@ -392,23 +392,20 @@ export const HOME_STARTUP_FILES = [".zshenv", ".zprofile", ".zshrc", ".zlogin", 
  * never writes one. The empty files the CLI's sandbox leaves in their place
  * on Linux define nothing and are kept.
  *
- * It exposes only what the CLI needs to sign in. On macOS the CLI reads its
- * sign-in from the login keychain, which it finds through the home folder, so
- * the home holds `Library/Keychains`, a link to the person's own folder, and
- * nothing else of theirs; an entry there that is not exactly that link is
- * refused. On Linux the CLI's sign-in is a file in the person's configuration
- * folder, which the profile names in the environment instead
- * (`agentSignInDir`), so the home holds nothing of theirs.
+ * It holds nothing of the person's (#246): the contained CLI signs in with a
+ * token of its own (`src/lib/agent-sign-in.ts`), never through the person's
+ * keychain or credentials file. A home made under #242 holds, on macOS,
+ * `Library/Keychains`, a link to the person's keychain folder, which the server
+ * made; that link is removed (the link itself, never what it points to), and
+ * anything else in its place is refused.
  */
 export async function prepareAgentHome(input: {
   repoDir: string;
   /** The person's own home folder, resolved. */
   personHome: string;
   root?: string;
-  platform?: NodeJS.Platform;
   uid?: number;
 }): Promise<string> {
-  const platform = input.platform ?? process.platform;
   const uid = input.uid ?? currentUid();
   const realRoot = await resolvedRoot(input.root ?? agentWorkspaceRoot(), input.repoDir);
   const dir = agentHomeDir(realRoot);
@@ -425,20 +422,50 @@ export async function prepareAgentHome(input: {
       throw new AgentWorkspaceError(`The Design Agent's home folder holds a shell startup file (${name}), which the server never writes. Remove it and try again.`);
     }
   }
-  if (platform === "darwin") {
-    const library = path.join(dir, "Library");
-    await ensurePrivateDir(library, uid, "The Design Agent's home folder's Library");
-    const link = path.join(library, "Keychains");
-    const target = path.join(input.personHome, "Library", "Keychains");
-    await symlink(target, link).catch((err: NodeJS.ErrnoException) => {
-      if (err.code !== "EEXIST") throw err;
-    });
-    const info = await lstat(link);
-    if (!info.isSymbolicLink() || (await readlink(link)) !== target) {
-      throw new AgentWorkspaceError("The Design Agent's home folder's Library/Keychains is not the link the server makes to your own. Remove it and try again.");
-    }
-  }
+  await removeKeychainLink(dir, input.personHome, uid);
   return dir;
+}
+
+/**
+ * Removes the link to the person's keychain folder that a home made under
+ * #242 holds on macOS (`Library/Keychains`), and the then empty `Library`
+ * the server made for it. Only the exact link the server made is removed, by
+ * unlinking it, so its target is never followed or touched; any other entry
+ * there is refused, never removed. A `Library` the CLI made itself (it may
+ * keep `Library/Caches` there, with its default mode) stays whatever its mode,
+ * since the home that holds it is owner-only; only a link or another
+ * account's folder in its place is refused. Checked on every platform, since
+ * the home may have been made on another.
+ */
+async function removeKeychainLink(home: string, personHome: string, uid: number): Promise<void> {
+  const library = path.join(home, "Library");
+  const libraryInfo = await lstat(library).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  });
+  if (libraryInfo === null) return;
+  // The home itself is verified owner-only, so a `Library` inside it is reachable by no one else whatever its own mode: the CLI may make
+  // `Library/Caches` with its default umask, and refusing that would lock out every later launch. A link, or another account's folder, is refused.
+  if (!libraryInfo.isDirectory() || libraryInfo.isSymbolicLink() || libraryInfo.uid !== uid) {
+    throw new AgentWorkspaceError(
+      "The Design Agent's home folder's Library is not a folder the server made. Remove only that link or folder itself, never what a link points to, or remove the Design Agent's home folder, and try again."
+    );
+  }
+  const link = path.join(library, "Keychains");
+  const info = await lstat(link).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  });
+  if (info !== null) {
+    if (!info.isSymbolicLink() || (await readlink(link)) !== path.join(personHome, "Library", "Keychains")) {
+      throw new AgentWorkspaceError(
+        "The Design Agent's home folder's Library/Keychains is not the link the server made. Remove only that link itself, never what it points to, or remove the Design Agent's home folder, and try again."
+      );
+    }
+    await unlink(link);
+  }
+  // Empty unless the CLI keeps something there; then it stays.
+  await rmdir(library).catch(() => {});
 }
 
 /** Removes a carousel's folder, with every conversation and staged image, if it has one; called when the carousel is deleted. */
@@ -547,6 +574,29 @@ function startRecord(): StartRecord {
     written: new Set(),
   };
   return store[START_KEY];
+}
+
+/**
+ * This process's start time as the process table prints it, read once, or
+ * null when it cannot be read: what a server folder records (below), and what
+ * a contained server's ownership record holds (`src/lib/contained-server.ts`).
+ */
+export function ownServerStart(): Promise<string | null> {
+  return startRecord().start;
+}
+
+/**
+ * Whether the server process recorded as `pid`, with the start time
+ * `recorded` (null when it was not recorded), is still running: its id is
+ * alive and, when both the recorded start and its current one (`starts`, from
+ * one read of the process table) are known, they are the same, so an id a
+ * later process has reused is a dead server's. When either is unknown, an
+ * alive id counts as running.
+ */
+export function serverStillRunning(pid: number, recorded: string | null, starts: ReadonlyMap<number, string>, alive: (pid: number) => boolean = isAlive): boolean {
+  if (!alive(pid)) return false;
+  const current = starts.get(pid);
+  return !(recorded !== null && current !== undefined && recorded.trim() !== current);
 }
 
 /** Records this process's start time in its folder, once, so a later server can tell it from a process that reuses its id. */
@@ -777,8 +827,7 @@ export async function sweepLeftoverFolders(options: {
       const running = async (server: string, pid: number, starts: Map<number, string>): Promise<boolean> => {
         if (!alive(pid)) return false;
         const recorded = await readFile(path.join(/*turbopackIgnore: true*/ tempRoot, server, SERVER_START_FILE), "utf8").catch(() => null);
-        const current = starts.get(pid);
-        return !(recorded !== null && current !== undefined && recorded.trim() !== current);
+        return serverStillRunning(pid, recorded, starts, alive);
       };
       const serverPid = (server: string) => parseInt(SERVER_DIR_NAME.exec(server)![1], 36);
       const starts = await startsIn();

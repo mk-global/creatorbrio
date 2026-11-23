@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { format } from "node:util";
+import { format, isDeepStrictEqual } from "node:util";
 
 import { serverCosts, type ChatResult } from "../eval/acceptance/app";
 import { archived, archiveDir, archiveRun } from "../eval/acceptance/archive";
@@ -595,7 +595,10 @@ describe("acceptance baseline: the servers' environment (#232)", { timeout: 60_0
     expect(options.env).toMatchObject({ NODE_ENV: "development", CLAUDE_CLI_PATH: "/opt/pinned/claude", IMAGE_SERVICE_URL: "http://127.0.0.1:8791" });
     expect(options.env.CLAUDE_CODE_SYNTHETIC).toBeUndefined();
     // The loader is given this same function's result, so the loader's input and the server's spawn environment are one.
-    expect(options.env).toEqual(serverEnvironment({ mode: "dev", cliPath: "/opt/pinned/claude", extra: { IMAGE_SERVICE_URL: "http://127.0.0.1:8791", NODE_ENV: "test" } }));
+    // That environment holds the whole inherited one, so it is compared by its names and by one boolean for the values: a failure never prints an inherited variable's value (#246).
+    const expected = serverEnvironment({ mode: "dev", cliPath: "/opt/pinned/claude", extra: { IMAGE_SERVICE_URL: "http://127.0.0.1:8791", NODE_ENV: "test" } });
+    expect(Object.keys(options.env).sort()).toEqual(Object.keys(expected).sort());
+    expect(isDeepStrictEqual(options.env, expected), "the server's spawn environment is the one serverEnvironment gives").toBe(true);
   });
 
   it("launches a server as Node.js running Next.js's own script from the checkout, so an .npmrc node-options reaches nothing", async () => {

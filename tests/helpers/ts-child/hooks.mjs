@@ -1,6 +1,7 @@
 // Module hooks that let a plain Node child process (Node 20.6 or later) load
-// the project's TypeScript source directly: they resolve the `@/` alias and
-// extensionless imports, and compile each .ts or .mts file with the project's
+// the project's TypeScript source directly: they resolve the `@/` alias,
+// extensionless imports and a package subpath without an extension (such as
+// `next/server`), and compile each .ts or .mts file with the project's
 // own TypeScript compiler (`transpileModule`, which only strips types).
 // No bundler or extra dependency is involved.
 import { existsSync, readFileSync } from "node:fs";
@@ -21,7 +22,18 @@ export async function resolve(specifier, context, next) {
       if (existsSync(candidate)) return next(pathToFileURL(candidate).href, context);
     }
   }
-  return next(specifier, context);
+  try {
+    return await next(specifier, context);
+  } catch (error) {
+    // A package subpath without an extension, such as next/server, which Node 20 does not resolve by itself.
+    if (!/^(@[^/]+\/)?[^./@][^/]*\/[^.]+$/.test(specifier)) throw error;
+    try {
+      return await next(`${specifier}.js`, context);
+    } catch {
+      // The retry is only a guess: when it fails too, the original error is the one that says what was wrong.
+      throw error;
+    }
+  }
 }
 
 export async function load(url, context, next) {

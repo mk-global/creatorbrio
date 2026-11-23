@@ -26,10 +26,12 @@ import {
 import { finishCreativeRun, prepareCreativeRun, type CreativeRunInput } from "@/lib/creative-run";
 import { checkConformance } from "@/lib/creative-handoff";
 import { designAgentArgs, designAgentSettings } from "@/lib/design-agent";
-import { designAgentProfileName } from "@/lib/design-agent-profile";
+import { designAgentProfileName, ModelApiAddressError } from "@/lib/design-agent-profile";
 import { containedAvailability } from "@/lib/design-agent-availability";
 import { agentListenerPort } from "@/lib/agent-listener";
 import { prepareContainedLaunch, type ContainedLaunch } from "@/lib/contained-launch";
+import { containedServerStatus } from "@/lib/contained-server";
+import { AgentSignInError } from "@/lib/agent-sign-in";
 import { continuationOffer } from "@/lib/assets";
 import {
   beginGeneration,
@@ -221,6 +223,8 @@ export async function POST(request: NextRequest) {
       let conversationId: string | null = null;
       // Kept for the whole request: output and logs written after the run ends are still redacted.
       let redact = (text: string) => text;
+      // The longest secret `redact` removes, for the one place text is cut before it is logged.
+      let secretLength = 0;
       // The first call stops the run's processes and removes its folder; a
       // later one (the CLI's "error" and "exit" can both end a run) waits for
       // that same stop, so no path releases the carousel's slot before it ends.
@@ -344,6 +348,18 @@ export async function POST(request: NextRequest) {
           return;
         }
         if (contained) {
+          // Planning can take minutes, and the folders setting or this server's records can change meanwhile, so what the availability check
+          // asked at the start is asked again here, immediately before anything is made in the folders the setting now names (#246).
+          const owner = await containedServerStatus();
+          if (!owner.ok) {
+            console.warn("[chat] contained design agent refused at launch: this server no longer owns the folders it would work in", { carouselId: carouselId ?? null, stage: "design", failureCategory: "agent_unavailable" });
+            fail("agent_unavailable", `${owner.reason} ${owner.guidance} The slides were not changed.`);
+            if (creativeRun) await finishCreativeRun(carouselId!, creativeRun.runId, "failed");
+            await endGeneration("not-started");
+            send({ type: "done", sessionId: null });
+            close();
+            return;
+          }
           try {
             launch = await prepareContainedLaunch({
               carouselId: carouselId!,
@@ -357,6 +373,7 @@ export async function POST(request: NextRequest) {
               tokenTtlMs: settings.timeoutMs + 60_000,
             });
             redact = launch.redact;
+            secretLength = launch.secretLength;
             conversationId = launch.conversationId;
           } catch (err) {
             // A bound conversation whose folder is gone cannot be resumed: the chat starts fresh.
@@ -366,9 +383,11 @@ export async function POST(request: NextRequest) {
               carouselId: carouselId ?? null,
               error: (err as Error)?.name,
               code: (err as NodeJS.ErrnoException)?.code ?? null,
-              ...(err instanceof AgentWorkspaceError ? { detail: err.message } : {}),
+              ...(err instanceof AgentWorkspaceError || err instanceof AgentSignInError || err instanceof ModelApiAddressError ? { detail: err.message } : {}),
             });
-            fail(gone ? "session_not_found" : "start_failed");
+            // A sign-in token that went missing, or a model API setting that was changed, after the availability check says what to do, as that check would have (#246).
+            if (err instanceof AgentSignInError || err instanceof ModelApiAddressError) fail("agent_unavailable", `${err.reason} ${err.guidance} The slides were not changed.`);
+            else fail(gone ? "session_not_found" : "start_failed");
             if (creativeRun) await finishCreativeRun(carouselId!, creativeRun.runId, "failed");
             await endGeneration("not-started");
             send({ type: "done", sessionId: null });
@@ -623,14 +642,22 @@ export async function POST(request: NextRequest) {
         for (const line of lines) handleLine(line);
       });
 
-      let stderrBuf = "";
+      // The agent's error output, kept for the logs. It is kept as it came and redacted only when it is logged, over text that holds every
+      // secret whole, and cut only after that: no cut falls inside a secret before the redaction has seen the rest of it. It is kept up to
+      // the log's size plus the longest secret. When later output was dropped, the text's last secret-length characters are left out of the
+      // log, since they may be the start of a secret whose end was dropped with the output.
+      let stderrRaw = "";
+      let stderrDropped = false;
       const STDERR_CAP = 8192;
       childProcess.stderr?.on("data", (chunk: Buffer) => {
-        if (stderrBuf.length < STDERR_CAP) {
-          // Redacted as a whole, so a token split across chunks is still caught.
-          stderrBuf = redact(stderrBuf + chunk.toString()).slice(-STDERR_CAP);
-        }
+        if (stderrRaw.length < STDERR_CAP + secretLength) stderrRaw += chunk.toString();
+        else stderrDropped = true;
       });
+      const loggedStderr = (): string => {
+        const text = redact(stderrRaw);
+        const end = stderrDropped ? Math.max(0, text.length - Math.max(secretLength - 1, 0)) : text.length;
+        return text.slice(Math.max(0, end - STDERR_CAP), end);
+      };
 
       childProcess.on("error", async (err) => {
         clearLimits();
@@ -664,7 +691,7 @@ export async function POST(request: NextRequest) {
           syscall: e?.syscall,
           path: e?.path,
           message: e?.message,
-          stderr: stderrBuf,
+          stderr: loggedStderr(),
         });
         kill();
         fail(childProcess.pid === undefined ? "start_failed" : "agent_failed");
@@ -710,7 +737,7 @@ export async function POST(request: NextRequest) {
             platform: process.platform,
             exitCode: code,
             errorCode,
-            stderr: stderrBuf,
+            stderr: loggedStderr(),
           });
         }
 

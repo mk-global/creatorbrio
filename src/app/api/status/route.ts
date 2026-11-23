@@ -4,6 +4,7 @@ import { capabilityStatus, isAvailable } from "@/lib/creative-capabilities";
 import { getClaudePath } from "@/lib/claude-path";
 import { CONTAINED_PROFILE, designAgentProfileName } from "@/lib/design-agent-profile";
 import { containedAvailability } from "@/lib/design-agent-availability";
+import { agentTokenFile, tokenGuidance } from "@/lib/agent-sign-in";
 
 /**
  * What Settings and Home tell a person about this computer (#175): whether
@@ -30,7 +31,20 @@ async function designAgentStatus() {
   const profile = designAgentProfileName();
   if (!profile.ok) return { profile: "invalid" as const };
   if (profile.name === "legacy") return { profile: "legacy" as const };
-  if (!isClaudeAvailable()) return { profile: "contained" as const, available: false, reason: "Claude Code was not found.", guidance: "Install Claude Code, sign in once in a terminal, then restart CreatorBrio." };
+  if (!isClaudeAvailable()) {
+    // Two sign-ins are needed (#246): planning (the Visual Director) uses the person's own Claude Code sign-in, so signing in once in a
+    // terminal is still required, and the Design Agent uses a token of its own, made from the person's Claude account.
+    const located = agentTokenFile();
+    return {
+      profile: "contained" as const,
+      available: false,
+      reason: "Claude Code was not found.",
+      guidance:
+        "Install Claude Code, sign in once in a terminal (planning uses that sign-in), then restart CreatorBrio. " +
+        "The Design Agent also signs in with a separate token made from your Claude account, which counts against its usage; CreatorBrio checks the token file, not that the token is still valid. " +
+        tokenGuidance(located.ok ? located.configured : true),
+    };
+  }
   const availability = await containedAvailability(getClaudePath());
   return { profile: "contained" as const, qualifiedCliVersion: CONTAINED_PROFILE.qualifiedCliVersion, ...availability };
 }

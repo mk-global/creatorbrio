@@ -1,8 +1,9 @@
 /**
  * Assembles one contained Design Agent run (#156, #186, #226, #227, #228,
- * #241, #242): the conversation's folder, the run's temporary folder, the
- * CLI's server-owned home folder, the images it may view, its listener token,
- * and the exact CLI arguments and environment from the profile. The CLI is
+ * #241, #242, #246): its own sign-in token, the conversation's folder, the
+ * run's temporary folder, the CLI's server-owned home folder, the images it
+ * may view, its listener token, and the exact CLI arguments and environment
+ * from the profile. The CLI is
  * started as the leader of its own process group (`src/lib/agent-processes.ts`). `finish` always revokes the token, stops
  * every process the run left, and removes the temporary folder, however the
  * run ends.
@@ -13,7 +14,9 @@ import path from "node:path";
 import { issueAgentToken } from "@/lib/agent-listener";
 import { forgetAgentSessions } from "@/lib/agent-sessions";
 import { getCarousel } from "@/lib/carousels";
+import { AgentSignInError, agentSignIn } from "@/lib/agent-sign-in";
 import {
+  agentWorkspaceRoot,
   createRunTempDir,
   openConversation,
   prepareAgentHome,
@@ -24,7 +27,7 @@ import {
   startConversation,
 } from "@/lib/agent-workspace";
 import { trackRun, type TrackedRun } from "@/lib/agent-processes";
-import { agentSignInDir, containedArgs, containedEnv, privateReadDirs, type ContainedLayout } from "@/lib/design-agent-profile";
+import { containedArgs, containedEnv, containedModelApiAddress, ModelApiAddressError, privateReadDirs, type ContainedLayout } from "@/lib/design-agent-profile";
 
 export interface ContainedLaunch {
   args: string[];
@@ -32,8 +35,10 @@ export interface ContainedLaunch {
   cwd: string;
   /** The conversation this run works in, which the session it hands back is bound to. */
   conversationId: string;
-  /** Removes the run's token from text the app relays or logs. */
+  /** Removes the run's token, and its sign-in token, from text the app relays or logs. */
   redact: (text: string) => string;
+  /** The length of the longest secret `redact` removes: text cut anywhere inside that length from its end may hold the start of one. */
+  secretLength: number;
   /**
    * Starts tracking the spawned CLI's processes; `abort` ends the run as a
    * stop does, and `unreaped` says the server has not yet reaped the CLI.
@@ -67,6 +72,13 @@ export async function prepareContainedLaunch(options: {
   // The chat holds the carousel's run slot, so it cannot be deleted meanwhile.
   if (!(await getCarousel(options.carouselId))) throw new Error("The carousel does not exist.");
   if ((options.resumeSessionId === null) !== (options.conversationId === null)) throw new Error("A resumed session needs its conversation.");
+  const env = options.env ?? process.env;
+  // Its own sign-in first (#246), so a launch without one changes nothing.
+  const signIn = await agentSignIn({ env, repoDir, dataDir, workspaceRoot: agentWorkspaceRoot(env), tempRoot: serverTempRoot(process.platform, uid) });
+  if (!signIn.ok) throw new AgentSignInError(signIn);
+  // And its model API setting, which must be valid before anything is made, since that is where its token is sent.
+  const modelApi = containedModelApiAddress(env);
+  if (!modelApi.ok) throw new ModelApiAddressError(modelApi);
   // A resumed conversation keeps its folder. A new one starts in a new folder,
   // and the earlier conversations' folders and sessions go: the server's side
   // of the person clearing the chat.
@@ -89,7 +101,6 @@ export async function prepareContainedLaunch(options: {
     const issued = issueAgentToken({ carouselId: options.carouselId, appOrigin: options.appOrigin, ttlMs: options.tokenTtlMs });
     revoke = issued.revoke;
     const workspaceRoot = path.dirname(path.dirname(workDir));
-    const env = options.env ?? process.env;
     const homeDir = await realpath(os.homedir());
     const agentHome = await prepareAgentHome({ repoDir, personHome: homeDir, root: workspaceRoot, uid });
     const privateDirs = privateReadDirs({
@@ -109,6 +120,7 @@ export async function prepareContainedLaunch(options: {
       tempRoot: serverTempRoot(process.platform, uid),
       homeDir,
       agentHome,
+      signInTokenFile: signIn.file,
       repoDir,
       dataDir,
       listenerPort: options.listenerPort,
@@ -119,10 +131,12 @@ export async function prepareContainedLaunch(options: {
     const token = issued.token;
     return {
       args: containedArgs({ taskMessage, systemPrompt, resumeSessionId: options.resumeSessionId, budgetUsd: options.budgetUsd, layout }),
-      env: containedEnv(env, { tempDir, token, home: agentHome, signInDir: agentSignInDir({ env, platform: process.platform, personHome: homeDir }) }),
+      env: containedEnv(env, { tempDir, token, home: agentHome, signInToken: signIn.token }),
       cwd: workDir,
       conversationId: path.basename(workDir),
-      redact: (text) => (text.includes(token) ? text.split(token).join("[redacted]") : text),
+      // The sign-in token never reaches the agent; it is redacted too, should the CLI ever print it.
+      redact: (text) => [token, signIn.token].reduce((t, secret) => (t.includes(secret) ? t.split(secret).join("[redacted]") : t), text),
+      secretLength: Math.max(token.length, signIn.token.length),
       track: (pid, abort, unreaped) => {
         tracked ??= trackRun({ leaderPid: pid, folders: [workDir, stagingDir, tempDir], abort, leaderUnreaped: unreaped });
       },

@@ -95,9 +95,21 @@ CreatorBrio is developed on macOS, and CI runs on Linux.
 Windows has code paths for starting the app but is not tested, and `/stop` does not work there.
 
 The contained Design Agent profile, which is off by default while it is qualified, has stricter requirements.
-It runs on macOS, and on Linux with **bubblewrap and socat** installed (for example `sudo apt install bubblewrap socat`); Debian 12 is the only Linux it has been tested on.
+macOS is the platform it is being activated on first.
+On Linux it runs with **bubblewrap and socat** installed (for example `sudo apt install bubblewrap socat`), but it is unsupported there, because Claude Code's sandbox leaves the shared temporary folders writable on Linux; Debian 12 is the only Linux it has been tested on.
 It is not available on native Windows or WSL2, which have not been tested.
-It has been tested on Claude Code 2.1.328, refuses versions older than 2.1.219, and warns about any other version; `npm run doctor` checks the platform, the sandbox prerequisites and the version.
+It has been tested on Claude Code 2.1.328, refuses versions older than 2.1.219, and warns about any other version.
+The contained Design Agent signs in with a separate token made from your Claude account, which counts against its usage, and not with your Claude Code sign-in.
+Planning (the Visual Director) still uses your own Claude Code sign-in, so Claude Code must also be installed and signed in once in a terminal, and the planner shares your normal sign-in storage and locks.
+Make the Design Agent's token with `claude setup-token`, save the token it prints, alone, in `~/.creatorbrio/design-agent-token` (or the absolute path `CREATORBRIO_DESIGN_AGENT_TOKEN_FILE` names), and `chmod 600` it; the token lasts a year.
+CreatorBrio checks the token file, not that the token is still valid.
+It never uses the `ANTHROPIC_BASE_URL` your own Claude Code uses, so its token is not sent wherever that points.
+`CREATORBRIO_DESIGN_AGENT_API_BASE_URL` in `.env.local` is an evaluation and operator setting that gives it a model API address of its own: one absolute `http` or `https` address with no user name or password in it, or unset for the CLI's default.
+A plain `http` address that is not on this computer sends the token unencrypted.
+`HTTPS_PROXY` is still passed on and is a deliberate operator choice: an HTTPS proxy alone can see the token when its certificate authority is trusted by the system.
+A managed policy settings file on the computer can name a key helper or set the model address, and the profile does not close that.
+Only one CreatorBrio server at a time can run the contained agent over the same data folder and agent folders, and a legacy-profile server over the same folders is not kept out.
+`npm run doctor` checks the platform, the sandbox prerequisites, the version, the token file and the model API setting, without printing the token.
 
 ### Install and start
 
@@ -279,7 +291,9 @@ Application source and your data are kept apart: Git tracks only the source, and
 | `data/video-renders/` | Exported videos, their captions and manifests |
 | `data/video-auth/`, `data/video-studio.key` | Paired browser sessions and the local key the Video Studio API uses; keep them private |
 | `public/uploads/` | Uploaded logos and reference images, and generated images |
-| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's folder for its current conversation and its staged copies of reference images, and `.home`, the server-owned home of the agent's Claude Code, which holds the CLI's own state for contained conversations (account metadata and transcripts) and, on macOS, a link to your keychain folder, and none of your shell startup files (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); a new conversation replaces the previous folder; `/reset` does not remove it |
+| `~/.creatorbrio/design-agent/` | Only with the contained Design Agent profile: each carousel's folder for its current conversation and its staged copies of reference images, and `.home`, the server-owned home of the agent's Claude Code, which holds the CLI's own state for contained conversations (account metadata and transcripts) and nothing of yours (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it); a new conversation replaces the previous folder; `/reset` does not remove it |
+| `~/.creatorbrio/design-agent-token` | Only with the contained Design Agent profile: its own Claude Code sign-in token, which you create (see Requirements); keep it private (`chmod 600`) |
+| `data/.contained-server`, `~/.creatorbrio/design-agent/.contained-server` | Only with the contained Design Agent profile: which server process runs the contained agent over these folders; removed when it stops |
 | `/tmp/cb<user id in base 36>/` (under `/private/tmp/` on macOS) | Only with the contained Design Agent profile: each run's temporary folder and the Visual Director's image copies, private to you; removed after each run, and leftovers at the next server start |
 | `.env.local` | Local settings such as `CLAUDE_CLI_PATH`, the time and spending limits above, and `IMAGE_SERVICE_URL` (loopback addresses only) |
 

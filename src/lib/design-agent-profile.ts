@@ -15,8 +15,12 @@
  *   off, and an explicit model and effort, so no personal instruction, rule,
  *   skill, agent, hook, plugin, MCP server or settings model reaches it;
  * - only the `Bash` and `Read` tools, so it has no web fetch and no file-editing
- *   tool; `Read` is allowed only inside the carousel's own folder and its staged images, and the
- *   `dontAsk` permission mode refuses everything not allowed;
+ *   tool; `Read` is allowed only inside the carousel's own folder and its staged images, and
+ *   anything not allowed is refused: the subprocess credential scrub makes the
+ *   CLI replace the requested `dontAsk` mode with `default`, and a headless run
+ *   in `default` mode refuses every tool use that would need approval, as the
+ *   product-read arm of the stand-in network proof recorded for one `Read` on
+ *   macOS (no Linux evidence is claimed for it);
  * - Claude Code's sandbox for the shell, required (`failIfUnavailable`), with
  *   no unsandboxed escape hatch, a strict network allowlist naming only the
  *   run's listener port, the home folder, repository and data folder
@@ -26,9 +30,16 @@
  *   shared per-user temporary folder read- and write-denied;
  * - a server-owned home folder (`prepareAgentHome`) holding no shell startup
  *   file, so the CLI's shell preparation runs nothing of the person's, and
- *   exposing only the person's sign-in (#242), read-denied with the rest;
+ *   nothing else of theirs (#242, #246), read-denied with the rest;
+ * - its own sign-in token (`src/lib/agent-sign-in.ts`), passed only to the
+ *   CLI, whose environment scrub keeps it from the shell, with its file
+ *   denied to the shell and the `Read` tool by name; no other credential
+ *   reaches the CLI (#246);
  * - an explicit environment allowlist, plus the run's own short temporary
- *   folder and the listener token.
+ *   folder and the listener token, and a model API address only from the
+ *   CreatorBrio setting that names one (`containedModelApiAddress`), never
+ *   the server's own `ANTHROPIC_BASE_URL`, which would send the contained
+ *   CLI's dedicated token wherever the person's own Claude Code points.
  *
  * This is risk reduction under the vendor's sandbox and permission rules, not
  * an operating-system account boundary. See docs/architecture/design-agent.md.
@@ -123,6 +134,8 @@ export interface ContainedLayout {
   homeDir: string;
   /** The CLI's server-owned home folder (#242), read-denied: it holds the CLI's sessions and configuration. */
   agentHome: string;
+  /** The contained CLI's own sign-in token file (#246), denied by name wherever it is. */
+  signInTokenFile: string;
   repoDir: string;
   dataDir: string;
   listenerPort: number;
@@ -139,7 +152,8 @@ const SYSTEM_TEMP_DIRS = ["/tmp", "/private/tmp"];
  * the shell must not read: the folder that holds every carousel's folder (only
  * the run's own is re-allowed), a CLI configuration folder kept outside home
  * (it holds the CLI's sign-in on Linux) and, on macOS, the per-user temporary
- * folder. The CLI's shared temporary folder is added by `containedSettings`.
+ * folder. The CLI's shared temporary folder and the sign-in token file are
+ * added by `containedSettings`.
  */
 export function privateReadDirs(input: {
   env: Record<string, string | undefined>;
@@ -170,7 +184,8 @@ export function agentTempDirFits(tempDir: string, uid: number): boolean {
 export function containedSettings(layout: ContainedLayout): Record<string, unknown> {
   // The CLI's shared temporary folder holds the person's other sessions'
   // files; the shell is given the run's own folder instead.
-  const denyRead = [layout.homeDir, layout.agentHome, layout.repoDir, layout.dataDir, ...sharedCliTempFolders(layout.uid), layout.tempRoot, ...layout.privateDirs];
+  // The sign-in token file is denied by name too, since a configured one may sit outside every denied folder (#246).
+  const denyRead = [layout.homeDir, layout.agentHome, layout.repoDir, layout.dataDir, ...sharedCliTempFolders(layout.uid), layout.tempRoot, ...layout.privateDirs, layout.signInTokenFile];
   // The login keychains are read inside the calling process, so the folder is
   // denied by name too, even though the home folder already covers it (#220).
   if (layout.platform === "darwin") denyRead.push(path.join(layout.homeDir, "Library", "Keychains"));
@@ -199,7 +214,8 @@ export function containedSettings(layout: ContainedLayout): Record<string, unkno
       // The leading slash plus an absolute path is the CLI's absolute-path form.
       allow: [readRule(layout.workDir), readRule(layout.stagingDir)],
       // The sandbox does not govern the Read tool; anything not allowed above
-      // is refused by the dontAsk mode, and these are refused by name as well.
+      // needs approval, which a headless run refuses (the scrub forces the
+      // `default` mode, see above), and these are refused by name as well.
       deny: unique([
         readRule(layout.repoDir),
         readRule(layout.dataDir),
@@ -207,6 +223,7 @@ export function containedSettings(layout: ContainedLayout): Record<string, unkno
         readRule(layout.agentHome),
         readRule(path.join(layout.homeDir, ".claude")),
         `Read(/${path.join(layout.homeDir, ".claude.json")})`,
+        `Read(/${layout.signInTokenFile})`,
         ...(layout.platform === "darwin" ? [readRule(path.join(layout.homeDir, "Library", "Keychains"))] : []),
       ]),
     },
@@ -265,12 +282,19 @@ export function containedArgs(options: {
 }
 
 /**
- * The variables the CLI process may inherit: what sign-in, the model
- * endpoint, an operator's outbound proxy and certificates, locale and `PATH`
- * need. Everything else in the app's environment, including its own secrets
- * and settings, stays out of the agent's process. `HOME` is replaced by the
+ * The variables the CLI process may inherit: what an operator's outbound proxy
+ * and certificates, locale and `PATH` need. Everything else in the app's
+ * environment, including its own secrets and settings, stays out of the
+ * agent's process, and so does every credential: the contained CLI signs in
+ * only with its own token (#246), never with an API key, sign-in token or
+ * other credential the server happens to hold. `HOME` is replaced by the
  * server-owned home, and the CLI's configuration folder is never passed
  * (`containedEnv`).
+ *
+ * The model API address is deliberately not here: the server's own
+ * `ANTHROPIC_BASE_URL` is whatever the person's own Claude Code uses, often a
+ * gateway, and the contained CLI's dedicated token must not follow it. The
+ * address reaches the CLI only from `MODEL_API_URL_ENV`.
  */
 export const INHERITED_ENV = [
   "HOME",
@@ -284,10 +308,6 @@ export const INHERITED_ENV = [
   "TZ",
   "TERM",
   "TMPDIR",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
   "HTTPS_PROXY",
   "HTTP_PROXY",
   "NO_PROXY",
@@ -298,44 +318,82 @@ export const INHERITED_ENV = [
 ] as const;
 
 /**
- * Where the CLI's sign-in is, for the variable that points the CLI's sign-in
- * store at it while its home is the server-owned one (#242), or null where
- * the home folder alone leads to it. On Linux the sign-in is a file in the
- * person's CLI configuration folder (`CLAUDE_CONFIG_DIR` when it is an
- * absolute path, otherwise `.claude` in their home). On macOS it is in the
- * login keychain, which the server-owned home reaches through its
- * `Library/Keychains` link; the CLI names the keychain entry after a
- * configuration folder only when the person set one, so then that folder is
- * named. `CLAUDE_CONFIG_DIR` itself is never passed: on macOS it changes the
- * entry the CLI looks up, and on both it would move the CLI's own state
- * into the person's folder.
+ * The only way the contained CLI gets a model API address (#246): an
+ * evaluation or operator setting, mapped to the CLI's `ANTHROPIC_BASE_URL`.
+ * Unset, the CLI uses its own default address.
  */
-export function agentSignInDir(input: { env: Record<string, string | undefined>; platform: NodeJS.Platform; personHome: string }): string | null {
-  const configured = input.env.CLAUDE_CONFIG_DIR;
-  if (configured && path.isAbsolute(configured)) return configured;
-  return input.platform === "linux" ? path.join(input.personHome, ".claude") : null;
+export const MODEL_API_URL_ENV = "CREATORBRIO_DESIGN_AGENT_API_BASE_URL";
+
+/** The model API address the contained CLI is given, or why the setting is refused; the refusal names the setting, never its value. */
+export type ModelApiAddress = { ok: true; url: string | null } | { ok: false; reason: string; guidance: string };
+
+/**
+ * Reads `MODEL_API_URL_ENV`: unset or blank is no address, anything else must
+ * be one absolute `http` or `https` address with no user name or password in
+ * it, or it is refused and no CLI starts. The value is passed as written,
+ * trimmed.
+ */
+export function containedModelApiAddress(env: Record<string, string | undefined> = process.env): ModelApiAddress {
+  const raw = env[MODEL_API_URL_ENV]?.trim() ?? "";
+  if (raw === "") return { ok: true, url: null };
+  const refuse = (what: string): ModelApiAddress => ({
+    ok: false,
+    reason: `${MODEL_API_URL_ENV} ${what}.`,
+    guidance: `Set it to one absolute http or https address with no user name or password in it, or remove it to use the CLI's own default address, then restart CreatorBrio.`,
+  });
+  // The address parser drops whitespace and control characters, so a value holding any would not be the address it was checked as.
+  if (/[\s\x00-\x1f\x7f]/.test(raw)) return refuse("is not one address");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return refuse("is not an absolute address");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return refuse("is not an http or https address");
+  if (url.username !== "" || url.password !== "") return refuse("holds a user name or password");
+  return { ok: true, url: raw };
 }
 
-/** The CLI's own variable for where its sign-in store is, measured on 2.1.328 (#242). */
-export const SIGN_IN_STORE_ENV = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
+/** A launch refused because the contained CLI's model API setting is invalid; its message names the setting only. */
+export class ModelApiAddressError extends Error {
+  readonly reason: string;
+  readonly guidance: string;
+
+  constructor(refusal: { reason: string; guidance: string }) {
+    super(refusal.reason);
+    this.name = "ModelApiAddressError";
+    this.reason = refusal.reason;
+    this.guidance = refusal.guidance;
+  }
+}
+
+/** The CLI's documented variable for a long-lived sign-in token from `claude setup-token`, which it never refreshes or stores. */
+export const SIGN_IN_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
 export function containedEnv(
   source: Record<string, string | undefined>,
-  run: { tempDir: string; token: string; home: string; signInDir: string | null }
+  run: { tempDir: string; token: string; home: string; signInToken: string }
 ): Record<string, string> {
+  // Refused before any variable is built, so no caller can start a CLI with an address that was never checked.
+  const api = containedModelApiAddress(source);
+  if (!api.ok) throw new ModelApiAddressError(api);
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV) {
     const value = source[name];
     if (typeof value === "string" && value !== "") env[name] = value;
   }
+  // The CreatorBrio setting only: the server's own `ANTHROPIC_BASE_URL` is never inherited.
+  if (api.url !== null) env.ANTHROPIC_BASE_URL = api.url;
   // The server-owned home: no shell startup file of the person's, and the CLI's own state kept apart from theirs.
   env.HOME = run.home;
-  if (run.signInDir !== null) env[SIGN_IN_STORE_ENV] = run.signInDir;
+  // Its own sign-in, read by the server from its file (#246); the CLI's own
+  // order puts it after any API key or other credential, none of which is passed.
+  env[SIGN_IN_TOKEN_ENV] = run.signInToken;
   env.CLAUDE_CODE_TMPDIR = run.tempDir;
   // The pinned CLI must not replace itself with an unqualified version.
   env.DISABLE_AUTOUPDATER = "1";
-  // The CLI keeps its own sign-in variables (an API key or sign-in token) out
-  // of the agent's shell, which could otherwise copy one into slide text.
+  // The CLI keeps its sign-in variables, this token included, out of the
+  // agent's shell, which could otherwise copy one into slide text.
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1";
   env[AGENT_TOKEN_ENV] = run.token;
   return env;

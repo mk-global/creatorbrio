@@ -1,6 +1,7 @@
 import { forgetAgentSessions } from "@/lib/agent-sessions";
 import { removeCarouselWorkDir } from "@/lib/agent-workspace";
 import { designAgentProfileName } from "@/lib/design-agent-profile";
+import { containedServerStatus } from "@/lib/contained-server";
 import { ALREADY_BEING_DELETED_ERROR, DELETE_WHILE_RUNNING_ERROR, isBeingDeleted, reserveForDeletion } from "@/lib/generation-status";
 import { NextResponse } from "next/server";
 import { getCarousel, updateCarousel, deleteCarousel, carouselResponse } from "@/lib/carousels";
@@ -71,9 +72,15 @@ export async function DELETE(
   // never removed while the run is live (#227). The delete takes the
   // carousel's run slot, so a run cannot start while it is under way either
   // (#241). The slot is in one server process's memory, so the exclusion holds
-  // within one server process. The legacy profile has no folders and deletes
-  // as before.
+  // within one server process, which is why only the server that owns the
+  // folders deletes. The legacy profile has no folders and deletes as before.
   const profile = designAgentProfileName();
+  // The slot holds only within this server, so a contained server deletes
+  // only while it owns the agent folders and the data folder (#246).
+  if (profile.ok && profile.name === "contained") {
+    const ownership = await containedServerStatus();
+    if (!ownership.ok) return NextResponse.json({ error: `${ownership.reason} ${ownership.guidance}` }, { status: 409 });
+  }
   const release = profile.ok && profile.name === "contained" ? reserveForDeletion(id) : null;
   if (profile.ok && profile.name === "contained" && !release) {
     return NextResponse.json({ error: isBeingDeleted(id) ? ALREADY_BEING_DELETED_ERROR : DELETE_WHILE_RUNNING_ERROR }, { status: 409 });

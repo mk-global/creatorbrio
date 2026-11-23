@@ -80,6 +80,17 @@ export default function SettingsPage() {
             <>
               <p>CreatorBrio couldn&apos;t find Claude Code. You can still open, arrange and export existing work.</p>
               <p>Install Claude Code, sign in once in a terminal, then restart CreatorBrio.</p>
+              {status.designAgent?.profile === "contained" && <p>The Design Agent also needs a token of its own, described under Design Agent protection below.</p>}
+            </>
+          ) : status?.designAgent?.profile === "contained" ? (
+            <>
+              <p>
+                Designing by chat runs Claude Code on this computer. Planning (the Visual Director) uses your own Claude Code sign-in, which it shares with your normal Claude Code, including its sign-in storage and locks, so you still sign in once in a terminal.
+              </p>
+              <p>
+                The Design Agent signs in with a separate token made from your Claude account, which counts against its usage. CreatorBrio checks that Claude Code can be found and that the token file is there and private, not that you are signed in or that the token is
+                still valid.
+              </p>
             </>
           ) : (
             <p>Designing by chat runs Claude Code on this computer, with your own Claude account. CreatorBrio checks that it can be found, not that you are signed in.</p>

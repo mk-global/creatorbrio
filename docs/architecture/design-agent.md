@@ -38,13 +38,16 @@ It curls the app's own API at the origin the request arrived on.
 
 ### Contained
 
-The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent one carousel and nothing else.
+The contained profile (#156, #186, #226, #227, #228, #241, #242, #246) gives the agent one carousel and nothing else.
 
 - **Explicit configuration.** The CLI loads no setting sources, no MCP servers and no slash commands.
   A stand-in check with planted personal and project instructions, rules, skills, agents, hooks, a settings model and MCP servers found none of them reaching the agent.
   Whether a personal plugin or advisor setting is also kept out has not been checked yet (#237).
   Personal shell startup files are kept out by the server-owned home (below).
-  The model (`claude-opus-5-5`), effort (`medium`), tools (`Bash` and `Read`) and permission mode (`dontAsk`) are fixed by the profile, and auto-memory and the auto-updater are off.
+  The model (`claude-opus-5-5`), effort (`medium`) and tools (`Bash` and `Read`) are fixed by the profile, and auto-memory and the auto-updater are off.
+  The profile requests the `dontAsk` permission mode, but the subprocess credential scrub, which keeps the sign-in token out of the agent's commands, makes the CLI run in the `default` mode instead and print a warning saying so.
+  The effect is the same for a headless run: a tool use that the profile does not allow would need approval, nobody can give it, and it is refused.
+  The macOS product-read arm of the stand-in network proof shows it for one `Read`: with the CLI's warning that its mode was forced to `default`, a browser-profile canary that no deny rule names was refused, and the control arm's `Read` of it succeeded; no Linux evidence is claimed for it.
   Thinking is the CLI's own adaptive default for the model, recorded in the profile rather than passed.
 - **No web fetch.** The agent has no `WebFetch` or `WebSearch`, so the topic research the legacy agent could do while designing is removed: it works from the request, the plan and the pages linked in the message.
   The server reads linked pages itself, as it does for the Visual Director, and gives the agent their text in its task message inside an untrusted-page block that page text cannot close.
@@ -62,9 +65,27 @@ The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent
   A CLI configuration folder kept outside home is denied too, by configuration only: no check has probed it yet.
   Other system locations stay readable, as the sandbox reads them by default, including other programs' files in the shared temporary folders.
 - **Read tool.** `Read` is allowed only inside the conversation's folder and its staged images, and refused everywhere else, including the per-user temporary parent.
-- **Environment.** The CLI receives an explicit allowlist of variables (sign-in, locale, proxy and the run's own values), with its home folder set to the server-owned one; nothing else in the app's environment reaches it.
-  The CLI's environment scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) keeps its sign-in variables out of the agent's shell.
-  Measured on 2.1.328 on macOS and Linux with a synthetic value planted in each sign-in variable: the shell found none in its own environment, its ancestors' environments or the process table, while the legacy profile's shell, running the same probe, found them.
+  These refusals, the token file's included, are by configuration.
+  The `Read` tool's denial of the token file is not yet measured; it is tracked in #244, and the shell checks on this page do not cover it.
+- **Environment.** The CLI receives an explicit allowlist of variables (locale, proxy and certificate settings and the run's own values) plus its own sign-in token (below) and, when one is set, a model API address (below), with its home folder set to the server-owned one; nothing else in the app's environment reaches it.
+  No credential of the server's reaches it: not `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, and no setting source of the person's or the repository's that could name an `apiKeyHelper`.
+  The residual is a managed policy settings file, which the CLI reads whatever its setting sources are and which could name a key helper, and could equally set the model address the token is sent to: it is system-wide, set by an administrator, and like the operating system's own shell startup files (below) the profile does not close it.
+  **The model API address** is an evaluation and operator setting, `CREATORBRIO_DESIGN_AGENT_API_BASE_URL`, which the server maps to the CLI's `ANTHROPIC_BASE_URL`.
+  The server's own `ANTHROPIC_BASE_URL` is never passed: it is whatever the person's own Claude Code uses, often a gateway, and the contained CLI's dedicated token must not follow it there.
+  Unset, the CLI uses its own default address.
+  A value must be one absolute `http` or `https` address with no user name or password in it; anything else refuses a design (`agent_unavailable`) and Home, Settings and `npm run doctor` say so, naming the setting and never its value.
+  A plain `http` address that is not on this computer sends the token unencrypted, so use a loopback address or an `https` one.
+  The stand-in qualification and the network proof set this setting to their loopback stand-in, and refuse to start the CLI unless its resulting address is that stand-in, so their synthetic token cannot leave the machine.
+  `HTTPS_PROXY` is still passed, and it is a deliberate operator choice: an HTTPS proxy alone can see the token when its certificate authority is trusted by the system, with no help from `NODE_EXTRA_CA_CERTS`.
+  `NODE_EXTRA_CA_CERTS` is also passed and adds authorities to the CLI's own trust, so set either only for a proxy the operator controls.
+  The CLI's environment scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) keeps its sign-in token out of the agent's shell.
+  Measured with the stand-in on 2.1.328, on the final content of this change on 2026-11-23, on macOS (a disposable virtual machine) and on Linux (a container), with a synthetic token and a synthetic value planted in each of the server's sign-in variables: the shell found none of them in its own environment, its ancestors' environments, every process's environment or the token file, while the legacy profile's shell, running the same probe, found the token in its ancestors' environments, in every process's environment and in the file, and a planted canary in its own environment (the CLI never passes its sign-in variable to the commands it runs, even without the scrub).
+  The all-process part was measured on Linux, in a container, and from 2026-11-22 on macOS, in a disposable virtual machine.
+  On macOS the run of record covers process listings only, on one macOS version and Claude Code 2.1.328; direct system reads were measured on earlier content of this change, in a separate run, and are not in it.
+  Debugger and developer-tool access to the CLI's process was not measured, because the test machine has no developer tools.
+  Correction, 2026-11-22: the macOS runs before that date did not measure the all-process part of this check.
+  Its listing aborted under macOS's default shell and read as empty, and the check did not require the legacy shell to find the token there, so those runs showed nothing about that place.
+  The check now requires it, and its listing runs under zsh, bash and sh.
   Residual exposure, measured on 2.1.328 on macOS and Linux: the CLI itself still gives the shell its messaging socket's address, whose connections the sandbox refuses, and the sandbox proxy's own username and password, which reach only that proxy.
 - **Server-owned home.** The CLI runs with its home folder set to one the server owns, `.home` in the agent folders' root (`~/.creatorbrio/design-agent/.home` by default), never the person's home (#242).
   The CLI prepares each shell command by sourcing the startup files in its home folder, in a shell of its own outside the sandbox.
@@ -77,22 +98,23 @@ The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent
   The home keeps the CLI's own state between runs, its configuration file and the transcripts that a resumed conversation continues, so it survives server restarts and no sweep or carousel deletion removes it.
   The agent's shell is denied reading it, as it is denied the person's home, and its write attempts, including planting a startup file, are refused.
   The profile never gives the CLI the person's configuration folder (`CLAUDE_CONFIG_DIR`), which would move the CLI's state, and on macOS the name of its keychain entry, into the person's folder.
-  On macOS the CLI finds the person's sign-in in their login keychain, which it locates through its home folder, so the server-owned home holds one link, `Library/Keychains`, to the person's keychain folder, and nothing else of theirs.
-  Measured on 2.1.328: a home without that link does not find the sign-in, including one holding a copy of the CLI's account file or of the person's preferences.
-  Any other entry in place of that link is refused.
-  On Linux the sign-in is the credentials file in the person's CLI configuration folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` when it is an absolute path), which the CLI reads only from a real file: it refuses a link, and a copy would lose the refreshed sign-in the CLI writes back.
-  So the profile names that folder as the sign-in store's location (`CLAUDE_SECURESTORAGE_CONFIG_DIR`), where the CLI reads and refreshes its credentials file and keeps its sign-in locks beside it, and the home holds nothing of the person's.
-  On macOS the same variable is set only when the person has an absolute `CLAUDE_CONFIG_DIR`, because the CLI derives the keychain entry's name from it.
-  This variable is internal to the CLI and undocumented.
-  On Linux, a version that drops it makes a contained run fail to sign in rather than exposing anything, and the stand-in qualification's sign-in store check detects that for the default configuration folder only, because the checks never set `CLAUDE_CONFIG_DIR`.
-  How the profile maps a person's absolute configuration folder, on both platforms, rests on reading the pinned CLI and is untested against the CLI.
-  On macOS, if a CLI version stopped honoring the variable, a contained run with a person's configured folder could sign in with the person's default keychain entry instead of failing; evidence is tracked on #244.
-  On macOS with no configuration folder of the person's, one residual remains.
-  The contained CLI keeps its sign-in refresh and store-write locks in the server-owned home's CLI folder, while the keychain entry is shared with the person's own Claude Code, whose locks live in the person's CLI folder.
-  Refreshes are therefore not serialized between a contained run and the person's own sessions.
-  That can fail a contained run and, in a narrow window, could sign the person out of their own Claude Code.
-  No environment setting avoids it without breaking sign-in; a fix and a concurrent-refresh check are activation items on #237.
+  The home holds nothing of the person's.
+  A home made under #242 held one link, `Library/Keychains`, to the person's keychain folder; the server removes exactly that link, never following it or touching what it points to, and refuses any other entry in its place.
   A contained conversation begun before this change kept its transcript in the person's CLI folder, where the CLI no longer looks, so resuming it is reported as not found and the chat starts a fresh conversation; its slides are kept.
+- **Its own sign-in.** The contained Design Agent's CLI signs in only with a sign-in token of its own, never with the person's Claude Code sign-in (#246).
+  The person makes the token once from their Claude account with `claude setup-token`, so the Design Agent's use counts against that account's usage, and saves it, alone, in an owner-only file: `~/.creatorbrio/design-agent-token` by default, or the absolute path `CREATORBRIO_DESIGN_AGENT_TOKEN_FILE` names.
+  Planning is a different run: the Visual Director is not contained and still uses the person's own Claude Code sign-in, so the person still signs in once in a terminal, and the planner shares the person's normal sign-in storage and locks.
+  The token lasts a year, and the CLI is documented not to refresh or store it; that is the token's documented behavior, not something measured here.
+  So the contained run is designed to leave the person's keychain and credentials file alone and to be unable to sign the person out.
+  On macOS the keychain part was measured with the stand-in (below); that the credentials file a person's Claude Code keeps on Linux is untouched is by design, and has not been measured since this change replaced the sign-in-store check, which is tracked in #244.
+  CreatorBrio checks the token file, that it is there and private, and not that the token is still valid: one that has expired or been revoked fails when the CLI runs.
+  The server reads the file at each design's start, before anything else, without following a link, and refuses it unless it is a regular file with one name only (no other hard link), of the server's account, with no group or other access, outside the CreatorBrio folder, the data folder, the agent folders and the run's temporary folders; it drops one trailing newline.
+  It passes the token to the CLI as `CLAUDE_CODE_OAUTH_TOKEN` and never logs, prints or returns it.
+  Measured with the stand-in on 2.1.328 on 2026-11-23: on macOS (a disposable virtual machine), on the final content of this change, the model API received the contained CLI's own token and no credential planted in the server's environment, and a different credential planted in the person's login keychain was neither presented nor changed, and the agent's shell could not read it, while the legacy launch presented it and its shell read it; on Linux (a container) the first of those was last recorded on earlier content of this change, not rerun on the final content, and no keychain applies there.
+  The agent's shell is denied reading the file by name, wherever it is, and its `Read` tool too, by configuration.
+  The `Read` tool's denial is not yet measured; it is tracked in #244, and the shell check above does not cover it.
+  Without a usable token the contained agent is unavailable: Home says what is wrong and links to Settings, and Settings and a design's `agent_unavailable` refusal also say how to make one.
+  `npm run doctor` reports the file as present and private, not private, or absent, never its content.
 - **A folder per conversation.** The agent works in `~/.creatorbrio/design-agent/<carousel id>/<conversation id>`, outside the repository (`CREATORBRIO_DESIGN_AGENT_WORKSPACES` moves it to another absolute path).
   Each new conversation gets a new folder with a random name; a resumed one reopens its own folder, so the CLI's session continues, and a folder that is gone is never recreated.
   Starting a new conversation moves every earlier conversation folder of the carousel into the removal folder whole, and forgets their sessions, so a process an earlier run left behind never shares a folder with a later one.
@@ -157,8 +179,24 @@ The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent
   On macOS the sandbox's write rules follow paths, so the move ends a leftover process's writes to the folder, which the stand-in qualification's cleanup check measures (`eval/sandbox-route/qualify.ts`).
   A folder the agent made user-immutable cannot be moved on macOS; the server, which owns its parent, clears the flag and moves it once more.
   A carousel cannot be deleted while its contained run is live, and a run cannot start while its carousel is being deleted: both take the carousel's one slot.
-  The slot lives in one server process's memory, so this exclusion holds within one server process, and running more than one contained server over the same data or agent folders is not supported before activation (#237).
-  Within that limit, on Linux, where the sandbox's mount follows a moved folder, this is what keeps a live run's processes away from the removal.
+  The slot lives in one server process's memory, so this exclusion holds within one server process.
+- **One contained server at a time.** Only one server runs the contained agent over a data folder and an agent folders' root (#246).
+  At start a contained server takes an ownership record in each, `.contained-server` in the data folder and then in the agent folders' root, naming its process id and start time.
+  A record is created whole or not at all (a complete draft linked into place), and exclusive creation guarantees one owner of a record that is created where none was.
+  A record whose server is gone, or whose process id now belongs to another process by its start time, is stale: it is moved aside under a unique name, checked to be the stale record and not a newer one (which is put back), and the claim is made again.
+  Taking over a stale record with three or more servers starting at once after a crash is not fully excluded: the second check and the checks at the start of a design, again before its launch and on every deletion are what keep it safe, and the remaining window is accepted, since there is no distributed locking.
+  A takeover is logged as an info event with the folder and the previous process id, and a server that finds its own record replaced logs a warning once, with the folder; neither carries a path or a token.
+  A server that took the data folder's record but not the agent folders' gives the first back.
+  A server that took both checks them once more a moment later, and then that they are still its own at the start of every design, again immediately before the design's launch and on every contained deletion.
+  The second check before the launch is there because planning can take minutes: if a record is replaced or the folders setting is changed meanwhile, the launch is refused, nothing is made in the agent's folders, and the run's resources are released.
+  It also keeps the real paths of the two folders it took charge of, and checks that the settings still name them at the same three points: after `CREATORBRIO_DESIGN_AGENT_WORKSPACES` is changed, Home and Settings report the Design Agent as unavailable, and a design (at its start and again before its launch) and a deletion refuse, so a server only ever works in the folders whose records it holds.
+  The instruction to restart CreatorBrio is in Settings and in the refusal of a design or a deletion; Home shows the reason and links to Settings.
+  A server that does not own both records runs no contained design, deletes no carousel, and neither sweeps leftover folders nor stops leftover processes.
+  Home gives the reason, which names the process that holds the folders when another server does, and links to Settings, which also says how to stop it or give each server its own folders.
+  The owner gives its records back when it stops, through the same shutdown hook that stops its runs; a crashed owner's records are taken over by the next start.
+  A legacy-profile server takes no record, so a legacy server beside a contained one over the same folders is not excluded: its carousel deletion removes the carousel's agent folder without asking who owns it, and so can remove the folder a contained run is using.
+  Do not run a legacy server over folders a contained server uses.
+  On Linux, where the sandbox's mount follows a moved folder, this exclusion and the slot are what keep a live run's processes away from a removal.
 - **Residual: processes that evade the stop.** On Linux no background process outlived its run in the stand-in qualification.
   macOS has no process-lifetime containment for an unprivileged server.
   A process is found by the stop only if one of the server's looks saw it as a descendant of the CLI, or of a process it had recorded, or if it works in the run's folders when the stop looks at them.
@@ -167,6 +205,8 @@ The contained profile (#156, #186, #226, #227, #228, #241, #242) gives the agent
   Such a process keeps only the run's sandbox rules: the folders it could write are moved away and removed (at the latest by the next start's sweep), and it cannot write a later conversation's folder, whose path is new and was never allowed to it.
   The same holds for a run's temporary folder, whose name is long and random, except where the names are short (see Temporary folders), where a later run can draw the same name and a surviving process could reach its folder.
   The stand-in qualification's survivor check holds its evader to that: on macOS it is inconclusive unless the evader was seen alive, in the process table, after the next conversation's folder existed, and where no evader survives (Linux) it records that the property was not exercised.
+  Its stopped arm is stopped, with the product's own stop, once the host has itself seen all three background jobs start and the evader in the process table while the CLI is still alive, not after a fixed delay that a slow CLI start can outrun.
+  The wait is bounded, and a CLI that is gone before then, or readiness not seen in time, makes the check inconclusive and never contained; the record says what triggered the stop and how long the host waited.
   The stronger boundary is a separate operating system account or a virtual machine for the agent.
 - **Run-scoped authority.** Each run gets a random token, passed only in the agent's environment (as `CREATORBRIO_AGENT_GRANT`, a name the scrub keeps) and accepted only by the agent-only listener for that run's carousel.
   It expires a minute after the run's deadline and is revoked when the run ends, however it ends; it is redacted from the chat stream and the server log, and stored in no run record.
@@ -194,10 +234,16 @@ Tokens are never logged.
 
 #### Where it runs
 
-The contained profile's containment has been tested, with a stand-in for the model, on macOS and on Debian 12 Linux (a container in Docker Desktop's Linux virtual machine) with bubblewrap and socat installed, with Claude Code 2.1.328.
+macOS is the contained profile's first activation platform (AD-48, #246).
+Its containment has been tested, with a stand-in for the model, on macOS and on Debian 12 Linux (a container in Docker Desktop's Linux virtual machine) with bubblewrap and socat installed, with Claude Code 2.1.328; the roadmap's M1 evidence records which content each result was measured on.
+Linux is unsupported for the contained profile while the CLI's sandbox leaves the shared temporary folders writable there (see Sandbox, above): the profile does not weaken the property that the shell writes only its own folders to make Linux pass.
+On Linux the profile still runs as it does elsewhere, and `npm run doctor` says it is unsupported there; the stand-in checks keep running on Linux where they say something useful, and its known shared-temporary-folder failure is reported, not hidden.
 Its M1 qualification (real-model runs, the T1 hostile-input run and the creative-quality comparison) is still open, and it stays off until #237 activates it.
 Other Linux distributions have not been tested.
 It is not available on Windows or WSL2, which have not been tested, and it refuses a Claude Code older than 2.1.219.
 Another version from 2.1.219 runs with a warning in Settings, because its sandbox may behave differently.
 Install Claude Code 2.1.328 where it does not update itself, and point `CLAUDE_CLI_PATH` at it.
-When the contained agent cannot run, a design is refused with `agent_unavailable` before anything is planned, and Home and Settings say what it needs.
+When the contained agent cannot run, a design is refused with `agent_unavailable`, Home says why and links to Settings, and Settings says what it needs.
+That refusal comes before anything is planned, with one exception.
+Planning can take minutes, so this server's ownership of its folders, the token file and the model API setting are asked again immediately before the launch.
+A design whose ownership was lost, or whose old token or setting is no longer usable and has no valid replacement, is refused with `agent_unavailable` after it was planned, with nothing made in the agent's folders and the slides unchanged.

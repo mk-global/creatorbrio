@@ -6,10 +6,13 @@ import {
   compareCliVersions,
   containedArgs,
   containedEnv,
+  containedModelApiAddress,
   containedSettings,
-  agentSignInDir,
   designAgentProfileName,
-  SIGN_IN_STORE_ENV,
+  INHERITED_ENV,
+  MODEL_API_URL_ENV,
+  ModelApiAddressError,
+  SIGN_IN_TOKEN_ENV,
   privateReadDirs,
   type ContainedLayout,
 } from "@/lib/design-agent-profile";
@@ -23,6 +26,8 @@ const LAYOUT: ContainedLayout = {
   tempRoot: "/tmp/cbrs",
   homeDir: "/home/designer",
   agentHome: "/home/designer/.creatorbrio/design-agent/.home",
+  // A configured token file outside every denied folder, so only its own rule covers it.
+  signInTokenFile: "/srv/secrets/design-agent-token",
   repoDir: "/srv/creatorbrio",
   dataDir: "/srv/creatorbrio/data",
   listenerPort: 48211,
@@ -130,6 +135,7 @@ describe("contained profile settings", () => {
       "/private/tmp/claude-1000",
       "/tmp/cbrs",
       "/home/designer/.creatorbrio/design-agent",
+      "/srv/secrets/design-agent-token",
     ]);
     // The staged images are readable, never writable. Of the server-owned
     // temporary parent, only this run's folder: never another run's, nor the
@@ -161,6 +167,7 @@ describe("contained profile settings", () => {
       "Read(//home/designer/.creatorbrio/design-agent/.home/**)",
       "Read(//home/designer/.claude/**)",
       "Read(//home/designer/.claude.json)",
+      "Read(//srv/secrets/design-agent-token)",
     ]);
   });
 
@@ -176,26 +183,31 @@ describe("contained profile environment", () => {
     HOME: "/home/designer",
     PATH: "/usr/bin:/bin",
     LANG: "en_US.UTF-8",
-    CLAUDE_CODE_OAUTH_TOKEN: "synthetic-sign-in",
+    // The person's own Claude Code gateway: the contained CLI's dedicated token must never follow it.
+    ANTHROPIC_BASE_URL: "https://gateway.example.test",
+    CLAUDE_CODE_OAUTH_TOKEN: "synthetic-server-sign-in",
+    ANTHROPIC_API_KEY: "synthetic-server-key",
+    ANTHROPIC_AUTH_TOKEN: "synthetic-server-auth",
     OPENAI_API_KEY: "synthetic-app-secret",
     CREATORBRIO_IMAGE_KEY: "synthetic",
     CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/synthetic.sock",
     CLAUDE_CODE_MESSAGING_TOKEN: "synthetic",
     CLOUDSDK_PROXY_PASSWORD: "synthetic",
     AWS_SECRET_ACCESS_KEY: "synthetic",
+    CLAUDE_CODE_USE_BEDROCK: "1",
     NODE_OPTIONS: "--require /tmp/evil.js",
     CREATORBRIO_DESIGN_AGENT_PROFILE: "contained",
     EMPTY: "",
   };
 
-  const run = { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN", home: "/home/designer/.creatorbrio/design-agent/.home", signInDir: null };
+  const run = { tempDir: "/tmp/cb-Ab12Cd", token: "T0KEN", home: "/home/designer/.creatorbrio/design-agent/.home", signInToken: "synthetic-dedicated-token" };
 
-  it("is an explicit allowlist plus the server-owned home, the run's folder and token", () => {
+  it("is an explicit allowlist plus the server-owned home, its own sign-in token, the run's folder and grant", () => {
     expect(containedEnv(source, run)).toEqual({
       HOME: "/home/designer/.creatorbrio/design-agent/.home",
       PATH: "/usr/bin:/bin",
       LANG: "en_US.UTF-8",
-      CLAUDE_CODE_OAUTH_TOKEN: "synthetic-sign-in",
+      CLAUDE_CODE_OAUTH_TOKEN: "synthetic-dedicated-token",
       CLAUDE_CODE_TMPDIR: "/tmp/cb-Ab12Cd",
       DISABLE_AUTOUPDATER: "1",
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
@@ -203,25 +215,68 @@ describe("contained profile environment", () => {
     });
   });
 
-  it("never gives the CLI the person's home, or their configuration folder, which would move its state into theirs (#242)", () => {
-    const env = containedEnv({ ...source, CLAUDE_CONFIG_DIR: "/opt/claude-config", [SIGN_IN_STORE_ENV]: "/somewhere/else" }, run);
-    expect(env.HOME).toBe(run.home);
-    expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
-    // The sign-in store's location comes only from the profile, never from the app's environment.
-    expect(env).not.toHaveProperty(SIGN_IN_STORE_ENV);
-    expect(containedEnv(source, { ...run, signInDir: "/home/designer/.claude" })[SIGN_IN_STORE_ENV]).toBe("/home/designer/.claude");
+  it("signs the CLI in only with its own token, never with a credential the server holds (#246)", () => {
+    const env = containedEnv(source, run);
+    expect(env[SIGN_IN_TOKEN_ENV]).toBe(run.signInToken);
+    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY"]) expect(env).not.toHaveProperty(name);
+    expect(JSON.stringify(env)).not.toMatch(/synthetic-server-/);
+    // No credential variable is inherited at all.
+    expect(INHERITED_ENV.filter((name) => /TOKEN|KEY|SECRET|PASS|AUTH/.test(name))).toEqual([]);
   });
 
-  it("names the person's sign-in for the CLI only where the server-owned home cannot lead to it (#242)", () => {
-    // Linux: the credentials file in the person's CLI configuration folder.
-    expect(agentSignInDir({ env: {}, platform: "linux", personHome: "/home/designer" })).toBe("/home/designer/.claude");
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "/opt/claude-config" }, platform: "linux", personHome: "/home/designer" })).toBe("/opt/claude-config");
-    // A relative folder would resolve inside the agent's own folder: the default is used.
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "claude-config" }, platform: "linux", personHome: "/home/designer" })).toBe("/home/designer/.claude");
-    // macOS: the login keychain, through the home's link; a configured folder names the keychain entry, so it is passed on.
-    expect(agentSignInDir({ env: {}, platform: "darwin", personHome: "/Users/designer" })).toBeNull();
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "claude-config" }, platform: "darwin", personHome: "/Users/designer" })).toBeNull();
-    expect(agentSignInDir({ env: { CLAUDE_CONFIG_DIR: "/opt/claude-config" }, platform: "darwin", personHome: "/Users/designer" })).toBe("/opt/claude-config");
+  it("never gives the CLI the server's own model API address, so its dedicated token cannot follow the person's gateway (#246)", () => {
+    const env = containedEnv(source, run);
+    expect(env).not.toHaveProperty("ANTHROPIC_BASE_URL");
+    expect(INHERITED_ENV).not.toContain("ANTHROPIC_BASE_URL");
+    expect(JSON.stringify(env)).not.toContain("gateway.example.test");
+    // Nor does the address survive under another spelling of the same variable.
+    expect(Object.keys(env).filter((name) => /BASE_URL/i.test(name))).toEqual([]);
+  });
+
+  it("gives the CLI a model API address only from CreatorBrio's own setting, as the CLI's ANTHROPIC_BASE_URL (#246)", () => {
+    expect(MODEL_API_URL_ENV).toBe("CREATORBRIO_DESIGN_AGENT_API_BASE_URL");
+    const env = containedEnv({ ...source, [MODEL_API_URL_ENV]: " http://127.0.0.1:4321 " }, run);
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:4321");
+    // The setting itself is not passed on, and the server's own address still is not.
+    expect(env).not.toHaveProperty(MODEL_API_URL_ENV);
+    expect(JSON.stringify(env)).not.toContain("gateway.example.test");
+    expect(containedEnv({ ...source, [MODEL_API_URL_ENV]: "https://models.example.test/v1" }, run).ANTHROPIC_BASE_URL).toBe("https://models.example.test/v1");
+    // Unset or blank: no address, so the CLI's own default applies.
+    for (const value of [undefined, "", "  "]) expect(containedEnv({ ...source, [MODEL_API_URL_ENV]: value }, run)).not.toHaveProperty("ANTHROPIC_BASE_URL");
+  });
+
+  it("refuses a model API setting that is not one absolute http or https address without credentials, naming the setting and never the value (#246)", () => {
+    for (const value of [
+      "gateway.example.test",
+      "localhost:4321",
+      "/v1/messages",
+      "//gateway.example.test",
+      "ftp://gateway.example.test",
+      "file:///etc/hosts",
+      "javascript:alert(1)",
+      "http://",
+      "http://user:synthetic-pass@gateway.example.test",
+      "http://synthetic-user@gateway.example.test",
+      "https://:synthetic-pass@gateway.example.test",
+      "http://127.0.0.1:4321@gateway.example.test",
+      "http://gateway.example.test/a b",
+      "http://gateway.example.test\nX-Header: 1",
+      "http://gateway.example.test\t.evil.example.test",
+    ]) {
+      const refusal = containedModelApiAddress({ [MODEL_API_URL_ENV]: value });
+      expect(refusal, value).toMatchObject({ ok: false, reason: expect.stringContaining(MODEL_API_URL_ENV), guidance: expect.stringMatching(/absolute http or https address.*no user name or password.*restart CreatorBrio/) });
+      expect(JSON.stringify(refusal)).not.toMatch(/synthetic-|example\.test|127\.0\.0\.1/);
+      expect(() => containedEnv({ ...source, [MODEL_API_URL_ENV]: value }, run), value).toThrow(ModelApiAddressError);
+    }
+    expect(containedModelApiAddress({})).toEqual({ ok: true, url: null });
+    expect(containedModelApiAddress({ [MODEL_API_URL_ENV]: "https://models.example.test:8443/v1/" })).toEqual({ ok: true, url: "https://models.example.test:8443/v1/" });
+  });
+
+  it("never gives the CLI the person's home, their configuration folder or the location of their sign-in store (#242, #246)", () => {
+    const env = containedEnv({ ...source, CLAUDE_CONFIG_DIR: "/opt/claude-config", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/somewhere/else" }, run);
+    expect(env.HOME).toBe(run.home);
+    expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+    expect(env).not.toHaveProperty("CLAUDE_SECURESTORAGE_CONFIG_DIR");
   });
 });
 

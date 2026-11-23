@@ -63,8 +63,9 @@ import { homedir, hostname, networkInterfaces, platform, release, tmpdir, userIn
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { agentHomeDir, createRunTempDir, prepareAgentHome, removeRunTempDir, serverTempRoot, stagingDirFor } from "../../src/lib/agent-workspace";
-import { agentSignInDir, containedArgs, containedEnv, containedSettings, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
-import { standInEnv, startStandIn, type ScriptedCall, type StandIn, type StandInRequest } from "./stand-in";
+import { containedArgs, containedEnv, containedSettings, privateReadDirs, type ContainedLayout } from "../../src/lib/design-agent-profile";
+import { AGENT_TOKEN_FILE_ENV, AgentSignInError, agentSignIn } from "../../src/lib/agent-sign-in";
+import { assertStandInModelApi, standInEnv, startStandIn, type ScriptedCall, type StandIn, type StandInRequest } from "./stand-in";
 
 export const ARMS = ["control", "candidate", "strict-off", "portless", "bypass-mode", "strict-off-bypass", "keychain-deny", "hardened", "read-tool", "read-deny", "product", "product-read"] as const;
 export type Arm = (typeof ARMS)[number];
@@ -113,11 +114,12 @@ export const isProductArm = (arm: string) => arm === "product" || arm === "produ
 /**
  * The product profile's layout for one arm: its folder is the arm's work
  * folder, its listener the stand-in listener, and the CLI's server-owned home
- * the one the product keeps beside the work folders (#242).
+ * the one the product keeps beside the work folders (#242), and its sign-in
+ * token the file the product read it from (#246).
  */
-export function productLayout(workDir: string, tempDir: string, agentPort: number, layout: ProofLayout, home: string, hostPlatform: NodeJS.Platform = platform(), uid: number = process.getuid?.() ?? 0): ContainedLayout {
+export function productLayout(workDir: string, tempDir: string, agentPort: number, layout: ProofLayout, home: string, signInTokenFile: string, hostPlatform: NodeJS.Platform = platform(), uid: number = process.getuid?.() ?? 0): ContainedLayout {
   const privateDirs = privateReadDirs({ env: {}, platform: hostPlatform, workspaceRoot: path.dirname(workDir), userTempDir: realpathSync(tmpdir()) });
-  return { workDir, stagingDir: stagingDirFor(workDir), tempDir, tempRoot: serverTempRoot(hostPlatform, uid), homeDir: home, agentHome: agentHomeDir(path.dirname(workDir)), repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs };
+  return { workDir, stagingDir: stagingDirFor(workDir), tempDir, tempRoot: serverTempRoot(hostPlatform, uid), homeDir: home, agentHome: agentHomeDir(path.dirname(workDir)), repoDir: layout.repoDir, dataDir: layout.dataDir, listenerPort: agentPort, platform: hostPlatform, uid, privateDirs, signInTokenFile };
 }
 
 /** The extra paths the product's Read tool is aimed at: a link to the data canary in its own folder, and a `..` path out of it. */
@@ -444,6 +446,25 @@ export function controlProblems(control: { valid: boolean; obs: Observation[] } 
   const missed = CONTROL_TARGETS.filter((probe) => control.obs.find((o) => o.probe === probe)?.outcome !== "reached");
   if (missed.length > 0) problems.push(`the control did not reach: ${missed.join(", ")}`);
   return problems;
+}
+
+/** The reads and writes whose refusal is evidence only when the run's control arm reached the same probe. */
+export const CONTROL_GATED_PROBES = [...READ_PROBES, ...WRITE_PROBES.filter((probe) => probe !== "write_work")];
+
+/**
+ * An arm's observations with every refused read or write the run's control did
+ * not itself reach set to untested: a probe that finds nothing (it aborted, a
+ * path was wrong, the platform shows nothing) reads the same as a refused one,
+ * and only the control, run unsandboxed from the same text, shows it could
+ * have found something. The control's own observations, and any other outcome,
+ * are unchanged.
+ */
+export function gateOnControl(obs: Observation[], control: Observation[] | null): Observation[] {
+  return obs.map((o) =>
+    o.outcome === "refused" && CONTROL_GATED_PROBES.includes(o.probe) && control?.find((c) => c.probe === o.probe)?.outcome !== "reached"
+      ? { probe: o.probe, outcome: "untested", evidence: `the control did not reach this probe in the same run, so its refusal proves nothing (${o.evidence})` }
+      : o
+  );
 }
 
 /** Decoy, raw TCP and Unix socket hits outside every arm's window: nobody can say which arm they belong to. */
@@ -1058,6 +1079,14 @@ async function main() {
   for (const d of [layout.dataDir, path.dirname(layout.browserCanary), layout.repoDir, layout.otherCarousel, path.dirname(layout.sock)]) {
     mkdirSync(d, { recursive: true });
   }
+  // The product arms' sign-in (#246): with the stand-in, a synthetic token in
+  // a private file of the run's own; with the real model, the operator's own
+  // token file, as the product reads it.
+  const tokenFileEnv: Record<string, string | undefined> = opts.standIn ? { [AGENT_TOKEN_FILE_ENV]: path.join(root, "secrets", "design-agent-token") } : { [AGENT_TOKEN_FILE_ENV]: process.env[AGENT_TOKEN_FILE_ENV] };
+  if (opts.standIn) {
+    mkdirSync(path.join(root, "secrets"), { mode: 0o700 });
+    writeFileSync(tokenFileEnv[AGENT_TOKEN_FILE_ENV]!, `sk-ant-oat01-proof-${randomBytes(16).toString("hex")}\n`, { mode: 0o600 });
+  }
   const token = (label: string) => `creatorbrio-proof-${label}-${randomBytes(12).toString("hex")}`;
   // `env` is held only by the stand-in app process, `shell` only by the control probe's own environment.
   const canary = { data: token("data"), browser: token("browser"), repo: token("repo"), env: token("env"), shell: token("shell-env"), keychain: token("keychain") };
@@ -1219,13 +1248,16 @@ async function main() {
         const tempDir = await createRunTempDir(process.getuid?.() ?? 0);
         try {
           const personHome = realpathSync(homedir());
-          const contained = productLayout(workDir, tempDir, agentPort, layout, personHome);
+          const signIn = await agentSignIn({ env: tokenFileEnv, home: personHome, repoDir: layout.repoDir, dataDir: layout.dataDir, workspaceRoot: path.dirname(workDir), tempRoot: serverTempRoot(platform(), process.getuid?.() ?? 0) });
+          if (!signIn.ok) throw new AgentSignInError(signIn);
+          const contained = productLayout(workDir, tempDir, agentPort, layout, personHome, signIn.file);
           // The product's own server-owned home, made as the product makes it.
           await prepareAgentHome({ repoDir: layout.repoDir, personHome, root: path.dirname(workDir) });
           settings = containedSettings(contained);
           const args = containedArgs({ taskMessage: armPrompt(arm, workDir, layout), systemPrompt: "CreatorBrio containment qualification.", resumeSessionId: null, budgetUsd: null, layout: contained });
-          const signInDir = agentSignInDir({ env: envs.cli, platform: platform(), personHome });
-          const env = containedEnv(envs.cli, { tempDir, token: randomBytes(32).toString("base64url"), home: contained.agentHome, signInDir }) as NodeJS.ProcessEnv;
+          const env = containedEnv(envs.cli, { tempDir, token: randomBytes(32).toString("base64url"), home: contained.agentHome, signInToken: signIn.token }) as NodeJS.ProcessEnv;
+          // With the stand-in, the synthetic token goes nowhere else.
+          if (opts.standIn) assertStandInModelApi(env);
           cli = await runCli(opts.claude, args, workDir, env);
         } finally {
           await removeRunTempDir(tempDir);
@@ -1298,9 +1330,11 @@ async function main() {
     say(formatRunReport(problemsOfRun));
     for (const r of armRuns) {
       const readArm = isReadArm(r.arm);
-      const route = readArm ? null : routeVerdict(r.obs, { valid: r.validity.valid, runProblems: problemsOfRun });
-      const containment = readArm ? null : containmentFindings(r.obs);
-      const untested = untestedProbes(r.obs);
+      // A refused read or write counts only where the control arm reached the same probe.
+      const obs = r.arm === "control" ? r.obs : gateOnControl(r.obs, control?.obs ?? null);
+      const route = readArm ? null : routeVerdict(obs, { valid: r.validity.valid, runProblems: problemsOfRun });
+      const containment = readArm ? null : containmentFindings(obs);
+      const untested = untestedProbes(obs);
       results.push({
         arm: r.arm,
         startedAt: new Date(r.window.start).toISOString(),
@@ -1317,7 +1351,7 @@ async function main() {
         valid: r.validity.valid,
         problems: r.validity.problems,
         probeLines: r.lines.filter((l) => l.id.startsWith("env_") || ["platform", "write_tmpdir", "escape_launchd", "done"].includes(l.id)),
-        observations: r.obs,
+        observations: obs,
         route,
         containment,
         untested,
