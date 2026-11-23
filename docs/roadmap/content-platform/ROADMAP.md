@@ -1,6 +1,7 @@
 # Roadmap: from today's CreatorBrio to automated, approved publishing
 
 **Status:** Revision 3, validated under [#218](https://github.com/mk-global/creatorbrio/issues/218) (revision 2 under [#216](https://github.com/mk-global/creatorbrio/issues/216)).
+The founder narrowed the first milestone on 2026-11-23 (FD-K, [#248](https://github.com/mk-global/creatorbrio/issues/248)); see [First milestone](#first-milestone-m1-contain-the-design-agent).
 The sequence is PROPOSED; it is not an accepted execution backlog until the founder accepts it in the [decision register](DECISION-REGISTER.md), and each milestone still needs its own admitted issues.
 
 **Date:** 2026-11-18.
@@ -73,7 +74,7 @@ flowchart LR
 - **New:** the agent-only listener (or typed tools) that confines the agent's API authority to its run's carousel (AD-46); a refusal to start on a Claude CLI older than 2.1.219, which `strictAllowlist` needs; the contained execution profile, an explicit environment, a stable per-carousel working folder, outside the repository, with writes confined to it so a follow-up message still resumes the same session, sandbox configuration with its network limited to the agent's API address and port (the agent-only listener, AD-46) (Route A of RFC 7.4 with `strictAllowlist` on, or Route B, typed tools over MCP, if the feasibility proof fails) and read denial, web fetch disabled with linked pages retrieved by the server and handed to the agent as delimited untrusted text, the Claude CLI version T1 last passed on recorded in the profile with a visible warning when it differs, the T1 harness; then typed tools over MCP (WS8 and G8).
 - **Depends on:** issues #156 and #186; WS8 and G8 for the second step, which M1 itself needs if the feasibility proof selects Route B.
 - **Gates:** the network feasibility proof passed on the publishing host (macOS) and Linux, and on WSL2 where a test host exists, otherwise WSL2 reported unavailable until proven (AD-35), before the rest of M1 proceeds; T1 baseline recorded against today's agent and passed after the change; the acceptance harness shows no material quality regression, or the founder accepts the measured change (FQ-4); budget approved (FQ-5).
-- **Acceptance:** see [First milestone](#first-milestone-m1-contain-the-design-agent).
+- **Acceptance:** see [First milestone](#first-milestone-m1-contain-the-design-agent), whose scope the founder reduced on 2026-11-23 (FD-K).
 - **Operations:** sandbox prerequisites on Linux and on WSL2 on Windows (bubblewrap, socat and the seccomp filter) become documented requirements, per the vendor's [sandboxing documentation](https://code.claude.com/docs/en/sandboxing.md) (retrieved 2026-11-17).
   If any of them is missing, the Design Agent is reported unavailable with setup guidance, as on native Windows, and the doctor command checks for all three and tests the Unix socket refusal itself.
 - **Risks:** design quality may drop without free web access or the shell; mitigated by measuring and by research moving into the server's retrieval step.
@@ -191,6 +192,34 @@ Detailed in [SOCIAL-AUTOMATION-MIGRATION.md](SOCIAL-AUTOMATION-MIGRATION.md).
 
 ## First milestone (M1): contain the Design Agent
 
+**Scope reduction (founder decision FD-K, 2026-11-23, [#248](https://github.com/mk-global/creatorbrio/issues/248)).**
+CreatorBrio's open-source edition is a single-user installation on the person's own computer, and the hosted SaaS edition is future work with its own tenant and workload isolation (phase 7).
+The founder stopped further local Claude Code-specific security assurance unless it prevents a demonstrated, material problem in the current product, and narrowed M1 to what that product needs.
+The goal below stays the contained profile's design target; it is not claimed for the default profile, which runs under local trust ([design-agent.md](../../architecture/design-agent.md#legacy)), and the contained profile is not qualified.
+The evidence recorded in this section stays as it was measured, with its corrections, and nothing that was not measured is claimed.
+
+Kept, as merged:
+- The contained profile and its tests: the stable Creative Agent configuration (no setting sources, a pinned model and effort, a strict MCP configuration, only `Bash` and `Read`), the run-scoped agent-only listener (AD-46), server-side retrieval of linked pages, the run lifecycle and cleanup, the server-owned home, the dedicated sign-in with the credential scrub, and one contained server per data folder.
+  These protect a run only when `CREATORBRIO_DESIGN_AGENT_PROFILE=contained` is set; the default profile does not use them.
+- The stand-in qualification tools (`eval/sandbox-route/`) and the T1 harness (`eval/t1/`), as they are, with no further development.
+- The protections that apply to every profile: the server listens on the loopback address only, the request guard, sandboxed slide frames that run no script, the sealed export, upload and font fetch limits, and the core functionality and regression tests.
+
+Stopped or deferred:
+- FD-J's qualification: T1 after the change, paid real-model runs and the creative-quality comparison.
+  M1's model spend closes at about USD 38 of the USD 100 cap, and the USD 50 reserve is unspent.
+- The remaining stand-in checks (#244), the T1 harness gaps (#235), and the T1 baseline and post-change runs (#221).
+- Detailed Keychain, CLI-internal and Linux sandbox qualification, further persistence-detector work and general sandbox-proof infrastructure.
+- Multi-user support for local installations, and SaaS tenancy, roles, infrastructure and operational security, which phase 7 implements.
+- The contained profile's activation and the legacy profile's removal (#237).
+  Activation is a separate founder decision, and would need at least one real-model run of creation, editing, Continue and export under the contained profile, which has run only against a stand-in model.
+
+Still necessary for the open-source edition, and M1's exit:
+- Showing a slide makes the browser contact no server other than CreatorBrio ([#249](https://github.com/mk-global/creatorbrio/issues/249)).
+- Carousel creation, editing, Continue and export keep working, shown by the integration tests in the normal test suite.
+- The default profile's local-trust assumptions are documented.
+
+Open founder questions: FQ-10 (what gates the publisher cutover now that T1 is stopped; FD-I stands until it is answered) and FQ-11 (how phase 2's research and approval run while the default Design Agent runs under local trust).
+
 **Goal.** No content a person or a web page shows the Design Agent can make it read a secret, write outside its own carousel folder, reach any host or local port other than its agent-only listener, or change anything outside its own carousel, and its behavior depends only on CreatorBrio's own configuration.
 
 **Why it is still the first milestone (re-checked 2026-11-18).** Today's Design Agent has an unrestricted shell and web fetch, and `docs/architecture/video-production-api.md` records that such a process can read every local secret of its user, so a hostile page it reads is a risk now, independent of the migration; containment is also FD-I's precondition for the cutover and the precondition for any credential integration.
@@ -237,7 +266,7 @@ It changes no product behavior, so it can open now; its prerequisite is a Linux 
    - **Desired outcome:** a harness serves a hostile page and hostile reference text to a real design run inside an isolated instance with synthetic brand and canaries, and reports every canary access, every egress attempt and every non-API action.
    - **Acceptance criteria:** the baseline against today's agent is recorded before any containment change lands; after tickets 1 to 3 the harness reports zero changes outside the run's carousel through the app's API with or without a token, zero canary reads (including a canary in a browser profile and cookie store folder), zero canary writes outside the carousel folder, zero external egress, no connection to any localhost port other than the agent-only listener's, zero Unix domain socket connections, on WSL2 zero Windows binary launches, no approvals and a follow-up message that resumes the same session; the harness runs on demand with a founder-approved spend cap and never in CI.
 
-**M1 acceptance criteria.**
+**M1 acceptance criteria** (as written before FD-K; M1's exit is the reduced list in the scope reduction above).
 
 - [ ] A feasibility proof on macOS and Linux, and on WSL2 where a test host exists (otherwise WSL2 is reported unavailable until proven), shows that, with the profile's `strictAllowlist` setting and pinned permission mode, the agent reaches its API origin (the agent-only listener) and no other localhost port and no external host, and the chosen route (Route A, or Route B if Route A fails on any tested platform) is recorded in the decision register (AD-35); the rest of M1 proceeds only after it passes.
 - [ ] The Design Agent and the Visual Director start with an explicit, versioned execution profile; changing the person's own Claude Code settings changes neither (pinned by tests).
@@ -256,7 +285,7 @@ It changes no product behavior, so it can open now; its prerequisite is a Linux 
 - [ ] `docs/architecture/design-agent.md` (including its `WebFetch` research line), `docs/architecture/creative-workflow.md`, `docs/architecture/visual-director.md` (the Visual Director's execution profile), `docs/architecture/video-production-api.md` (its statement about today's Design Agent, which changes when M1 lands), the README (including the Windows requirement and the Linux and WSL2 sandbox prerequisites) and the `CLAUDE.md` tool-grant line describe the new profile, the URL handoff, the removal of the agent's own topic research and the Windows behavior.
 - [ ] Full repository checks and the independent review pass; rollback is reverting the profile change.
 
-**M1 qualification (founder decision FD-J, 2026-11-21).**
+**M1 qualification (founder decision FD-J, 2026-11-21; superseded by FD-K on 2026-11-23 and kept as it was decided).**
 The founder chose Option B: no model-backed T1 baseline is recorded against the pre-containment agent, and M1 is qualified by a composite of evidence instead.
 The criteria "T1 baseline recorded before the change" above and in #221 are replaced by this composite; nothing below claims a T1 check passed that T1 reports as untested.
 
@@ -345,6 +374,7 @@ Still open before the contained profile is activated (#227, #237): the doctor's 
 #246 closed two of those items for the Design Agent, its sign-in shared with the person's own Claude Code (planning still uses that sign-in) and more than one contained server over the same folders, as the evidence above records.
 Not required for macOS activation (AD-48), and open for a later Linux decision: the seccomp filter check on Linux, a warning on Linux environments other than the tested one, and closing the shell's writes to the shared temporary folders on Linux, which needs a change in the CLI's sandbox or a stronger boundary.
 The contained profile ships dark (AD-47) until that qualification is met.
+Under FD-K (2026-11-23) that qualification is stopped: the items above are deferred, the contained profile stays dark, opt-in and unqualified, and they return only if the founder decides to activate it.
 
 **Risks.**
 
@@ -366,7 +396,7 @@ The contained profile ships dark (AD-47) until that qualification is met.
 |---|---|
 | Creative quality | Acceptance harness and real creator acceptance (T7) |
 | Reliability | Restart and replay tests, approval re-entry, no duplicate posts (T2, T3, T4, T12) |
-| Security | T1 on the publishing host before cutover (FD-I); T1 on every supported platform before credential integration; T11 before tenants |
+| Security | T1 on the publishing host before cutover (FD-I; what gates the cutover now that T1 is stopped is open under FQ-10); T1 on every supported platform before credential integration; T11 before tenants |
 | Cost | Per-run records now; T6 before pricing |
 | Portability | Conformance suites before adapters ship (T8) |
 | Licensing | Provenance updated with every import; T9 before any image |

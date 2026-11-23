@@ -26,7 +26,8 @@ The agent then works through the app's own API:
 
 `CREATORBRIO_DESIGN_AGENT_PROFILE` in `.env.local` selects the profile, read on every request.
 It is `legacy` when unset, or `contained`; any other value refuses designs with `profile_setting_invalid` until it is corrected.
-The contained profile is dark: it is switched on only after it qualifies under #237, which then removes the legacy profile.
+The contained profile is dark and opt-in.
+By the founder's decision of 2026-11-23 (FD-K in the decision register), its qualification under #237 is stopped, so it is not qualified, and making it the default is a separate founder decision; `legacy` stays the default.
 `src/lib/design-agent-profile.ts` owns the contained profile; Settings shows which profile runs and whether it can run on this computer.
 
 ### Legacy
@@ -36,13 +37,19 @@ Unlike the Visual Director, which is started with no setting sources, it loads y
 `WebFetch` lets it research a topic while designing, and `Read` lets it open your reference images.
 It curls the app's own API at the origin the request arrived on.
 
+The legacy profile runs under local trust.
+CreatorBrio's open-source edition is a single-user app on your own computer, and this agent acts with your own permissions, as Claude Code itself does.
+Its shell and `WebFetch` can read and change anything your account can, including CreatorBrio's data and other local secrets, and it can change any carousel through the app's API.
+A page or reference it reads can try to steer it, so give it only links and references you would let Claude Code read on this computer.
+CreatorBrio's server listens on this computer's loopback address only; do not expose it to a network or offer it as a hosted service.
+
 ### Contained
 
 The contained profile (#156, #186, #226, #227, #228, #241, #242, #246) gives the agent one carousel and nothing else.
 
 - **Explicit configuration.** The CLI loads no setting sources, no MCP servers and no slash commands.
   A stand-in check with planted personal and project instructions, rules, skills, agents, hooks, a settings model and MCP servers found none of them reaching the agent.
-  Whether a personal plugin or advisor setting is also kept out has not been checked yet (#237).
+  Whether a personal plugin or advisor setting is also kept out has not been checked; that check was stopped with the rest of the qualification (FD-K).
   Personal shell startup files are kept out by the server-owned home (below).
   The model (`claude-opus-5-5`), effort (`medium`) and tools (`Bash` and `Read`) are fixed by the profile, and auto-memory and the auto-updater are off.
   The profile requests the `dontAsk` permission mode, but the subprocess credential scrub, which keeps the sign-in token out of the agent's commands, makes the CLI run in the `default` mode instead and print a warning saying so.
@@ -238,7 +245,7 @@ macOS is the contained profile's first activation platform (AD-48, #246).
 Its containment has been tested, with a stand-in for the model, on macOS and on Debian 12 Linux (a container in Docker Desktop's Linux virtual machine) with bubblewrap and socat installed, with Claude Code 2.1.328; the roadmap's M1 evidence records which content each result was measured on.
 Linux is unsupported for the contained profile while the CLI's sandbox leaves the shared temporary folders writable there (see Sandbox, above): the profile does not weaken the property that the shell writes only its own folders to make Linux pass.
 On Linux the profile still runs as it does elsewhere, and `npm run doctor` says it is unsupported there; the stand-in checks keep running on Linux where they say something useful, and its known shared-temporary-folder failure is reported, not hidden.
-Its M1 qualification (real-model runs, the T1 hostile-input run and the creative-quality comparison) is still open, and it stays off until #237 activates it.
+Its M1 qualification (real-model runs, the T1 hostile-input run and the creative-quality comparison) was stopped by the founder on 2026-11-23 (FD-K), so it is not qualified on any platform; it stays off unless you opt in, and making it the default is a separate founder decision.
 Other Linux distributions have not been tested.
 It is not available on Windows or WSL2, which have not been tested, and it refuses a Claude Code older than 2.1.219.
 Another version from 2.1.219 runs with a warning in Settings, because its sandbox may behave differently.
