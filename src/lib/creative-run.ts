@@ -28,6 +28,7 @@ import { capabilityStatus } from "./creative-capabilities";
 import { buildContinuationMessage, buildDesignMessage, type ResolvedImage } from "./creative-handoff";
 import { explicitCountOverFormatLimit, explicitCountOverLimit, imagePrompt, validatePlan, type PlanAsset, type ReadyPlan } from "./director-plan";
 import { FORMATS, formatOf, slideLimitOf, withArticle } from "./formats";
+import type { ResearchStamp } from "./generation-status";
 import {
   GENERATION_TIMEOUT_MS,
   ImageGenerationError,
@@ -40,6 +41,8 @@ import {
   type ImageAspectRatio,
 } from "./image-service";
 import { findSourceLinks, retrieveSources, type SourceUnavailableReason } from "./source-retrieval";
+import { confirmedResearchOf } from "./research/handoff";
+import { recordResearchDesign } from "./research/run";
 import { directorFailureMessage, planContextFor, runDirector, type DirectorRequest, type DirectorSource } from "./visual-director";
 
 /**
@@ -126,6 +129,16 @@ class Blocked extends Error {
   }
 }
 class Cancelled extends Error {}
+
+/** The confirmed research a run plans and designs from, as kept with a retry; null when the carousel has none (#252). */
+function researchStampOf(carousel: Pick<Carousel, "research">): ResearchStamp | null {
+  const confirmed = confirmedResearchOf(carousel.research);
+  return confirmed ? { revision: confirmed.revision, confirmedAt: confirmed.confirmedAt } : null;
+}
+
+const sameResearch = (a: ResearchStamp | null, b: ResearchStamp | null) =>
+  a === null || b === null ? a === b : a.revision === b.revision && a.confirmedAt === b.confirmedAt;
+
 class EditSourceError extends Error {
   readonly code = "edit_source_unavailable";
 }
@@ -266,7 +279,7 @@ export async function prepareCreativeRun(
     plan = await plan_(input, sources, events, carouselId, runId, signal);
     return await imagesThenHandoff(input, plan, sources, events, runId, signal);
   } catch (err) {
-    return endBeforeDesign(err, carouselId, runId, plan, input.message);
+    return endBeforeDesign(err, carouselId, runId, plan, input.message, researchStampOf(input.carousel));
   }
 }
 
@@ -292,11 +305,18 @@ async function retryRun(input: CreativeRunInput, events: CreativeRunEvents, sign
   log("retry", { carouselId, runId, reused: prepared.reused.length, pending: prepared.pending.length });
   try {
     if (!plan) throw new Blocked("retry_refused", "This attempt can no longer be retried; send the request again.");
+    // The design is built from the carousel's confirmed research as it is now, so a plan made from other research cannot be reused (#252).
+    const research = researchStampOf(input.carousel);
+    if (!sameResearch(prepared.research, research)) {
+      const fields = { carouselId, runId, reason: "research_changed", plannedFrom: prepared.research?.revision ?? null, now: research?.revision ?? null };
+      log("retry refused", fields, "warn");
+      throw new Blocked("retry_refused", "This attempt can no longer be retried; send the request again.");
+    }
     const retryInput = { ...input, message: prepared.message };
     const pages = input.pageTextForAgent ? await readSources(retryInput, events, carouselId, runId, signal) : [];
     return await imagesThenHandoff(retryInput, plan, pages, events, runId, signal, prepared.pending);
   } catch (err) {
-    return endBeforeDesign(err, carouselId, runId, plan, prepared.message);
+    return endBeforeDesign(err, carouselId, runId, plan, prepared.message, prepared.research);
   }
 }
 
@@ -476,7 +496,7 @@ async function imagesThenHandoff(
         origin: a.operation === "edit" ? "edited" : "generated",
         sourceIds: a.operation === "edit" ? [...(a.sourceIds ?? [])] : [],
       })),
-      images.length > 0 ? { plan, message: input.message } : undefined
+      images.length > 0 ? { plan, message: input.message, research: researchStampOf(input.carousel) } : undefined
     );
   }
   const pending = images.filter((a) => (pendingKeys ? pendingKeys.includes(a.key) : true));
@@ -590,6 +610,9 @@ async function imagesThenHandoff(
     references: input.references,
     sources: sources.map((s) => s.url),
     pages: input.pageTextForAgent ? sources : undefined,
+    // The confirmed research of the carousel this run was started with: the one the Director planned from. A retry reaches
+    // here only when it is still the research its stored plan was made from (see retryRun).
+    research: confirmedResearchOf(input.carousel.research),
   });
   // Kept so that an unfinished design can be continued without planning again.
   const assetIds: Record<string, string | null> = {};
@@ -597,7 +620,9 @@ async function imagesThenHandoff(
     const id = asset.operation === "reuse" ? asset.assetId : committed.get(asset.key);
     assetIds[asset.key] = id && !unavailable.has(asset.key) ? id : null;
   }
-  await beginDesign(carouselId, runId, { plan, designMessage, assetIds });
+  const research = confirmedResearchOf(input.carousel.research);
+  await beginDesign(carouselId, runId, { plan, designMessage, assetIds }, { researchRevision: research?.revision });
+  if (research) await recordResearchDesign(carouselId, research.revision, runId);
   return { kind: "design", runId, designMessage, plan, assets, continued: false };
 }
 
@@ -606,7 +631,8 @@ async function endBeforeDesign(
   carouselId: string,
   runId: string,
   plan: ReadyPlan | null,
-  message: string
+  message: string,
+  research: ResearchStamp | null
 ): Promise<CreativeRunOutcome> {
   if (err instanceof Cancelled) {
     await endCreativeRun(carouselId, runId, "stopped", { reason: "cancelled" });
@@ -614,7 +640,7 @@ async function endBeforeDesign(
     return { kind: "cancelled" };
   }
   if (err instanceof Blocked) {
-    const retry = err.retryable && plan ? { plan, message } : null;
+    const retry = err.retryable && plan ? { plan, message, research } : null;
     await endCreativeRun(carouselId, runId, "blocked", { reason: err.code, retry });
     log("blocked", { carouselId, runId, code: err.code, retryable: !!retry });
     return { kind: "blocked", code: err.code, message: err.message, retryRunId: retry ? runId : null };

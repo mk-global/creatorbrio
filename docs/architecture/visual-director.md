@@ -77,6 +77,7 @@ The Director reads the stored brief and proposes an update; the server validates
 - a newer `explicit` instruction replaces or retires an older value, and the Director must quote the retired item and give a reason.
 
 Values a revision does not mention are kept.
+When a carousel has confirmed research, the Director is told to record the confirmed direction as `explicit`, because the person confirmed it ([research.md](research.md#from-confirmed-research-to-the-design)).
 
 A revision that only restyles existing slides, such as one word's colour or weight, a font, a size, spacing or the slide's background colour, keeps every slide's current images as they are: the plan places or reuses each one again and adds no image task (#168).
 "Background" in such a request means the slide's background, not the backdrop of a photo on it.
@@ -175,7 +176,8 @@ Director tools: `Read`
 
 - `Read` is limited to a fresh temporary working directory outside the repository, holding neutral copies of the carousel's reference images and intact assets (`reference-1.png`, `asset-1.png`); a read anywhere else is denied.
 - No user or project settings, no MCP servers and no automatic memory are loaded.
-- Linked-page text reaches it inside an untrusted-page block whose delimiters page text cannot spell (`untrustedPageContent()` in `src/lib/source-text.ts`).
+- Linked-page text reaches it inside an untrusted-page block whose delimiters page text cannot spell (`untrustedPageContent()` in `src/lib/source-text.ts`), and so do the findings of a carousel's confirmed research ([research.md](research.md#from-confirmed-research-to-the-design)).
+- Its launch arguments come from `src/lib/structured-claude.ts`, which research synthesis shares (#252), so the two keep one isolation.
 - No session is written or resumed, so the Director cannot touch the Design Agent's conversation.
 - Its input arrives on standard input, never in the process arguments.
 - Each run is bounded by a mandatory 120-second timeout, after which the Director is stopped (and killed if it ignores the stop); cancelling the request stops it the same way.

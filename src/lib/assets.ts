@@ -11,7 +11,9 @@ import {
   type CreativeRunRecord,
   type CreativeStage,
   type DesignContinuation,
+  type ResearchStamp,
   type RunOutcome,
+  type StoredRetry,
 } from "./generation-status";
 import { IMAGE_DIMENSIONS, type GeneratedImage, type ImageAspectRatio } from "./image-service";
 
@@ -274,7 +276,7 @@ export async function setCreativeTasks(
   carouselId: string,
   runId: string,
   tasks: TaskSpec[],
-  retry?: { plan: unknown; message: string }
+  retry?: StoredRetry
 ): Promise<void> {
   requireIds(runId, tasks.map((t) => t.key));
   await updateRun(carouselId, runId, (record) => {
@@ -294,10 +296,17 @@ export async function setCreativeStage(carouselId: string, runId: string, stage:
  * continued without planning again. Saved before the Design Agent starts, so
  * a design cut off by a restart can be continued too.
  */
-export async function beginDesign(carouselId: string, runId: string, continuation: DesignContinuation): Promise<void> {
+export async function beginDesign(
+  carouselId: string,
+  runId: string,
+  continuation: DesignContinuation,
+  options: { researchRevision?: number } = {}
+): Promise<void> {
   await updateRun(carouselId, runId, (record) => {
     record.stage = "designing";
     record.continuation = continuation;
+    // The confirmed research this design worked from (#252); absent without research.
+    if (options.researchRevision !== undefined) record.researchRevision = options.researchRevision;
   });
 }
 
@@ -335,7 +344,7 @@ export async function endCreativeRun(
   runId: string,
   outcome: RunOutcome,
   /** `retry`: the data a blocked run keeps; omitted keeps what was stored, null keeps nothing. */
-  options: { reason?: string; retry?: { plan: unknown; message: string } | null; deviations?: string[] } = {}
+  options: { reason?: string; retry?: StoredRetry | null; deviations?: string[] } = {}
 ): Promise<void> {
   await updateRun(carouselId, runId, (record) => {
     record.ended = { outcome, at: new Date().toISOString(), ...(options.reason ? { reason: options.reason } : {}) };
@@ -702,6 +711,8 @@ export async function sweepStaging(now = Date.now()): Promise<void> {
 export interface PreparedRetry {
   plan: unknown;
   message: string;
+  /** The confirmed research the stored plan was made from, or null (#252). */
+  research: ResearchStamp | null;
   /** Task keys whose results are reused. */
   reused: string[];
   /** Task keys that run again. */
@@ -776,7 +787,7 @@ export async function prepareRetry(
     if (pending.length > 0) r.attach = null;
     r.ended = null;
   });
-  return { plan: record.retry.plan, message: record.retry.message, reused, pending };
+  return { plan: record.retry.plan, message: record.retry.message, research: record.retry.research ?? null, reused, pending };
 }
 
 // ---------------------------------------------------------------------------

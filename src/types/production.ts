@@ -13,6 +13,7 @@
  */
 
 import type { AssetRelationship, BriefItem, BriefValue } from "./creative-brief";
+import type { ResearchDossier } from "./research";
 
 // ---------------------------------------------------------------------------
 // Enumerations
@@ -151,38 +152,10 @@ export interface ProductionBrief {
 // ---------------------------------------------------------------------------
 // Research
 
-export const SOURCE_KINDS = ["url", "document", "user-note"] as const;
-export const SOURCE_RELIABILITY = ["primary", "reputable-secondary", "unverified"] as const;
-export const CLAIM_STATUSES = ["supported", "unsupported", "disputed", "user-asserted"] as const;
-
-export interface ResearchDossier {
-  questions: string[];
-  sources: ResearchSource[];
-  claims: Claim[];
-  status: "draft" | "reviewed";
-}
-
-export interface ResearchSource {
-  id: string;
-  kind: (typeof SOURCE_KINDS)[number];
-  url?: string;
-  title: string;
-  publisher?: string;
-  retrievedAt: string;
-  /** SHA-256 of the extracted-text side file. */
-  blob: string;
-  reliability: (typeof SOURCE_RELIABILITY)[number];
-  retrievedBy: "user" | "source-retrieval";
-}
-
-export interface Claim {
-  id: string;
-  text: string;
-  sourceIds: string[];
-  status: (typeof CLAIM_STATUSES)[number];
-  /** Health, finance or legal: needs care on screen. */
-  sensitive: boolean;
-}
+// The research dossier's types are shared with carousel research (#252) and
+// live in ./research; they are re-exported here unchanged.
+export { CLAIM_STATUSES, SOURCE_KINDS, SOURCE_RELIABILITY } from "./research";
+export type { Claim, ResearchDossier, ResearchSource } from "./research";
 
 // ---------------------------------------------------------------------------
 // Script

@@ -252,12 +252,25 @@ describe("planning a Reel cover", () => {
 describe("the app status", () => {
   it("reports Claude Code, image generation and the Design Agent profile without paths, URLs or secrets", async () => {
     const body = await (await statusRoute()).json();
-    expect(Object.keys(body).sort()).toEqual(["claude", "designAgent", "imageGeneration"]);
+    expect(Object.keys(body).sort()).toEqual(["claude", "designAgent", "imageGeneration", "research"]);
+    // Topic research (#252) reports only whether a search key is set.
+    expect(body.research).toEqual({ search: { configured: false } });
     expect(typeof body.claude.available).toBe("boolean");
     // No image-service token exists in the run's synthetic home, so a token in the person's own home is never read (#246).
     expect(body.imageGeneration.configured).toBe(false);
     expect(body.designAgent).toEqual({ profile: "legacy" });
     expect(JSON.stringify(body)).not.toMatch(/[/\\]|http|token/i);
+  });
+
+  it("reports a search key as set without ever returning it (#252)", async () => {
+    process.env.BRAVE_SEARCH_API_KEY = "BSA-synthetic-status-key";
+    try {
+      const raw = await (await statusRoute()).text();
+      expect(JSON.parse(raw).research).toEqual({ search: { configured: true } });
+      expect(raw).not.toContain("BSA-synthetic-status-key");
+    } finally {
+      delete process.env.BRAVE_SEARCH_API_KEY;
+    }
   });
 
   it("reports an invalid Design Agent profile setting as invalid (#227)", async () => {

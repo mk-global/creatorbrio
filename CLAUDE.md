@@ -25,6 +25,7 @@ Derived from the MIT-licensed Open Carrusel project and now independently mainta
 - `src/app/(app)/`, `src/components/app/`, `src/components/{home,library,create,brands,editor}/`: the Design C shell and screens (#175). `AppProvider` loads brands once; the brand for new work is a browser preference that never changes a project. `tests/app-design-c.test.ts` drives them in Chromium against the production build, and CI builds and runs it (`tests/global-setup.ts`)
 - `src/lib/data.ts` — JSON storage with proper async-mutex and atomic writes
 - `src/lib/carousels.ts` — Carousel and slide CRUD with version history
+- `src/lib/research/`, `src/types/research.ts`: topic research (#252): the Brave Search adapter, synthesis with the server's quote check, the run's lifecycle on the carousel, and the confirmed research handed to the Director and the Design Agent; `src/lib/structured-claude.ts` is the structured Claude launch it shares with the Visual Director. See `docs/architecture/research.md`
 - `src/lib/claude-path.ts` — Portable Claude CLI discovery
 - `src/types/production.ts`, `src/lib/video/production/` — Video Studio Production v2 document types and `admitProduction()`, the pure validator every production document must pass (WS1)
 - `src/lib/video/production/changes/` — the pure change-set engine for productions: strict typed operations, `applyChangeSet()` (revision check, atomic apply, admission, scope guards for agents) and in-memory history with undo/redo, labels and agent runs kept or discarded as one unit (WS1 #114)
@@ -55,7 +56,8 @@ design agent is told to call is derived per request by `resolveAppOrigin()` in
 - `GET/PUT /api/brands/[id]`: one brand's configuration
 - `GET /api/carousels?brandId=` and `GET /api/templates?brandId=` filter by brand; `POST /api/carousels` takes an optional `brandId`, fixed for the carousel's life
 - `GET/POST /api/templates`: templates; `POST /api/templates/[id]/use` takes an optional `{ name }` and keeps the template's brand and format
-- `GET /api/status`: whether Claude Code is found, image generation is set up, and which Design Agent profile runs (for `contained`, whether it can run here, its CLI version and any version warning), for Home and Settings; no paths, URLs or secrets
+- `GET /api/status`: whether Claude Code is found, image generation is set up, which Design Agent profile runs (for `contained`, whether it can run here, its CLI version and any version warning), and whether a web search key is set (`research.search.configured`), for Home and Settings; no paths, URLs or secrets
+- `GET/POST /api/carousels/[id]/research`, `POST .../research/cancel` and `POST .../research/confirm`: topic research (#252). `POST` takes `{ topic, links? }` and answers 202 with the running record (409 while one runs); `GET` returns `{ research }`, reporting a run a stopped server left behind as interrupted; `confirm` takes `{ revision, direction }` for the latest ready revision. Search uses `BRAVE_SEARCH_API_KEY` when set, synthesis the person's Claude sign-in. See `docs/architecture/research.md`
 - `POST /api/upload` — Upload (images PNG/JPG/WebP, fonts WOFF2/TTF; max 10MB, type checked by magic bytes)
 - `GET /api/fonts` — Google Fonts list
 - `GET /api/fonts/css?family=<name>[&italic=1]`: one family's `@font-face` CSS for a slide preview, the export's inlined CSS from `getInlinedFontCSS()` (#249); a name other than letters and digits in single-spaced words is refused with 400

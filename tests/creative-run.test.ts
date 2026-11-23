@@ -32,7 +32,7 @@ vi.mock("@/lib/claude-path", () => ({
 }));
 
 const { POST: chat } = await import("@/app/api/chat/route");
-const { addReferenceImage, addSlide, appendCarouselAssets, createCarousel, getCarousel, setCreativeBrief } = await import("@/lib/carousels");
+const { addReferenceImage, addSlide, appendCarouselAssets, createCarousel, getCarousel, setCreativeBrief, updateCarouselResearch } = await import("@/lib/carousels");
 const { isGenerating, getInterruption, readCreativeRuns, slideFingerprint } = await import("@/lib/generation-status");
 const { creativeRunDeps } = await import("@/lib/creative-run");
 const { setAssetFaultHookForTests, simulateRestartForTests } = await import("@/lib/assets");
@@ -311,6 +311,33 @@ describe("a creative run through the chat route", () => {
     expect((await readCreativeRuns())[carousel.id]).toMatchObject({ ended: { outcome: "completed" }, tasks: [] });
     expect(isGenerating(carousel.id)).toBe(false);
     expect(await getInterruption(carousel.id)).toBeNull();
+  });
+
+  it("designs from the confirmed research and records which revision it used (#252)", async () => {
+    const carousel = await newCarousel();
+    const source = { id: "S1", kind: "url" as const, url: "https://a.example/sleep", host: "a.example", title: "Sleep guide", retrievedAt: "",
+      blob: "", reliability: "unverified" as const, retrievedBy: "source-retrieval" as const, origin: "search" as const };
+    const findings = [
+      { id: "F1", text: "Morning light helps set the body clock.", check: "quoted" as const, evidence: [{ sourceId: "S1", quote: "Morning light exposure helps set the body clock" }], sensitive: false },
+      { id: "F2", text: "Cold showers double productivity.", check: "unchecked" as const, evidence: [], sensitive: false },
+    ];
+    const direction = { angle: "Small mornings, calmer nights.", audience: "Busy professionals", centralMessage: "Start early to sleep well.",
+      keyPoints: ["Get outside early"], callToAction: "" };
+    await updateCarouselResearch(carousel.id, () => ({
+      revision: 2, topic: "calmer evenings", links: [], state: "ready", searchProvider: "brave", startedAt: "",
+      confirmed: { revision: 2, confirmedAt: "", topic: "calmer evenings", direction, edited: false, sources: [source], findings },
+    }));
+    const { events } = await send({ carouselId: carousel.id, message: "Make 3 slides from the research" });
+
+    expect(stages(events)).toEqual(["planning", "designing"]);
+    expect(director.requests[0].carousel.research?.confirmed?.revision).toBe(2);
+    const task = await taskMessage();
+    expect(task).toContain("Confirmed research (revision 2)");
+    expect(task).toContain("- Angle: Small mornings, calmer nights.");
+    expect(task).toContain("F1: Morning light helps set the body clock.");
+    expect(task).not.toContain("Cold showers");
+    expect((await readCreativeRuns())[carousel.id]).toMatchObject({ ended: { outcome: "completed" }, researchRevision: 2 });
+    expect((await getCarousel(carousel.id))?.research?.lastDesign).toMatchObject({ revision: 2 });
   });
 
   it("makes a one-slide reel cover with one generated photograph and places it", async () => {
@@ -1058,6 +1085,59 @@ describe("retry", () => {
     const retry = await send({ carouselId: carousel.id, message: "Retry", retryRunId: stale });
     expect(of(retry.events, "blocked")[0]).toMatchObject({ code: "retry_refused", retryRunId: null });
     expect(imageCalls).toEqual([]);
+  });
+
+  describe("and the research the person confirmed (#252)", () => {
+    const FIRST = "2026-11-23T10:00:00.000Z";
+    const LATER = "2026-11-23T11:00:00.000Z";
+    /** Stores a confirmed research snapshot as the confirm route would. */
+    async function confirmResearch(carouselId: string, revision: number, confirmedAt: string) {
+      const direction = { angle: `Angle of revision ${revision}.`, audience: "Busy professionals", centralMessage: "Start early to sleep well.", keyPoints: ["Get outside early"], callToAction: "" };
+      await updateCarouselResearch(carouselId, () => ({
+        revision, topic: "calmer evenings", links: [], state: "ready", searchProvider: null, startedAt: "",
+        confirmed: { revision, confirmedAt, topic: "calmer evenings", direction, edited: false, sources: [], findings: [] },
+      }));
+    }
+    /** A run that plans from `before` (or from no research), makes one image and fails on the second, so it ends blocked with a retry. */
+    async function blockedRun(before: { revision: number; at: string } | null) {
+      director.restore();
+      director = stubDirector((r) => imagePlan(r, [1, 2]));
+      imageScript = async (call) => (call === 2 ? new ImageGenerationError(502, "image_generation_failed", "The image service did not return a usable image.") : "ok");
+      const carousel = await newCarousel();
+      if (before) await confirmResearch(carousel.id, before.revision, before.at);
+      const first = await send({ carouselId: carousel.id, message: "Make 2 slides with photos" });
+      const blocked = of(first.events, "blocked")[0];
+      expect(blocked).toMatchObject({ code: "image_failed", retryRunId: expect.any(String) });
+      imageCalls = [];
+      imageScript = null;
+      return { carousel, retryRunId: blocked.retryRunId };
+    }
+
+    it.each([
+      ["another revision", { revision: 2, at: FIRST }, { revision: 3, at: LATER }],
+      ["research confirmed after the plan was made without any", null, { revision: 1, at: LATER }],
+      ["the same revision, confirmed again", { revision: 2, at: FIRST }, { revision: 2, at: LATER }],
+    ])("refuses a retry after %s was confirmed, and starts no design", async (_name, before, after) => {
+      const { carousel, retryRunId } = await blockedRun(before);
+      expect((await readCreativeRuns())[carousel.id].retry).toMatchObject({ research: before ? { revision: before.revision, confirmedAt: before.at } : null });
+      await confirmResearch(carousel.id, after.revision, after.at);
+
+      const retry = await send({ carouselId: carousel.id, message: "Retry", retryRunId });
+      expect(of(retry.events, "blocked")[0]).toMatchObject({ code: "retry_refused", message: expect.stringMatching(/can no longer be retried/), retryRunId: null });
+      expect(imageCalls).toEqual([]);
+      expect(await designSpawned()).toBe(false);
+      expect((await readCreativeRuns())[carousel.id]).toMatchObject({ ended: { outcome: "blocked", reason: "retry_refused" }, retry: null });
+      expect(isGenerating(carousel.id)).toBe(false);
+    });
+
+    it("still retries when the confirmed research is the one the plan was made from, and records that revision", async () => {
+      const { carousel, retryRunId } = await blockedRun({ revision: 2, at: FIRST });
+      const retry = await send({ carouselId: carousel.id, message: "Retry", retryRunId });
+      expect(of(retry.events, "blocked")).toEqual([]);
+      expect(imageCalls).toHaveLength(1);
+      expect(await taskMessage()).toContain("Confirmed research (revision 2)");
+      expect((await readCreativeRuns())[carousel.id]).toMatchObject({ ended: { outcome: "completed" }, researchRevision: 2 });
+    });
   });
 
   it("refuses a retry past its 24-hour window", async () => {

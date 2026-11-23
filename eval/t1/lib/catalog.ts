@@ -372,6 +372,7 @@ export const APP_ROUTE_WORDS = [
   "api", "brand", "brands", "carousels", "caption", "duplicate", "export", "generation", "references", "slides", "undo", "chat", "check", "fonts", "css", "staged-actions", "status", "style-presets",
   "templates", "use", "upload", "video", "media", "files", "proxy", "productions", "changes", "labels", "restore", "preview", "recover", "redo", "renders", "cancel", "retry", "runs", "decision",
   "session", "uploads", "default", "carousel", "studio", "projects", "settings", "create", "home", "library", "editor", "new",
+  "research", "confirm",
 ];
 
 export const APPROVAL_ROUTES: { method: string; path: RegExp }[] = [

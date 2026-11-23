@@ -11,7 +11,8 @@ import { extractPlainText, extractText } from "./source-text";
 
 /**
  * Bounded retrieval of the pages a user linked to, as planning material for
- * the Visual Director. It is a library only: no route exposes it.
+ * the Visual Director, and of the pages topic research reads (#252). It is
+ * a library only: no route exposes it.
  *
  * Every hop is validated as a new URL (http or https, default port, no
  * credentials), its host is resolved once and every address must be public
@@ -292,12 +293,22 @@ export async function retrieveSources(message: string, options: RetrievalOptions
     console.info("[sources] refused", { outcome: "too_many_sources", count: links.length });
     return { status: "too_many_sources", count: links.length };
   }
+  return { status: "retrieved", sources: await retrieveLinks(links, options) };
+}
+
+/**
+ * Retrieves a list of links in parallel under one stage limit, every one
+ * through the same hop validation and bounds, and reports each outcome in
+ * order; one unreadable page never stops the others. The caller bounds how
+ * many links it passes. Logged like `retrieveSources`.
+ */
+export async function retrieveLinks(links: readonly string[], options: RetrievalOptions = {}): Promise<SourceOutcome[]> {
   const limits = { ...DEFAULT_LIMITS, ...options.limits };
   const resolve = options.resolve ?? defaultResolve;
   const dial = options.dial ?? defaultDial;
   const stage = AbortSignal.timeout(limits.stageMs);
 
-  const sources = await Promise.all(
+  return Promise.all(
     links.map(async (link) => {
       const started = Date.now();
       const { redirects, bytes, ...outcome } = await retrieveOne(link, resolve, dial, limits, stage);
@@ -312,5 +323,4 @@ export async function retrieveSources(message: string, options: RetrievalOptions
       return outcome;
     })
   );
-  return { status: "retrieved", sources };
 }
