@@ -154,7 +154,9 @@ describe.skipIf(SKIP)("research in a browser", () => {
     await until(page, "Research didn't finish");
     const body = await text(page);
     expect(body).toContain("Research stopped because CreatorBrio was restarted.");
-    expect(body).toContain("The direction you confirmed earlier is kept.");
+    // The direction the slides were built from stays in view.
+    expect(body).toContain(`Direction in use, confirmed`);
+    expect(body).toContain(DIRECTION.angle);
     expect(await page.$$eval("button", (bs) => bs.map((b) => b.textContent?.trim()))).toContain("Try again");
     expect(await stored(created.body.id)).toMatchObject({ state: "failed", failure: { code: "interrupted" }, confirmed: { revision: 1 } });
     await page.close();

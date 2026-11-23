@@ -226,6 +226,8 @@ describe("action hierarchy", () => {
           "src/components/brands/BrandEditor.tsx": 1,
           // "Create and open editor" on the summary bar.
           "src/components/create/CreateFlow.tsx": 1,
+          // "Confirm and create design" on the research screen's summary bar, which starts the design (#253).
+          "src/components/research/DirectionForm.tsx": 1,
           // The Studio's "Create" for a new production.
           "src/components/studio/ProductionPickerCreate.tsx": 1,
         }).map(([f, n]) => [path.normalize(f), n]),
