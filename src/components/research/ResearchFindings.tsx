@@ -149,7 +149,10 @@ export function ResearchFindings({ result }: { result: ResearchResult }) {
             {result.unreadable.map((u, i) => (
               <span key={i}>
                 {i > 0 && "; "}
-                {u.host || "a link"} ({u.origin === "link" ? "your link" : "search result"}, {UNREADABLE[u.reason] ?? "it could not be read"})
+                {/* The host of a search result is not kept (Brave's terms), only that one could not be read. */}
+                {u.origin === "link" && u.host
+                  ? `${u.host} (your link, ${UNREADABLE[u.reason] ?? "it could not be read"})`
+                  : `a search result (${UNREADABLE[u.reason] ?? "it could not be read"})`}
               </span>
             ))}
             .

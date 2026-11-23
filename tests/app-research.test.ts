@@ -59,7 +59,7 @@ function readyResearch(revision: number): CarouselResearch {
       ],
       gaps: ["No source says how much light is enough."],
       direction: DIRECTION,
-      unreadable: [{ host: "gone.example", origin: "search", reason: "http_status" }],
+      unreadable: [{ host: "", origin: "search", reason: "http_status" }],
     },
     usage: { costUsd: 0.05, durationMs: 90_000, searchRequests: 1, pagesRead: 2 },
   };
@@ -175,7 +175,7 @@ describe.skipIf(SKIP)("research in a browser", () => {
     expect(body).toContain("Health, money, law or safety");
     expect(body).toMatch(/Not checked[\s\S]*Cold showers double productivity\./);
     expect(body).toContain("No source says how much light is enough.");
-    expect(body).toContain("gone.example (search result, the site answered with an error)");
+    expect(body).toContain("a search result (the site answered with an error)");
     // Every source link leaves the app in a new tab, without a referrer path back.
     const links = await page.$$eval('a[href^="https://"]', (as) => as.map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]));
     expect(links).toContainEqual(["https://sleep.example/article", "_blank", "noopener noreferrer"]);
