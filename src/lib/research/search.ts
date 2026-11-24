@@ -32,13 +32,18 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /**
  * What one search returned. `costUsd` is the model's estimated cost of a
- * Claude web search, as the CLI reports it; Brave reports none. A search
- * stopped at the run's spending cap fails as `budget_exceeded`, which ends the
- * run rather than falling through to the next method.
+ * Claude web search, as the CLI reports it; Brave reports none. `costUnknown`
+ * is set only for a Claude web search that was launched but whose cost could
+ * not be read, such as one that timed out: it may have spent up to its
+ * allowance, which is not the same as having spent nothing, and a run under a
+ * spending cap must assume it did. A search that could not be started spent
+ * nothing. A search stopped at the run's spending cap fails as
+ * `budget_exceeded`, which ends the run rather than falling through to the
+ * next method.
  */
 export type SearchOutcome =
-  | { ok: true; urls: string[]; costUsd?: number | null }
-  | { ok: false; code: SearchFailureCode | "budget_exceeded"; costUsd?: number | null };
+  | { ok: true; urls: string[]; costUsd?: number | null; costUnknown?: boolean }
+  | { ok: false; code: SearchFailureCode | "budget_exceeded"; costUsd?: number | null; costUnknown?: boolean };
 
 export interface SearchOptions {
   /** What this search may spend, in US dollars, or null for no cap. Only a Claude web search spends. */

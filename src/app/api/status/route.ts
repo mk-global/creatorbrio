@@ -22,21 +22,23 @@ import { braveKeyConfigured } from "@/lib/research/search";
  *
  * `research.search` says whether a Brave Search key is set (#252), never the
  * key or anything derived from it, and which web search research tries first
- * (#256): "brave", "claude" (Claude's own web search, the default whenever
- * Claude Code is found) or null. Whether Claude's web search works on the
- * person's connection is only known when research tries it, so it is not
- * claimed here.
+ * (#256): "brave" or "claude" (Claude's own web search, the default). It is
+ * null whenever Claude Code is not found, key or no key, because a research
+ * run needs Claude Code for its synthesis and cannot start without it. Whether
+ * Claude's web search works on the person's connection is only known when
+ * research tries it, so it is not claimed here.
  */
 export async function GET() {
   const capabilities = await capabilityStatus({ referenceCount: 0, intactAssetCount: 0 });
+  const claudeAvailable = isClaudeAvailable();
   return NextResponse.json({
-    claude: { available: isClaudeAvailable() },
+    claude: { available: claudeAvailable },
     imageGeneration: { configured: isAvailable(capabilities, "image-generation") },
     designAgent: await designAgentStatus(),
     research: {
       search: {
         configured: braveKeyConfigured(),
-        provider: configuredSearchProviders({ claudeAvailable: isClaudeAvailable() })[0]?.name ?? null,
+        provider: claudeAvailable ? (configuredSearchProviders({ claudeAvailable })[0]?.name ?? null) : null,
       },
     },
   });

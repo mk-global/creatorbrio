@@ -5,13 +5,21 @@ import { useState } from "react";
 import type { WebSearchMethod } from "@/types/research";
 import type { StartRefusal } from "./useResearch";
 
-/** How research will search the web here (#256): a method, "none" when it cannot, or null while unknown. */
-export type SearchAvailability = WebSearchMethod | "none" | null;
+/**
+ * How research will search the web here (#256): the method it tries first,
+ * "unavailable" when Claude Code is not found (research cannot run without
+ * it), or null while that is not known.
+ */
+export type SearchAvailability = WebSearchMethod | "unavailable" | null;
 
 /** The search the app status reports, as the research forms use it. */
-export function searchAvailability(status: { research?: { search: { provider?: WebSearchMethod | null } } } | null): SearchAvailability {
+export function searchAvailability(
+  status: { claude: { available: boolean }; research?: { search: { provider?: WebSearchMethod | null } } } | null
+): SearchAvailability {
   if (!status) return null;
-  return status.research?.search.provider ?? "none";
+  // Synthesis needs Claude Code whatever search is set up, so without it no run can start.
+  if (!status.claude.available) return "unavailable";
+  return status.research?.search.provider ?? null;
 }
 
 export const MAX_LINKS = 3;
@@ -47,12 +55,32 @@ export function linksFrom(text: string): string[] {
     .filter(Boolean);
 }
 
+/** What the links box tells the person about how research will search. */
+function SearchHint({ search }: { search: SearchAvailability }) {
+  if (search === "unavailable") {
+    return (
+      <>
+        Research needs Claude Code, and CreatorBrio couldn&apos;t find it.
+        <SettingsLink code="claude_unavailable" />
+      </>
+    );
+  }
+  return (
+    <>
+      {search === "brave"
+        ? "Pages you trust are read first. CreatorBrio also searches the web with Brave Search, and with Claude's web search if Brave refuses the key, limits requests or can't be reached."
+        : "Pages you trust are read first. CreatorBrio also searches the web with Claude's web search, through your Claude Code sign-in."}
+    </>
+  );
+}
+
 /**
  * What to research (#253): a topic and up to three links of the person's own.
  * Research searches the web with Claude's own web search, or Brave Search
- * when it is set up (#256), so links are optional; only when no web search is
- * possible here are they required, and the form says so before anything is
- * sent.
+ * when it is set up (#256), so links are never required here. Without Claude
+ * Code the form says research needs it and links to Settings, and still lets
+ * a start through, so the server's own refusal, which links there too, is
+ * reachable.
  */
 export function ResearchFields({
   topic,
@@ -89,7 +117,7 @@ export function ResearchFields({
       <div>
         <label htmlFor={`${idPrefix}-links`} className="mb-1.5 block text-[14px] font-semibold">
           Your links{" "}
-          <span className="font-normal text-graphite">{search === "none" ? `Required, up to ${MAX_LINKS}` : `Optional, up to ${MAX_LINKS}`}</span>
+          <span className="font-normal text-graphite">{`Optional, up to ${MAX_LINKS}`}</span>
         </label>
         <textarea
           id={`${idPrefix}-links`}
@@ -102,27 +130,23 @@ export function ResearchFields({
           aria-invalid={count > MAX_LINKS || undefined}
         />
         <p id={`${idPrefix}-links-hint`} className={`mt-1.5 text-[13px] ${count > MAX_LINKS ? "text-alert" : "text-graphite"}`}>
-          {count > MAX_LINKS
-            ? `That is ${count} links; research reads at most ${MAX_LINKS} of yours.`
-            : search === "none"
-              ? "Research can't search the web here, so it reads only the pages you link. Public pages that show their text without a sign-in work best."
-              : search === "brave"
-                ? "Pages you trust are read first. CreatorBrio also searches the web with Brave Search, and with Claude's web search if Brave doesn't answer."
-                : "Pages you trust are read first. CreatorBrio also searches the web with Claude's web search, through your Claude Code sign-in."}
+          {count > MAX_LINKS ? `That is ${count} links; research reads at most ${MAX_LINKS} of yours.` : <SearchHint search={search} />}
         </p>
       </div>
     </div>
   );
 }
 
-/** Whether the fields can start research, and why not. A topic the server would refuse for its length stops here, so New project never creates a project for it. */
-export function researchReady(topic: string, links: string, search: SearchAvailability): { ok: boolean; reason: string | null } {
+/**
+ * Whether the fields can start research, and why not. A topic the server would refuse for its length stops here, so New
+ * project never creates a project for it. Links are never required: the server refuses a start it cannot run, and says why.
+ */
+export function researchReady(topic: string, links: string): { ok: boolean; reason: string | null } {
   const length = topic.trim().length;
   if (length < 3) return { ok: false, reason: null };
   if (length > MAX_TOPIC) return { ok: false, reason: `The topic can be at most ${MAX_TOPIC} characters; this one is ${length}. Shorten it to research it.` };
   const count = linksFrom(links).length;
   if (count > MAX_LINKS) return { ok: false, reason: null };
-  if (search === "none" && count === 0) return { ok: false, reason: "Add at least one link: research can't search the web here." };
   return { ok: true, reason: null };
 }
 
@@ -147,7 +171,7 @@ export function ResearchStart({
   const [topic, setTopic] = useState(initialTopic);
   const [links, setLinks] = useState(initialLinks.join("\n"));
   const [busy, setBusy] = useState(false);
-  const ready = researchReady(topic, links, search);
+  const ready = researchReady(topic, links);
   return (
     <form
       className="mt-8"

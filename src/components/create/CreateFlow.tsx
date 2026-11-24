@@ -83,7 +83,7 @@ export function CreateFlow({
   const template = available.find((t) => t.id === templateId);
   const chosenSize: AspectRatio = source === "template" && template ? template.aspectRatio : def.sizes.includes(size) ? size : def.defaultSize;
   const derivedName = source === "template" && template ? template.name : nameFrom(about, format);
-  const research = researchReady(about, links, search);
+  const research = researchReady(about, links);
   const blocked = (source === "template" && !template) || (source === "research" && !research.ok);
 
   const pickFormat = (id: ProjectFormat) => {

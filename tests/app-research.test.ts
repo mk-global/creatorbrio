@@ -198,6 +198,46 @@ describe.skipIf(SKIP)("research in a browser", () => {
     await page.close();
   }, 60_000);
 
+  it("tells a person without Claude Code that research needs it, links to Settings, and still lets them start", async () => {
+    const page = await openPage();
+    await page.setRequestInterception(true);
+    page.on("request", (r) => {
+      if (r.isInterceptResolutionHandled()) return;
+      // The test server's Claude is a stub that is always found, so what the app says without it is staged here: the
+      // status the server answers when Claude Code cannot be found.
+      if (r.method() === "GET" && new URL(r.url()).pathname === "/api/status") {
+        const body = { claude: { available: false }, imageGeneration: { configured: false }, research: { search: { configured: false, provider: null } } };
+        void r.respond({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+      } else void r.continue().catch(() => undefined);
+    });
+    await page.goto(`${app.url}/create`, { waitUntil: "networkidle0" });
+    await page.evaluate(() => [...document.querySelectorAll("label")].find((l) => l.textContent?.includes("Research a topic"))!.click());
+    await until(page, "Research needs Claude Code");
+    const body = await text(page);
+    // Links are never required: the person is told what research needs, and where to fix it.
+    expect(body).toContain("Optional, up to 3");
+    expect(body).not.toContain("Required, up to");
+    expect(body).not.toContain("Add at least one link");
+    expect(await page.$$eval("#create-research-links-hint a", (as) => as.map((a) => a.getAttribute("href")))).toEqual(["/settings#claude"]);
+    // A topic alone still starts: the server's own refusal, which links to Settings too, is what the person then gets.
+    await page.type("#create-research-topic", "calmer evenings");
+    expect(await page.$eval("button[type=submit].btn-create", (b) => (b as HTMLButtonElement).disabled)).toBe(false);
+    await page.close();
+  }, 60_000);
+
+  it("shows web search for research as ready without a Brave key, with Brave offered as optional", async () => {
+    const page = await openPage();
+    await page.goto(`${app.url}/settings`, { waitUntil: "networkidle0" });
+    // The tag says "Checking" until the status answers.
+    await page.waitForFunction(() => !!document.querySelector("#research") && !document.querySelector("#research")!.textContent!.includes("Checking"), { timeout: 15_000 });
+    // textContent, so what is tested is the words, not how the page styles their case.
+    const row = await page.$eval("#research", (el) => el.textContent ?? "");
+    expect(row).toContain("Claude web search");
+    expect(row).toContain("Brave Search, optional");
+    expect(row).not.toContain("Not set up");
+    await page.close();
+  }, 60_000);
+
   it("reports research a stopped server left behind, and keeps an earlier confirmed direction", async () => {
     const created = await api<{ id: string }>(`/api/carousels`, { method: "POST", body: JSON.stringify({ name: "Interrupted", aspectRatio: "4:5" }) });
     const ready = readyResearch(1);
@@ -503,6 +543,28 @@ describe.skipIf(SKIP)("research in a browser", () => {
     expect(await point()).toBe(before);
     expect((await stored(id))?.confirmed).toBeUndefined();
     expect(chatBodies).toHaveLength(chatBefore);
+    await page.close();
+  }, 60_000);
+
+  it("names the person's links as found only when one of them was read", async () => {
+    const id = await project("Links not read");
+    const ready = readyResearch(1);
+    // The person gave a link, but only a page the search found could be read.
+    await seed(id, {
+      ...ready,
+      result: {
+        ...ready.result!,
+        sources: ready.result!.sources.filter((source) => source.origin === "search"),
+        unreadable: [{ host: "notes.example", origin: "link", reason: "http_status" }],
+        searchFailure: undefined,
+      },
+    });
+    const page = await openPage();
+    await page.goto(`${app.url}/carousel/${id}/research`, { waitUntil: "networkidle0" });
+    await until(page, "Findings quoted in a source");
+    const body = await text(page);
+    expect(body).toContain("1 page read, found with Claude's web search");
+    expect(body).not.toContain("and your links");
     await page.close();
   }, 60_000);
 

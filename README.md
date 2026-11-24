@@ -149,8 +149,8 @@ If setup cannot find the Claude CLI, set `CLAUDE_CLI_PATH` in `.env.local` to th
 
 To start from a topic instead, choose **Research a topic** under "Start from" in New project, or press **Research it** beside the idea field on Home.
 Give the topic and, if you like, up to three links to pages you trust.
-CreatorBrio searches the web for the topic with Claude's web search, through your Claude Code sign-in, so there is nothing else to set up.
-A Brave Search key of your own is optional (see Settings): with one, Brave does the searching, and Claude's web search stands in if Brave doesn't answer.
+CreatorBrio searches the web for the topic with Claude's web search, through your Claude Code sign-in, so no other account or key is needed.
+A Brave Search key of your own is optional (see Settings): with one, Brave does the searching, and Claude's web search stands in if Brave refuses the key, limits requests or can't be reached.
 CreatorBrio reads the pages and shows what they say: findings found in a page show their quote and source, and the rest are marked not checked and left out of the design.
 Review the findings and the sources, and edit the suggested direction if you want to.
 Then press **Confirm and create design**: that confirmation is your request, so the editor opens and the design starts, and nothing is designed before it.
@@ -176,7 +176,7 @@ How the page works is described in [docs/architecture/video-studio-page.md](docs
   The design agent runs under your Claude Code configuration, so your own Claude Code settings and instructions, and this repository's `CLAUDE.md`, also apply to it ([#156](https://github.com/mk-global/creatorbrio/issues/156)).
   The planning step is isolated from them.
 - **Research.** Links you paste are fetched to read their text, and the design agent may fetch web pages while it researches a topic.
-  Topic research sends the topic to Anthropic through Claude Code for Claude's web search, or to Brave Search when you have set `BRAVE_SEARCH_API_KEY`, reads the resulting pages and your links itself, and sends their text to Anthropic through Claude Code to find what they say ([docs/architecture/research.md](docs/architecture/research.md)).
+  Topic research sends the topic to Anthropic through Claude Code for Claude's web search, or to Brave Search when you have set `BRAVE_SEARCH_API_KEY` (and to Anthropic as well when Brave refuses the key, limits requests or can't be reached), reads the resulting pages and your links itself, and sends their text to Anthropic through Claude Code to find what they say ([docs/architecture/research.md](docs/architecture/research.md)).
 - **Fonts.** CreatorBrio's server fetches the typefaces the preview and the export use from Google Fonts; the preview loads them from the server, never from Google itself.
   The brand font picker still loads the typefaces it shows from Google Fonts, in the app's own page.
 - **Generated images** go only to the image service on this machine; any other address is refused.

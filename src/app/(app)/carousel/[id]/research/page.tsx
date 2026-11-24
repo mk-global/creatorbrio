@@ -236,7 +236,7 @@ function ReadyView({
           <p className="font-semibold break-words">{research.topic}</p>
           <p className="mt-0.5 text-[13px] text-graphite">
             {result.sources.length} {result.sources.length === 1 ? "page" : "pages"} read
-            {result.searchMethod && <>, found with {SEARCH_METHOD[result.searchMethod] ?? "web search"}{research.links.length > 0 && " and your links"}</>}
+            {result.searchMethod && <>, found with {SEARCH_METHOD[result.searchMethod] ?? "web search"}{result.sources.some((source) => source.origin === "link") && " and your links"}</>}
             {research.finishedAt && <>, {when(research.finishedAt)}</>}
             {designed && <>. Designed from this direction {when(designed.at)}</>}
             {!designed && confirmedHere && <>. Direction confirmed {when(confirmedHere.confirmedAt)}</>}

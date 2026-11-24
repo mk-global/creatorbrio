@@ -13,8 +13,8 @@ export interface AppStatus {
   designAgent?: DesignAgentStatus;
   /**
    * Topic research: whether a Brave Search key is set (#252), and which web
-   * search research tries first (#256): Brave, Claude's own web search, or
-   * none. Research from the person's links needs neither.
+   * search research tries first (#256): Brave or Claude's own web search, or
+   * null when Claude Code is not found, because research cannot run without it.
    */
   research?: { search: { configured: boolean; provider?: "brave" | "claude" | null } };
 }

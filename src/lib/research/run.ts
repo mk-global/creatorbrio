@@ -88,7 +88,7 @@ export const RESEARCH_FAILURE_MESSAGES: Record<ResearchFailureCode, string> = {
   synthesis_failed: "Claude could not turn the pages into findings this time. Try again; your slides and any direction you confirmed are unchanged.",
   synthesis_timed_out: "Reading the pages took longer than the 3-minute limit. Try again, or use fewer or shorter links.",
   budget_exceeded:
-    "Research stopped at the spending limit set in RESEARCH_MAX_BUDGET_USD. Raise the limit or use fewer links, then try again.",
+    "Research stopped at the spending limit set in RESEARCH_MAX_BUDGET_USD, which covers the web search and reading the pages together. Raise the limit, then try again.",
   budget_setting_invalid:
     "RESEARCH_MAX_BUDGET_USD in .env.local is not a valid amount. Set a positive number such as 0.50, or remove it, then restart CreatorBrio.",
   cancelled: "You stopped the research. Your slides and any direction you confirmed are unchanged.",
@@ -434,12 +434,18 @@ async function execute(
   const started = Date.now();
   const usage = { costUsd: null as number | null, durationMs: 0, searchRequests: 0, pagesRead: 0 };
   const finish = () => ({ ...usage, durationMs: Date.now() - started });
+  // Every web search failure the run went past, in order: the stored result keeps the first, the log keeps them all.
+  const searchFailures: SearchFailureCode[] = [];
   let outcome: ResearchFailureCode | "ready" = "research_failed";
   try {
     // The operator's cap covers the whole run: what web search spends is taken from what synthesis may spend.
     const cap = parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]);
-    const capUsd = cap.ok ? cap.usd : null;
-    const remaining = () => (capUsd === null ? null : Math.max(0, capUsd - (usage.costUsd ?? 0)));
+    // The start checked it, so this is a setting changed since. It is never read as "no cap": that would spend past what was asked.
+    if (!cap.ok) throw new Failure("budget_setting_invalid");
+    const capUsd = cap.usd;
+    // A search that was launched but whose cost could not be read may have spent its whole allowance, so under a cap nothing is left.
+    let spendUnknown = false;
+    const remaining = () => (capUsd === null ? null : spendUnknown ? 0 : Math.max(0, capUsd - (usage.costUsd ?? 0)));
     const spend = (costUsd: number | null | undefined) => {
       if (typeof costUsd === "number") usage.costUsd = (usage.costUsd ?? 0) + costUsd;
     };
@@ -447,11 +453,11 @@ async function execute(
     // Each web search in turn (#256): the next one only when a search fails, never when it finds nothing.
     let searchUrls: string[] = [];
     let searchMethod: WebSearchMethod | undefined;
-    let searchFailure: SearchFailureCode | undefined;
     for (const provider of providers) {
       usage.searchRequests++;
       const found = await provider.search(searchQuery(input.topic), signal, { budgetUsd: remaining() });
       spend(found.costUsd);
+      if (found.costUnknown) spendUnknown = true;
       if (signal.aborted) throw new Failure("cancelled");
       if (found.ok) {
         searchMethod = provider.name;
@@ -460,8 +466,13 @@ async function execute(
       }
       // A search stopped at the spending cap ends the run: the next search or synthesis would meet the same cap.
       if (found.code === "budget_exceeded") throw new Failure("budget_exceeded");
-      searchFailure ??= found.code;
+      searchFailures.push(found.code);
     }
+    const searchFailure = searchFailures[0];
+    // Under a cap, a search that was launched and failed without its cost being readable may have spent all of it, so nothing can
+    // safely be spent on synthesis, and no limit the person could raise would change that. The run ends here, before any page is
+    // read, with the search's own failure: it is the accurate reason, and the one they can act on.
+    if (capUsd !== null && spendUnknown && !searchMethod) throw new Failure(searchFailure ?? "web_search_unavailable");
     if (providers.length > 0) {
       // The person's own links are worth reading even when every search fails; without them there is nothing to read.
       if (!searchMethod && input.links.length === 0) throw new Failure(searchFailure ?? "no_results");
@@ -536,7 +547,7 @@ async function execute(
       ...finish(),
       unreadable: unreadable.length,
       searchMethod: foundBy ?? null,
-      searchFailure: searchFailure ?? null,
+      searchFailures,
       findings: synthesis.output.findings.length,
       quoted: synthesis.output.findings.filter((f) => f.check === "quoted").length,
     });
@@ -548,7 +559,7 @@ async function execute(
     });
     // Expected outcomes are not system errors; an unexpected exception is. A research_failed that came from a synthesis
     // result is a Failure of ours here: synthesis already logged its real cause at error, so this line is information.
-    const fields = { carouselId, revision, outcome: code, ...finish() };
+    const fields = { carouselId, revision, outcome: code, ...finish(), searchFailures };
     if (code === "research_failed" && !(err instanceof Failure)) {
       console.error("[research] finished", { ...fields, err: err instanceof Error ? err.name : "unknown" });
     } else console.info("[research] finished", fields);

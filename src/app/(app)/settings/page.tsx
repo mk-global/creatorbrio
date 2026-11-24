@@ -124,18 +124,18 @@ export default function SettingsPage() {
             ) : status.research?.search.provider === "claude" ? (
               <span className="tag tag-ok">Claude web search</span>
             ) : (
-              <span className="tag tag-neutral">Your links only</span>
+              <span className="tag tag-neutral">Needs Claude Code</span>
             )
           }
         >
           <p>
-            Research searches the web for your topic with Claude&apos;s web search, through your Claude Code sign-in, so there is nothing else to set up. It then
+            Research searches the web for your topic with Claude&apos;s web search, through your Claude Code sign-in, so no other account or key is needed. It then
             reads the pages itself, together with any links you give it. Claude&apos;s web search isn&apos;t offered on every Claude Code connection (Amazon Bedrock
             doesn&apos;t have it, for example); when it isn&apos;t available, research says so and you can add links or use Brave Search.
           </p>
           <p>
-            <strong>Brave Search, optional.</strong> With a Brave Search API key of your own, Brave does the searching and Claude reads what the pages say. Brave adds
-            an independent search index, works where Claude&apos;s web search isn&apos;t available, and searching counts against your Brave allowance instead of your
+            <strong>Brave Search, optional.</strong> With a Brave Search API key of your own, Brave does the searching and Claude reads what the pages say. Brave is a
+            separate search service: it works where Claude&apos;s web search isn&apos;t available, and its searches count against your Brave allowance instead of your
             Claude usage. If Brave refuses the key, limits requests or can&apos;t be reached, research uses Claude&apos;s web search instead.
           </p>
           {status && !status.research?.search.configured && (
@@ -195,8 +195,9 @@ export default function SettingsPage() {
           <p>When you design by chat, your message, your brand and the project go to Claude through Claude Code. Links you paste are fetched while designing.</p>
           <p>
             When you research a topic, CreatorBrio fetches the pages itself: your links and the pages a web search finds. To search, the topic goes to Claude through
-            Claude Code for Claude&apos;s web search, or to Brave Search when it is set up (and to Claude too if Brave doesn&apos;t answer). The topic, the
-            project&apos;s format, your brand&apos;s name and style words, and each page&apos;s address, title and text go to Claude through Claude Code.
+            Claude Code for Claude&apos;s web search, or to Brave Search when it is set up (and to Claude as well when Brave refuses the key, limits requests or can&apos;t be
+            reached). The topic, the project&apos;s format, your brand&apos;s name and style words, and each page&apos;s address, title and text go to Claude through
+            Claude Code.
           </p>
           <p>
             What is kept on this computer is the topic, your links, the findings with the short quotes they cite, what the pages don&apos;t establish and the

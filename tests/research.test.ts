@@ -88,6 +88,10 @@ let infoLog: string[];
 let logCalls: { level: "info" | "warn" | "error"; line: string }[];
 const loggedAt = (level: "info" | "warn" | "error") => logCalls.filter((c) => c.level === level).map((c) => c.line);
 const fieldsOf = (line: string) => JSON.parse(line)[1] as Record<string, unknown>;
+/** The fields of the run's own `[research] finished` line (never the synthesis's). */
+const finishedLog = () => fieldsOf(loggedAt("info").find((l) => l.includes('"[research] finished"'))!);
+/** The fields of Claude's web search's `[research] search` line, which level it was logged at. */
+const claudeSearchLog = (level: "info" | "warn" | "error") => fieldsOf(loggedAt(level).find((l) => l.includes('"provider":"claude"'))!);
 
 beforeEach(async () => {
   originalCwd = process.cwd();
@@ -217,18 +221,6 @@ describe("choosing the web search (#256)", () => {
   });
 });
 
-describe("choosing the web search (#256)", () => {
-  const names = (env: Record<string, string>, claudeAvailable: boolean) =>
-    providers.configuredSearchProviders({ env, claudeAvailable }).map((p) => p.name);
-
-  it("uses Claude's web search with no Brave key, Brave first with one, and nothing when neither is possible", () => {
-    expect(names({}, true)).toEqual(["claude"]);
-    expect(names({ [search.SEARCH_KEY_ENV]: KEY }, true)).toEqual(["brave", "claude"]);
-    expect(names({ [search.SEARCH_KEY_ENV]: KEY }, false)).toEqual(["brave"]);
-    expect(names({}, false)).toEqual([]);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // The quote check.
 
@@ -322,6 +314,7 @@ process.stdin.on("end", () => {
   else if (scenario === "no-search") result({ structured_output: output, modelUsage: { "model-a": { webSearchRequests: 0, costUSD: 0.04 } } });
   else if (scenario === "searched") result({ structured_output: output, modelUsage: { "model-a": { webSearchRequests: 2 }, "model-b": { webSearchRequests: 1 } } });
   else if (scenario === "denied") result({ structured_output: output, permission_denials: [{ tool_name: "WebSearch", tool_use_id: "t1", tool_input: {} }] });
+  else if (scenario === "hang") setInterval(() => {}, 1000);
   else if (scenario === "error") {
     result({ subtype: "error_during_execution", is_error: true });
     process.exitCode = 1;
@@ -524,6 +517,7 @@ describe("Claude's web search", () => {
     expect(logged).toContain('"provider":"claude"');
     expect(logged).not.toContain(TOPIC);
     expect(logged).not.toContain("a.example");
+    expect(claudeSearchLog("info")).toMatchObject({ outcome: "results", reason: "results" });
   });
 
   it("accepts a call whose reported web search count is above zero, or not reported in the documented shape", async () => {
@@ -537,30 +531,72 @@ describe("Claude's web search", () => {
     expect(webSearch.reportedWebSearches({ a: { webSearchRequests: 0 }, b: { webSearchRequests: 0 } })).toBe(0);
   });
 
+  it("accepts the addresses of a call the CLI counted no web search for, and only logs the count", async () => {
+    // Not every search path of the installed CLI records the count, so a zero is not proof that nothing was searched;
+    // the pages are still read, and every quote checked, by the server.
+    expect(await searchWith("no-search", { searched: true, urls: ["https://a.example/one"] })).toMatchObject({ ok: true, urls: ["https://a.example/one"] });
+    expect(claudeSearchLog("info")).toMatchObject({ outcome: "results", reason: "results", searches: 0 });
+    expect(loggedAt("warn")).toEqual([]);
+  });
+
   it("passes the run's remaining budget as its cap, and reports a stop at the cap as budget_exceeded", async () => {
-    expect(await searchWith("budget", { searched: true, urls: [] }, 0.25)).toEqual({ ok: false, code: "budget_exceeded", costUsd: 0.04 });
+    const stopped = await searchWith("budget", { searched: true, urls: [] }, 0.25);
+    // A stop at the cap reports what it cost, so the cost is known.
+    expect(stopped).toEqual({ ok: false, code: "budget_exceeded", costUsd: 0.04 });
+    expect(claudeSearchLog("warn")).toMatchObject({ outcome: "budget_exceeded", reason: "budget_exceeded", costUsd: 0.04 });
     const argv: string[] = JSON.parse(await readFile(path.join(fakeDir, "argv.json"), "utf8"));
     expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("0.25");
   });
 
   it.each([
-    ["the model says it could not search", "ok", { searched: false, urls: ["https://made-up.example/page"] }],
-    ["the connection denies the web search tool", "denied", { searched: true, urls: ["https://a.example/one"] }],
-    ["the model claims a search the CLI counted none of", "no-search", { searched: true, urls: ["https://a.example/one"] }],
-    ["the call fails", "error", { searched: true, urls: [] }],
-    ["the reply is not JSON", "garbage", {}],
-    ["the output does not match the schema", "ok", { urls: "https://a.example/one" }],
-  ])("ends as web_search_unavailable when %s, and never returns an address", async (_why, scenario, output) => {
+    ["the model says it could not search", "ok", { searched: false, urls: ["https://made-up.example/page"] }, "not_searched"],
+    ["the connection denies the web search tool", "denied", { searched: true, urls: ["https://a.example/one"] }, "denied"],
+    ["the call fails", "error", { searched: true, urls: [] }, "agent_failed"],
+    ["the reply is not JSON", "garbage", {}, "agent_failed"],
+    ["the output does not match the schema", "ok", { urls: "https://a.example/one" }, "invalid_output"],
+  ])("ends as web_search_unavailable when %s, and never returns an address", async (_why, scenario, output, reason) => {
     const result = await searchWith(scenario, output);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("web_search_unavailable");
     expect(result).not.toHaveProperty("urls");
+    // The code and the message stay the same; the log says which cause it was, from a closed set.
+    const logged = claudeSearchLog("warn");
+    expect(logged).toMatchObject({ provider: "claude", outcome: "web_search_unavailable", reason });
+    expect(webSearch.WEB_SEARCH_REASONS).toContain(logged.reason);
   });
 
   it("ends as web_search_unavailable, without throwing, when Claude Code cannot be started", async () => {
     claudePath = path.join(fakeDir, "missing-claude");
-    expect(await webSearch.claudeWebSearch().search(TOPIC, new AbortController().signal)).toMatchObject({ ok: false, code: "web_search_unavailable" });
+    const result = await webSearch.claudeWebSearch().search(TOPIC, new AbortController().signal);
+    expect(result).toMatchObject({ ok: false, code: "web_search_unavailable" });
+    // Nothing was launched, so nothing can have been spent: the run must not treat it as an unknown cost.
+    expect(result).not.toHaveProperty("costUnknown");
+    expect(claudeSearchLog("warn")).toMatchObject({ reason: "start_failed" });
+  });
+
+  it("ends as web_search_unavailable, as timed out with its cost unknown, when the call never answers", async () => {
+    await writeFile(path.join(fakeDir, "scenario"), "hang");
+    await writeFile(path.join(fakeDir, "output.json"), JSON.stringify({ searched: true, urls: [] }));
+    const result = await webSearch.claudeWebSearch(300).search(TOPIC, new AbortController().signal, { budgetUsd: 1 });
+    // It was launched and then stopped, so it may have spent up to its allowance, which is not the same as nothing.
+    expect(result).toEqual({ ok: false, code: "web_search_unavailable", costUsd: null, costUnknown: true });
+    expect(claudeSearchLog("warn")).toMatchObject({ outcome: "web_search_unavailable", reason: "timed_out", costUsd: null });
+  });
+
+  it("ends as web_search_unavailable, logged as an error, when a failure of ours stops it before it launches", async () => {
+    const original = process.env.TMPDIR;
+    // The call's working folder cannot be made here.
+    process.env.TMPDIR = path.join(workdir, "no-such-folder");
+    try {
+      const result = await webSearch.claudeWebSearch().search(TOPIC, new AbortController().signal);
+      expect(result).toEqual({ ok: false, code: "web_search_unavailable", costUsd: null });
+      expect(claudeSearchLog("error")).toMatchObject({ reason: "unexpected", err: "Error" });
+      expect(infoLog.join("\n")).not.toContain(TOPIC);
+    } finally {
+      if (original === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = original;
+    }
   });
 
   it("ends as web_search_unavailable when stopped, and logs it without a warning", async () => {
@@ -569,6 +605,7 @@ describe("Claude's web search", () => {
     const controller = new AbortController();
     controller.abort();
     expect(await webSearch.claudeWebSearch().search(TOPIC, controller.signal)).toMatchObject({ ok: false, code: "web_search_unavailable" });
+    expect(claudeSearchLog("info")).toMatchObject({ reason: "cancelled" });
     expect(loggedAt("warn")).toEqual([]);
     expect(loggedAt("error")).toEqual([]);
   });
@@ -600,8 +637,11 @@ async function confirm(id: string, body: unknown) {
   return { status: res.status, body: await res.json() };
 }
 
-/** What a scripted search answers: addresses, or a failure; either with what it cost. */
-type ScriptedSearch = string[] | { urls: string[]; costUsd: number } | { code: SearchFailureCode | "budget_exceeded"; costUsd?: number };
+/** What a scripted search answers: addresses, or a failure; either with what it cost, or as a launched call whose cost is unknown. */
+type ScriptedSearch =
+  | string[]
+  | { urls: string[]; costUsd: number }
+  | { code: SearchFailureCode | "budget_exceeded"; costUsd?: number; costUnknown?: boolean };
 
 interface Script {
   /** Brave Search's answer; absent when no key is set. */
@@ -627,7 +667,7 @@ function script(s: Script) {
       seen.searches.push({ name, budgetUsd: options?.budgetUsd });
       if (Array.isArray(answer)) return { ok: true, urls: answer };
       if ("urls" in answer) return { ok: true, urls: answer.urls, costUsd: answer.costUsd };
-      return { ok: false, code: answer.code, costUsd: answer.costUsd };
+      return { ok: false, code: answer.code, costUsd: answer.costUsd, costUnknown: answer.costUnknown };
     },
   });
   run.researchDeps.searchProviders = () => [
@@ -783,6 +823,7 @@ describe("a research run", () => {
       expect(seen.searches.map((x) => x.name)).toEqual(["brave", "claude"]);
       expect(research.result).toMatchObject({ searchMethod: "claude", searchFailure: code });
       expect(research.usage).toMatchObject({ searchRequests: 2, pagesRead: 1 });
+      expect(finishedLog()).toMatchObject({ outcome: "ready", searchMethod: "claude", searchFailures: [code] });
     }
   );
 
@@ -813,6 +854,8 @@ describe("a research run", () => {
     const research = await settledResearch(carousel.id);
     expect(research.failure?.code).toBe("search_key_refused");
     expect(seen.searches.map((x) => x.name)).toEqual(["brave", "claude"]);
+    // The stored failure is the first; the log keeps every failure the run went past, in order.
+    expect(finishedLog()).toMatchObject({ outcome: "search_key_refused", searchFailures: ["search_key_refused", "web_search_unavailable"] });
   });
 
   it("goes on with the person's links when Claude's web search is unavailable", async () => {
@@ -887,6 +930,109 @@ describe("a research run", () => {
     }
   });
 
+  describe("a launched web search whose cost is unknown", () => {
+    const unknownCost = () =>
+      script({
+        claude: { code: "web_search_unavailable", costUnknown: true },
+        pages: { "https://mine.example/a": page("https://mine.example/a", PAGE_A) },
+      });
+
+    it("ends, under a cap, at once with the search's own failure: no page is read and no synthesis starts", async () => {
+      const carousel = await createCarousel("Evenings", "4:5");
+      const seen = unknownCost();
+      process.env[synthesis.RESEARCH_BUDGET_ENV] = "1.00";
+      try {
+        await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+        const research = await settledResearch(carousel.id);
+        // Not budget_exceeded: no limit the person could raise would help, and the search's failure is what they can act on.
+        expect(research.failure).toEqual({ code: "web_search_unavailable", message: run.RESEARCH_FAILURE_MESSAGES.web_search_unavailable });
+        // The search was given the cap; the run then had nothing it could prove was left.
+        expect(seen.searches).toEqual([{ name: "claude", budgetUsd: 1 }]);
+        expect(seen.links).toEqual([]);
+        expect(seen.requests).toEqual([]);
+        expect(seen.synthesisBudgets).toEqual([]);
+        expect(finishedLog()).toMatchObject({ outcome: "web_search_unavailable", searchFailures: ["web_search_unavailable"] });
+      } finally {
+        delete process.env[synthesis.RESEARCH_BUDGET_ENV];
+      }
+    });
+
+    it("ends, under a cap, with the first failure when Brave failed before it, and reads nothing", async () => {
+      const carousel = await createCarousel("Evenings", "4:5");
+      const seen = script({
+        searchUrls: { code: "search_key_refused" },
+        claude: { code: "web_search_unavailable", costUnknown: true },
+        pages: { "https://mine.example/a": page("https://mine.example/a", PAGE_A) },
+      });
+      process.env[synthesis.RESEARCH_BUDGET_ENV] = "1.00";
+      try {
+        await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+        const research = await settledResearch(carousel.id);
+        expect(research.failure).toEqual({ code: "search_key_refused", message: run.RESEARCH_FAILURE_MESSAGES.search_key_refused });
+        expect(seen.searches.map((x) => x.name)).toEqual(["brave", "claude"]);
+        expect(seen.links).toEqual([]);
+        expect(seen.requests).toEqual([]);
+        expect(finishedLog()).toMatchObject({ searchFailures: ["search_key_refused", "web_search_unavailable"] });
+      } finally {
+        delete process.env[synthesis.RESEARCH_BUDGET_ENV];
+      }
+    });
+
+    it("changes nothing without a cap: the run goes on to synthesis with the person's links", async () => {
+      const carousel = await createCarousel("Evenings", "4:5");
+      const seen = unknownCost();
+      await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+      const research = await settledResearch(carousel.id);
+      expect(research.state).toBe("ready");
+      expect(research.result).toMatchObject({ searchFailure: "web_search_unavailable" });
+      expect(seen.synthesisBudgets).toEqual([null]);
+    });
+
+    it("is not assumed for a search that could not be started: synthesis still gets the cap", async () => {
+      const carousel = await createCarousel("Evenings", "4:5");
+      const seen = script({
+        claude: { code: "web_search_unavailable" },
+        pages: { "https://mine.example/a": page("https://mine.example/a", PAGE_A) },
+      });
+      process.env[synthesis.RESEARCH_BUDGET_ENV] = "1.00";
+      try {
+        await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+        expect((await settledResearch(carousel.id)).state).toBe("ready");
+        expect(seen.synthesisBudgets).toEqual([1]);
+      } finally {
+        delete process.env[synthesis.RESEARCH_BUDGET_ENV];
+      }
+    });
+  });
+
+  it("ends as budget_setting_invalid, never as no cap, when the setting turns invalid after the start check", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    const seen = script({ pages: { "https://mine.example/a": page("https://mine.example/a", PAGE_A) } });
+    let searched = false;
+    // The start checks the setting, and only afterwards reads the searches' names: this one changes the setting in between.
+    run.researchDeps.searchProviders = () => [
+      {
+        get name() {
+          process.env[synthesis.RESEARCH_BUDGET_ENV] = "lots";
+          return "claude" as const;
+        },
+        search: async () => {
+          searched = true;
+          return { ok: true, urls: [] };
+        },
+      },
+    ];
+    try {
+      expect((await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] })).status).toBe(202);
+      const research = await settledResearch(carousel.id);
+      expect(research.failure).toEqual({ code: "budget_setting_invalid", message: run.RESEARCH_FAILURE_MESSAGES.budget_setting_invalid });
+      expect(searched).toBe(false);
+      expect(seen).toMatchObject({ links: [], requests: [] });
+    } finally {
+      delete process.env[synthesis.RESEARCH_BUDGET_ENV];
+    }
+  });
+
   it("records no search failure when search worked", async () => {
     const carousel = await createCarousel("Evenings", "4:5");
     script({ searchUrls: ["https://a.example/sleep"], pages: { "https://a.example/sleep": page("https://a.example/sleep", PAGE_A) } });
@@ -894,6 +1040,7 @@ describe("a research run", () => {
     const research = await settledResearch(carousel.id);
     expect(research.state).toBe("ready");
     expect(research.result).not.toHaveProperty("searchFailure");
+    expect(finishedLog()).toMatchObject({ searchFailures: [] });
   });
 
   it("refuses a bad topic, too many links, a link that cannot be read, an unknown project and a second run", async () => {
@@ -950,6 +1097,17 @@ describe("a research run", () => {
     expect(refused.status).toBe(400);
     expect(refused.body.error).toBe(run.RESEARCH_FAILURE_MESSAGES.claude_unavailable);
     // The code lets the screen link to the Settings row that fixes it.
+    expect(refused.body).toEqual({ error: run.RESEARCH_FAILURE_MESSAGES.claude_unavailable, code: "claude_unavailable" });
+    expect(seen).toMatchObject({ queries: [], links: [], requests: [] });
+    expect(await read(carousel.id)).toBeNull();
+  });
+
+  it("answers claude_unavailable, not the links refusal, when Claude is missing and there is no web search and no link", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    const seen = script({});
+    run.researchDeps.claudeAvailable = () => false;
+    const refused = await start(carousel.id, { topic: "calmer evenings" });
+    expect(refused.status).toBe(400);
     expect(refused.body).toEqual({ error: run.RESEARCH_FAILURE_MESSAGES.claude_unavailable, code: "claude_unavailable" });
     expect(seen).toMatchObject({ queries: [], links: [], requests: [] });
     expect(await read(carousel.id)).toBeNull();

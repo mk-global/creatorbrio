@@ -16,7 +16,8 @@ It describes only what is merged.
 
 - Research runs on the server through a provider, never through the Design Agent, and the person's confirmation of a direction is a workflow step, not a binding approval (FQ-11, founder decision of 2026-11-23).
 - Research searches the web with the AI connection the person already has: Claude's own web search through their Claude Code sign-in, with no other account or key (founder decision of 2026-11-24, #256).
-- Brave Search, with the person's own key, is an optional enhancement: when a key is set it searches first, and Claude's web search stands in when Brave fails (#256, superseding the Brave-first part of TD-07 and FD-L).
+- Brave Search, with the person's own key, is an optional enhancement: when a key is set it searches first, and Claude's web search stands in when Brave fails (#256).
+  FD-M supersedes the requirement of a Brave key for automatic research in FD-L and TD-07, so without a key research no longer reads only the person's links.
 - Either search only finds page addresses; CreatorBrio reads every page itself, so sources and the quote check never rest on a search provider's or the model's account of a page.
 - Synthesis uses the person's own Claude Code sign-in; the API-key provider path of the architecture is unchanged, and the Claude CLI is not a requirement for a future hosted edition.
 - Nothing about publishing changes (FQ-10 is deferred).
@@ -63,11 +64,12 @@ There is no setting to choose one: the configuration decides.
 Both are adapters of one provider interface (`src/lib/research/search.ts`), and both return only page addresses, filtered the same way: `http` and `https` only, at most 2,048 characters, no duplicates, at most 10.
 `result.searchMethod` records which search found the pages (`brave` or `claude`), only when at least one page it found was read and used, and `result.searchFailure` the first failure the run went on past, so the screen always says how the pages were found.
 The record's `searchProvider` is the search the run tried first.
-`GET /api/status` reports whether a Brave key is set and which search research tries first; whether Claude's web search works on the person's connection is only known when research tries it.
+`GET /api/status` reports whether a Brave key is set and which search research tries first, which is none when Claude Code is not found, key or no key, because a run cannot start without it; whether Claude's web search works on the person's connection is only known when research tries it.
 
-A start needs only a topic, because Claude's web search is always available when Claude Code is.
+A start needs only a topic, because research always tries Claude's web search when Claude Code is available, and a run already requires Claude Code.
 When no search fails, the run never asks a second one.
 When every search fails and the person gave links, the run goes on with them alone and records why (`result.searchFailure`), so the screen never implies the web was searched.
+The one exception is a spending cap with a failed search whose cost could not be read: the run then ends at once with the first search failure it went past, which is Brave's code when Brave failed first, exactly as a run without links does, because nothing can safely be spent on synthesis (see Synthesis).
 Without links, the run fails with the first failure's code and a message that says what to do: try again, add links, or set up Brave Search, or check Brave's key.
 A search that works but finds nothing ends a run without links as `no_results`.
 
@@ -92,8 +94,11 @@ The server never trusts those addresses beyond finding pages: it reads each one 
 The same rule as for Brave keeps search results out of storage, so nothing of a search result is kept beyond the pages the server read.
 
 Claude Code's web search is not offered on every connection, for example through Amazon Bedrock, and it is found out by trying.
-A failed or timed-out call, a denied web search tool, a reply that does not match the schema, the model saying it could not search, or the CLI reporting zero web search requests for the call (the sum of each model's `webSearchRequests`) all end the search as `web_search_unavailable`.
-Only a reported zero is acted on: when the CLI does not report the count in that shape, the model's answer stands, and the pages are still read and quote-checked by the server.
+Whether it works on a given Claude Code connection or sign-in is found out the same way, and the real path through Claude Code is verified only by a real run, because the automated tests stand in for the CLI.
+A failed or timed-out call, a denied web search tool, a reply that does not match the schema, or the model saying it could not search all end the search as `web_search_unavailable`.
+The model's word that it searched is not independently verified.
+The CLI's own count of web search requests for the call (the sum of each model's `webSearchRequests`) is logged for diagnosis only, because not every search path of the CLI records it, and a count of zero rejects nothing.
+What keeps the research honest is that the server reads every page itself and checks every quote against what it read.
 A stop at the spending cap ends the whole run as `budget_exceeded`, without another search or synthesis.
 
 ### Reading pages
@@ -109,8 +114,13 @@ The model reads at most 12,000 characters of each page.
 `src/lib/research/synthesis.ts` makes one Claude call through the person's own Claude Code sign-in, with the Visual Director's launch, shared in `src/lib/structured-claude.ts`: Read confined to an empty folder outside the repository, no setting sources, a strict empty MCP configuration, automatic memory off, no session persistence, input on standard input and structured output.
 It has a 180-second time limit and no spending cap unless `RESEARCH_MAX_BUDGET_USD` sets one.
 That setting caps the whole run: Claude's web search may spend up to the cap, and synthesis only what the search left, so a run that reaches the cap before synthesis ends as `budget_exceeded` without calling it.
+A web search that was launched but whose cost could not be read, such as one that timed out, counts as having spent the whole cap, because it may have, so nothing can safely be spent on synthesis.
+When that search failed, the run ends at once, before any page is read, with the first search failure it went past, which is Brave's code when Brave failed first, exactly as a run without links does, and not as `budget_exceeded`, because no limit the person could raise would help.
+In the rare case that such a search worked but the CLI still did not report a cost, synthesis is not started and the run ends as `budget_exceeded`.
+A search that could not be started spent nothing, and a run without a cap is not affected.
+The `budget_exceeded` message says that the limit covers the web search and the reading together, because the cap can be reached in either.
 The run's recorded cost is the sum of both Claude calls' estimated costs.
-An invalid value is refused when a run is started, with a 400 and its own message, before anything is searched or read, and it is checked again when synthesis starts.
+An invalid value is refused when a run is started, with a 400 and its own message, before anything is searched or read, and it is checked again when the run begins and when synthesis starts, so a setting changed in between ends the run as `budget_setting_invalid` and is never read as no cap.
 Page text reaches the model only inside untrusted-content blocks, with their delimiters neutralized.
 It returns at most 12 findings, at most 6 gaps and one suggested direction: angle, audience, central message, one to eight key points and an optional call to action.
 
@@ -152,13 +162,15 @@ Under the default Design Agent profile's local trust (FD-K), the agent reaches t
 `/carousel/[id]/research` is an ordinary page of the app shell (#253).
 A person reaches it from **Research a topic** in New project's "Start from" choice, from **Research it** beside Home's idea field, or from **Research** in the editor's toolbar.
 New project hands the topic and links to the screen through this tab's `sessionStorage`, as it hands a first message to the editor, and the screen starts research once on arrival.
+The start forms never require links, because research searches the web itself and a topic is enough.
+When Claude Code is not found, the forms say that research needs it and link to the Claude Code row of Settings, and still let a start through, so the server's refusal, which links there too, is the answer the person gets.
 
 The screen polls the research record while a run is in progress, so a reload or a second tab shows the same run, and **Stop** cancels it.
 A failure shows the server's message, and the form keeps the topic and links so they can be changed.
 Failures the same request may get past, such as a busy search service, Claude's web search being unavailable, pages that could not be read or an interrupted run, also offer **Try again**.
 A refused search key, Claude's web search being unavailable, an invalid spending setting and a missing Claude Code link to the Settings row that fixes them, in the notice of a run that failed and, for the last two, in the message of a start that was refused.
 If the research cannot be read at all, the notice offers **Try again** to read it again.
-A ready run says which search found its pages, and when the first search failed, which one stood in or that only the person's links were read.
+A ready run says which search found its pages, and names the person's links only when one of them was read; when the first search failed, it says which one stood in or that only the person's links were read.
 It shows the findings quoted in a source with their quotes and source links, the findings that were not checked (marked as left out of the design), what the pages do not establish, every page read and every page that could not be read.
 The screen says that a quote found in a page shows the words are there, not that the finding is true.
 
@@ -215,13 +227,16 @@ Another revision, research confirmed after a plan made without any, and the same
 The lines are structured, and an expected outcome is never an error.
 `[research] started` carries the carousel, the revision, the searches it will try in order and the number of links.
 `[research] search` carries the provider, the outcome code, the result count and the duration, with Brave's HTTP status or Claude's estimated cost, number of turns and reported web search requests; it has no carousel.
+Claude's web search also carries a `reason` from a closed set, so the causes behind one `web_search_unavailable` can be told apart: `results`, `start_failed`, `cancelled`, `timed_out`, `agent_failed`, `denied`, `invalid_output`, `not_searched`, `budget_exceeded` and `unexpected` (`WEB_SEARCH_REASONS` in `src/lib/research/web-search.ts`).
+What the person is told does not depend on it.
 Claude's web search logs a search that worked or was stopped as information, a failed one as a warning, and only an exception of the server's own as an error.
 `[sources] source` is one line per page read, with its host, outcome code, redirect count, size and duration; it has no carousel.
 `[research] synthesis finished` carries the carousel, the outcome code, the cost, the number of turns, the duration, the cap it ran under (what was left of the run's cap once web search had spent) and the number of pages.
 A synthesis that worked or was stopped is information, an expected failure (Claude exiting with an error or giving an unreadable reply, a reply that fails validation, the time limit, the spending cap or an invalid cap setting, a Claude launch that failed) is a warning, and only an unexpected exception is an error, with the error's name and system code and never its message.
 A failure of the server's own, such as no temporary folder, ends the run as `research_failed`; only a failed launch of Claude ends it as `claude_unavailable`.
-`[research] finished` carries the carousel, the revision, the outcome code, the cost, the duration, the number of search requests and the number of pages read.
-For a finished run it also carries the number of unreadable pages, the search that found the pages (or null), the code of the search failure the run went on past (or null), and the number of findings and of quoted findings.
+`[research] finished` carries the carousel, the revision, the outcome code, the cost, the duration, the number of search requests, the number of pages read and the codes of every search failure the run went past, in order, so a run that ended on the first failure still shows the others.
+For a finished run it also carries the number of unreadable pages, the search that found the pages (or null), and the number of findings and of quoted findings.
+The stored `result.searchFailure` is the first of those codes.
 It is information for every coded outcome, including a `research_failed` that came from a synthesis result, because synthesis already logged that cause as an error.
 An unexpected exception thrown inside the run itself makes it an error that also carries `err`, the exception's name and never its message, unless the person had already stopped the run, in which case the exception counts as stopped and is information with no `err`.
 `[research] confirmed` and `[research] interrupted` carry the carousel and the revision, and the first also whether the person edited the direction.
