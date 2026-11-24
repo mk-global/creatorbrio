@@ -119,13 +119,26 @@ export interface ResearchResult {
   /** Pages that could not be read; the run went on without them. */
   unreadable: UnreadablePage[];
   /**
-   * Why web search failed when the run went on with the person's own links
-   * alone; absent when search worked or was not set up.
+   * The web search that found the pages the run read (#256): Brave Search, or
+   * Claude's own web search through Claude Code. Absent when no search found
+   * pages and the run read only the person's links.
+   */
+  searchMethod?: WebSearchMethod;
+  /**
+   * The first web search failure the run went on past: to the next search
+   * method, or to the person's own links. Absent when the first search worked.
    */
   searchFailure?: SearchFailureCode;
 }
 
-export type SearchFailureCode = "search_key_refused" | "search_rate_limited" | "search_unavailable";
+/** How research searches the web: Brave Search with the person's key, or Claude's own web search (#256). */
+export type WebSearchMethod = "brave" | "claude";
+
+/**
+ * Why a web search failed. The first three are Brave Search's; the last is
+ * Claude's web search, which is not available on every Claude Code connection.
+ */
+export type SearchFailureCode = "search_key_refused" | "search_rate_limited" | "search_unavailable" | "web_search_unavailable";
 
 export const RESEARCH_STAGES = ["searching", "reading", "synthesizing"] as const;
 export type ResearchStage = (typeof RESEARCH_STAGES)[number];
@@ -134,6 +147,7 @@ export type ResearchFailureCode =
   | "search_key_refused"
   | "search_rate_limited"
   | "search_unavailable"
+  | "web_search_unavailable"
   | "no_results"
   | "no_readable_pages"
   | "claude_unavailable"
@@ -146,7 +160,7 @@ export type ResearchFailureCode =
   | "research_failed";
 
 export interface ResearchUsage {
-  /** The model's estimated cost for synthesis, as the CLI reports it. */
+  /** The model's estimated cost for the run's Claude calls (web search and synthesis), as the CLI reports it. */
   costUsd: number | null;
   durationMs: number;
   searchRequests: number;
@@ -173,8 +187,11 @@ export interface CarouselResearch {
   links: string[];
   state: "running" | "ready" | "failed";
   stage?: ResearchStage;
-  /** The search provider this run used, or null for the person's links only. */
-  searchProvider: "brave" | null;
+  /**
+   * The web search this run tried first, or null for the person's links only.
+   * `result.searchMethod` says which search found the pages.
+   */
+  searchProvider: WebSearchMethod | null;
   startedAt: string;
   finishedAt?: string;
   result?: ResearchResult;

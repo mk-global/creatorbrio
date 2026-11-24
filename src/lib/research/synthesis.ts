@@ -21,7 +21,10 @@ import { parseStructuredResult, runStructuredClaude, structuredClaudeArgs } from
  */
 
 export const RESEARCH_SYNTHESIS_TIMEOUT_MS = 180_000;
-/** The optional operator setting that caps one synthesis call's Claude usage, in US dollars. */
+/**
+ * The optional operator setting that caps one research run's Claude usage, in
+ * US dollars: its web search and its synthesis together (#256).
+ */
 export const RESEARCH_BUDGET_ENV = "RESEARCH_MAX_BUDGET_USD";
 /** A quote shorter than this is too common to show that words came from the page. */
 export const MIN_QUOTE_CHARS = 20;
@@ -307,14 +310,16 @@ function errorFacts(err: unknown): { err: string; errCode?: string } {
  */
 export async function runSynthesis(
   request: SynthesisRequest,
-  options: { signal?: AbortSignal; timeoutMs?: number; carouselId?: string } = {}
+  options: { signal?: AbortSignal; timeoutMs?: number; carouselId?: string; budgetUsd?: number | null } = {}
 ): Promise<SynthesisResult> {
   const started = Date.now();
   const usage = (cost: unknown): SynthesisUsage => ({
     costUsd: typeof cost === "number" ? cost : null,
     durationMs: Date.now() - started,
   });
-  const cap = parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]);
+  const setting = parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]);
+  // The run passes what is left of its cap once web search has spent; an invalid setting is refused either way.
+  const cap = setting.ok && options.budgetUsd !== undefined ? { ok: true as const, usd: options.budgetUsd } : setting;
   let outcome: SynthesisResult;
   let turns: number | null = null;
   let thrown: unknown = null;

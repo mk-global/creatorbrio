@@ -5,7 +5,7 @@
  * from before formats existed, so backward compatibility is tested on the
  * shape of data people actually have. Nothing here touches the real ./data.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -31,6 +31,13 @@ import { POST as useTemplateRoute } from "@/app/api/templates/[id]/use/route";
 import { GET as statusRoute } from "@/app/api/status/route";
 import type { Carousel, CarouselsData } from "@/types/carousel";
 import type { ProjectSummary } from "@/lib/project-summary";
+
+// The app status reports whether Claude Code is found. A test can say it is or is not; null leaves the real answer.
+const claude = vi.hoisted(() => ({ found: null as boolean | null }));
+vi.mock("@/lib/claude-path", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/claude-path")>();
+  return { ...actual, isClaudeAvailable: () => claude.found ?? actual.isClaudeAvailable() };
+});
 
 let workdir: string;
 let originalCwd: string;
@@ -61,6 +68,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  claude.found = null;
   process.chdir(originalCwd);
   await rm(workdir, { recursive: true, force: true });
 });
@@ -253,8 +261,9 @@ describe("the app status", () => {
   it("reports Claude Code, image generation and the Design Agent profile without paths, URLs or secrets", async () => {
     const body = await (await statusRoute()).json();
     expect(Object.keys(body).sort()).toEqual(["claude", "designAgent", "imageGeneration", "research"]);
-    // Topic research (#252) reports only whether a search key is set.
-    expect(body.research).toEqual({ search: { configured: false } });
+    // Topic research reports whether a Brave key is set (#252) and which web search it tries first (#256):
+    // Claude's own whenever Claude Code is found, so a missing Brave key is not missing setup.
+    expect(body.research).toEqual({ search: { configured: false, provider: body.claude.available ? "claude" : null } });
     expect(typeof body.claude.available).toBe("boolean");
     // No image-service token exists in the run's synthetic home, so a token in the person's own home is never read (#246).
     expect(body.imageGeneration.configured).toBe(false);
@@ -266,8 +275,27 @@ describe("the app status", () => {
     process.env.BRAVE_SEARCH_API_KEY = "BSA-synthetic-status-key";
     try {
       const raw = await (await statusRoute()).text();
-      expect(JSON.parse(raw).research).toEqual({ search: { configured: true } });
+      const body = JSON.parse(raw);
+      // Brave searches first when its key is set, but only where research can run at all.
+      expect(body.research).toEqual({ search: { configured: true, provider: body.claude.available ? "brave" : null } });
       expect(raw).not.toContain("BSA-synthetic-status-key");
+    } finally {
+      delete process.env.BRAVE_SEARCH_API_KEY;
+    }
+  });
+
+  it("names no web search when Claude Code is not found, even with a Brave key, because research cannot run without it (#256)", async () => {
+    const research = async () => (await (await statusRoute()).json()).research;
+    process.env.BRAVE_SEARCH_API_KEY = "BSA-synthetic-status-key";
+    try {
+      claude.found = false;
+      expect(await research()).toEqual({ search: { configured: true, provider: null } });
+      claude.found = true;
+      expect(await research()).toEqual({ search: { configured: true, provider: "brave" } });
+      delete process.env.BRAVE_SEARCH_API_KEY;
+      expect(await research()).toEqual({ search: { configured: false, provider: "claude" } });
+      claude.found = false;
+      expect(await research()).toEqual({ search: { configured: false, provider: null } });
     } finally {
       delete process.env.BRAVE_SEARCH_API_KEY;
     }

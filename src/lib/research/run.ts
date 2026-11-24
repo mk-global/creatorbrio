@@ -8,6 +8,7 @@ import type {
   ResearchStage,
   SearchFailureCode,
   UnreadablePage,
+  WebSearchMethod,
 } from "@/types/research";
 import { getCarousel, updateCarouselResearch } from "../carousels";
 import { resolveBrandForCarousel, isBrandConfigured } from "../brand";
@@ -19,7 +20,8 @@ import { bareHost, isPublicAddress, parseSourceUrl } from "../source-address";
 import { retrieveLinks, type SourceOutcome } from "../source-retrieval";
 import { parseSpendingCap } from "../spending-cap";
 import { now } from "../utils";
-import { configuredSearchProvider, searchQuery, type SearchProvider } from "./search";
+import { configuredSearchProviders } from "./providers";
+import { searchQuery, type SearchProvider } from "./search";
 import {
   RESEARCH_BUDGET_ENV,
   runSynthesis,
@@ -32,9 +34,10 @@ import {
 } from "./synthesis";
 
 /**
- * Topic research for one carousel (#252), run on the server: search (when
- * the person has set a key), read pages through the source-retrieval
- * boundary, synthesize, and store the result on the carousel.
+ * Topic research for one carousel (#252), run on the server: search the web
+ * (Brave Search when the person has set a key, Claude's own web search
+ * otherwise or when Brave fails, #256), read pages through the
+ * source-retrieval boundary, synthesize, and store the result on the carousel.
  *
  * A run is a lifecycle the carousel records: running, then ready or failed
  * with a reason the person can act on. One run per carousel at a time, held
@@ -59,19 +62,25 @@ export const RESEARCH_PAGE_CHARS = 12_000;
 
 /** Replaced by tests to script search, retrieval and the model without a network. */
 export const researchDeps = {
-  searchProvider: (): SearchProvider | null => configuredSearchProvider(),
+  /** The web searches to try, in order (#256); called only once Claude Code is known to be available. */
+  searchProviders: (): SearchProvider[] => configuredSearchProviders({ claudeAvailable: true }),
   retrieveLinks: (links: string[]): Promise<SourceOutcome[]> => retrieveLinks(links),
-  synthesize: (request: SynthesisRequest, options: { signal: AbortSignal; carouselId?: string }): Promise<SynthesisResult> =>
-    runSynthesis(request, options),
+  synthesize: (
+    request: SynthesisRequest,
+    options: { signal: AbortSignal; carouselId?: string; budgetUsd?: number | null }
+  ): Promise<SynthesisResult> => runSynthesis(request, options),
   claudeAvailable: (): boolean => isClaudeAvailable(),
 };
 
 export const RESEARCH_FAILURE_MESSAGES: Record<ResearchFailureCode, string> = {
+  // Brave's failures end a run only when Claude's web search could not stand in either.
   search_key_refused:
-    "Brave Search refused the API key. Check BRAVE_SEARCH_API_KEY in .env.local and restart CreatorBrio, or research from your own links.",
+    "Brave Search refused the API key, and Claude's web search could not stand in. Check BRAVE_SEARCH_API_KEY in .env.local and restart CreatorBrio, or add links to pages you trust.",
   search_rate_limited:
-    "Brave Search is limiting requests, or the key's monthly allowance is used up. Try again in a minute, or research from your own links.",
-  search_unavailable: "Brave Search could not be reached. Try again, or research from your own links.",
+    "Brave Search is limiting requests, and Claude's web search could not stand in. Try again in a minute, or add links to pages you trust.",
+  search_unavailable: "Brave Search could not be reached, and Claude's web search could not stand in. Try again, or add links to pages you trust.",
+  web_search_unavailable:
+    "Claude's web search isn't available through your Claude Code connection, or it didn't work this time. Try again, add links to pages you trust, or set up Brave Search in Settings.",
   no_results: "The search found no pages for this topic. Try a more specific topic, or add links to pages you trust.",
   no_readable_pages:
     "None of the pages could be read, so there is nothing to research from. Try again, or add links to public pages that show their text without a sign-in.",
@@ -79,7 +88,7 @@ export const RESEARCH_FAILURE_MESSAGES: Record<ResearchFailureCode, string> = {
   synthesis_failed: "Claude could not turn the pages into findings this time. Try again; your slides and any direction you confirmed are unchanged.",
   synthesis_timed_out: "Reading the pages took longer than the 3-minute limit. Try again, or use fewer or shorter links.",
   budget_exceeded:
-    "Research stopped at the spending limit set in RESEARCH_MAX_BUDGET_USD. Raise the limit or use fewer links, then try again.",
+    "Research stopped at the spending limit set in RESEARCH_MAX_BUDGET_USD, which covers the web search and reading the pages together. Raise the limit, then try again.",
   budget_setting_invalid:
     "RESEARCH_MAX_BUDGET_USD in .env.local is not a valid amount. Set a positive number such as 0.50, or remove it, then restart CreatorBrio.",
   cancelled: "You stopped the research. Your slides and any direction you confirmed are unchanged.",
@@ -178,16 +187,13 @@ export async function startResearch(carouselId: string, body: unknown): Promise<
     if (err instanceof ResearchRequestError) return { ok: false, status: 400, error: err.message };
     throw err;
   }
-  const provider = researchDeps.searchProvider();
-  if (!provider && input.links.length === 0) {
-    return {
-      ok: false,
-      status: 400,
-      error: "Web search is not set up, so research needs at least one link. Add links to pages about the topic, or set up Brave Search (see Settings).",
-    };
-  }
   if (!researchDeps.claudeAvailable()) {
     return { ok: false, status: 400, error: RESEARCH_FAILURE_MESSAGES.claude_unavailable, code: "claude_unavailable" };
+  }
+  // With Claude Code available, Claude's web search is always among these (#256), so a topic alone is enough.
+  const providers = researchDeps.searchProviders();
+  if (providers.length === 0 && input.links.length === 0) {
+    return { ok: false, status: 400, error: "Research found no way to search the web here, so it needs at least one link. Add links to pages about the topic." };
   }
   // An invalid cap is refused before search or retrieval run, not after the pages were read; synthesis checks it again.
   if (!parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]).ok) {
@@ -211,8 +217,8 @@ export async function startResearch(carouselId: string, body: unknown): Promise<
       topic: input.topic,
       links: input.links,
       state: "running",
-      stage: provider ? "searching" : "reading",
-      searchProvider: provider ? provider.name : null,
+      stage: providers.length > 0 ? "searching" : "reading",
+      searchProvider: providers[0]?.name ?? null,
       startedAt: now(),
       // The confirmed direction and the latest design are kept: a new run changes neither.
       ...(current?.confirmed ? { confirmed: current.confirmed } : {}),
@@ -225,8 +231,8 @@ export async function startResearch(carouselId: string, body: unknown): Promise<
     }
     const revision = stored.research.revision;
     entry.revision = revision;
-    console.info("[research] started", { carouselId, revision, provider: provider?.name ?? null, links: input.links.length });
-    void execute(carousel, revision, input, provider, entry).finally(() => {
+    console.info("[research] started", { carouselId, revision, providers: providers.map((p) => p.name), links: input.links.length });
+    void execute(carousel, revision, input, providers, entry).finally(() => {
       if (runs.get(carouselId)?.controller === controller) runs.delete(carouselId);
       release();
     });
@@ -380,7 +386,7 @@ export function selectPages(
     const outcome = outcomes[i];
     if (!outcome) return;
     if (!outcome.ok) {
-      // Brave's terms forbid keeping search results: the host of a search page that failed is not stored.
+      // Search results are not kept (Brave's terms forbid it, and #256 keeps the same rule for Claude's): the host of a search page that failed is not stored.
       unreadable.push({ host: candidate.origin === "link" ? outcome.host : "", origin: candidate.origin, reason: outcome.reason });
       return;
     }
@@ -420,7 +426,7 @@ async function execute(
   carousel: Carousel,
   revision: number,
   input: { topic: string; links: string[] },
-  provider: SearchProvider | null,
+  providers: SearchProvider[],
   run: ActiveRun
 ): Promise<void> {
   const { signal } = run.controller;
@@ -428,18 +434,48 @@ async function execute(
   const started = Date.now();
   const usage = { costUsd: null as number | null, durationMs: 0, searchRequests: 0, pagesRead: 0 };
   const finish = () => ({ ...usage, durationMs: Date.now() - started });
+  // Every web search failure the run went past, in order: the stored result keeps the first, the log keeps them all.
+  const searchFailures: SearchFailureCode[] = [];
   let outcome: ResearchFailureCode | "ready" = "research_failed";
   try {
+    // The operator's cap covers the whole run: what web search spends is taken from what synthesis may spend.
+    const cap = parseSpendingCap(process.env[RESEARCH_BUDGET_ENV]);
+    // The start checked it, so this is a setting changed since. It is never read as "no cap": that would spend past what was asked.
+    if (!cap.ok) throw new Failure("budget_setting_invalid");
+    const capUsd = cap.usd;
+    // A search that was launched but whose cost could not be read may have spent its whole allowance, so under a cap nothing is left.
+    let spendUnknown = false;
+    const remaining = () => (capUsd === null ? null : spendUnknown ? 0 : Math.max(0, capUsd - (usage.costUsd ?? 0)));
+    const spend = (costUsd: number | null | undefined) => {
+      if (typeof costUsd === "number") usage.costUsd = (usage.costUsd ?? 0) + costUsd;
+    };
+
+    // Each web search in turn (#256): the next one only when a search fails, never when it finds nothing.
     let searchUrls: string[] = [];
-    let searchFailure: SearchFailureCode | undefined;
-    if (provider) {
+    let searchMethod: WebSearchMethod | undefined;
+    for (const provider of providers) {
       usage.searchRequests++;
-      const found = await provider.search(searchQuery(input.topic), signal);
+      const found = await provider.search(searchQuery(input.topic), signal, { budgetUsd: remaining() });
+      spend(found.costUsd);
+      if (found.costUnknown) spendUnknown = true;
       if (signal.aborted) throw new Failure("cancelled");
-      // The person's own links are worth reading even when search fails; without them there is nothing to read.
-      if (!found.ok && input.links.length === 0) throw new Failure(found.code);
-      if (!found.ok) searchFailure = found.code;
-      else searchUrls = found.urls;
+      if (found.ok) {
+        searchMethod = provider.name;
+        searchUrls = found.urls;
+        break;
+      }
+      // A search stopped at the spending cap ends the run: the next search or synthesis would meet the same cap.
+      if (found.code === "budget_exceeded") throw new Failure("budget_exceeded");
+      searchFailures.push(found.code);
+    }
+    const searchFailure = searchFailures[0];
+    // Under a cap, a search that was launched and failed without its cost being readable may have spent all of it, so nothing can
+    // safely be spent on synthesis, and no limit the person could raise would change that. The run ends here, before any page is
+    // read, with the search's own failure: it is the accurate reason, and the one they can act on.
+    if (capUsd !== null && spendUnknown && !searchMethod) throw new Failure(searchFailure ?? "web_search_unavailable");
+    if (providers.length > 0) {
+      // The person's own links are worth reading even when every search fails; without them there is nothing to read.
+      if (!searchMethod && input.links.length === 0) throw new Failure(searchFailure ?? "no_results");
       if (searchUrls.length === 0 && input.links.length === 0) throw new Failure("no_results");
       await setStage(carouselId, revision, "reading");
     }
@@ -454,6 +490,8 @@ async function execute(
     const brand = await resolveBrandForCarousel(carousel).catch(() => null);
     // A stop that arrived while the pages were read or the stage was written must not start a paid call.
     if (signal.aborted) throw new Failure("cancelled");
+    const synthesisBudget = remaining();
+    if (synthesisBudget !== null && synthesisBudget <= 0) throw new Failure("budget_exceeded");
     const synthesis = await researchDeps.synthesize(
       {
         topic: input.topic,
@@ -461,9 +499,9 @@ async function execute(
         brand: brand && isBrandConfigured(brand) ? { name: brand.name, styleKeywords: brand.styleKeywords.slice(0, 8) } : null,
         pages,
       },
-      { signal, carouselId }
+      { signal, carouselId, budgetUsd: synthesisBudget }
     );
-    usage.costUsd = synthesis.usage.costUsd;
+    spend(synthesis.usage.costUsd);
     if (!synthesis.ok) throw new Failure(synthesis.code === "cancelled" ? "cancelled" : SYNTHESIS_FAILURES[synthesis.code]);
 
     const retrievedAt = now();
@@ -479,6 +517,8 @@ async function execute(
       retrievedBy: "source-retrieval",
       origin: page.origin,
     }));
+    // A search is credited only when a page it found was read and used; otherwise only the person's links were.
+    const foundBy = sources.some((source) => source.origin === "search") ? searchMethod : undefined;
     await writeIfCurrent(carouselId, revision, (current) => {
       // Checked inside the write, which nothing can interleave with: a stop answered before this point always wins.
       if (signal.aborted) throw new Failure("cancelled");
@@ -493,6 +533,7 @@ async function execute(
           gaps: synthesis.output.gaps,
           direction: synthesis.output.direction,
           unreadable,
+          ...(foundBy ? { searchMethod: foundBy } : {}),
           ...(searchFailure ? { searchFailure } : {}),
         },
         usage: finish(),
@@ -505,7 +546,8 @@ async function execute(
       outcome,
       ...finish(),
       unreadable: unreadable.length,
-      searchFailure: searchFailure ?? null,
+      searchMethod: foundBy ?? null,
+      searchFailures,
       findings: synthesis.output.findings.length,
       quoted: synthesis.output.findings.filter((f) => f.check === "quoted").length,
     });
@@ -517,7 +559,7 @@ async function execute(
     });
     // Expected outcomes are not system errors; an unexpected exception is. A research_failed that came from a synthesis
     // result is a Failure of ours here: synthesis already logged its real cause at error, so this line is information.
-    const fields = { carouselId, revision, outcome: code, ...finish() };
+    const fields = { carouselId, revision, outcome: code, ...finish(), searchFailures };
     if (code === "research_failed" && !(err instanceof Failure)) {
       console.error("[research] finished", { ...fields, err: err instanceof Error ? err.name : "unknown" });
     } else console.info("[research] finished", fields);

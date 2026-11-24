@@ -5,7 +5,8 @@ import { getClaudePath } from "@/lib/claude-path";
 import { CONTAINED_PROFILE, designAgentProfileName } from "@/lib/design-agent-profile";
 import { containedAvailability } from "@/lib/design-agent-availability";
 import { agentTokenFile, tokenGuidance } from "@/lib/agent-sign-in";
-import { configuredSearchProvider } from "@/lib/research/search";
+import { configuredSearchProviders } from "@/lib/research/providers";
+import { braveKeyConfigured } from "@/lib/research/search";
 
 /**
  * What Settings and Home tell a person about this computer (#175): whether
@@ -19,16 +20,27 @@ import { configuredSearchProvider } from "@/lib/research/search";
  * `designAgent` says which Design Agent profile runs (#227): for the contained
  * profile, whether it can run here, the CLI version and any version warning.
  *
- * `research.search` says only whether a web search key is set (#252), never
- * the key or anything derived from it.
+ * `research.search` says whether a Brave Search key is set (#252), never the
+ * key or anything derived from it, and which web search research tries first
+ * (#256): "brave" or "claude" (Claude's own web search, the default). It is
+ * null whenever Claude Code is not found, key or no key, because a research
+ * run needs Claude Code for its synthesis and cannot start without it. Whether
+ * Claude's web search works on the person's connection is only known when
+ * research tries it, so it is not claimed here.
  */
 export async function GET() {
   const capabilities = await capabilityStatus({ referenceCount: 0, intactAssetCount: 0 });
+  const claudeAvailable = isClaudeAvailable();
   return NextResponse.json({
-    claude: { available: isClaudeAvailable() },
+    claude: { available: claudeAvailable },
     imageGeneration: { configured: isAvailable(capabilities, "image-generation") },
     designAgent: await designAgentStatus(),
-    research: { search: { configured: configuredSearchProvider() !== null } },
+    research: {
+      search: {
+        configured: braveKeyConfigured(),
+        provider: claudeAvailable ? (configuredSearchProviders({ claudeAvailable })[0]?.name ?? null) : null,
+      },
+    },
   });
 }
 
