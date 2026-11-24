@@ -11,7 +11,7 @@ import { ConfirmedSummary } from "@/components/research/ConfirmedSummary";
 import { DirectionForm } from "@/components/research/DirectionForm";
 import { ResearchFindings } from "@/components/research/ResearchFindings";
 import { ResearchProgress } from "@/components/research/ResearchProgress";
-import { ResearchStart, SettingsLink } from "@/components/research/ResearchStart";
+import { ResearchStart, SettingsLink, searchAvailability } from "@/components/research/ResearchStart";
 import { useResearch, type StartRefusal } from "@/components/research/useResearch";
 import { brandDisplayName } from "@/lib/brand-display";
 import { FORMATS, formatOf } from "@/lib/formats";
@@ -19,15 +19,19 @@ import { clearResearchRequest, handOffDesignStart, readResearchRequest } from "@
 import type { Carousel } from "@/types/carousel";
 import type { CarouselResearch, ResearchDirection } from "@/types/research";
 
-/** Why web search failed when research went on with the person's links alone. */
+/** Why a web search failed when research went on past it: to Claude's web search, or to the person's links. */
 const SEARCH_FAILED: Record<string, string> = {
   search_key_refused: "Brave Search refused the API key",
   search_rate_limited: "Brave Search is limiting requests",
   search_unavailable: "Brave Search could not be reached",
+  web_search_unavailable: "Claude's web search wasn't available",
 };
 
+/** Which search found the pages (#256), for the summary line. */
+const SEARCH_METHOD: Record<string, string> = { brave: "Brave Search", claude: "Claude's web search" };
+
 /** Failures that the same request may get past (a page may be back up), so "Try again" is offered first. */
-const RETRYABLE = new Set(["search_rate_limited", "search_unavailable", "no_readable_pages", "synthesis_failed", "synthesis_timed_out", "interrupted", "cancelled", "research_failed"]);
+const RETRYABLE = new Set(["search_rate_limited", "search_unavailable", "web_search_unavailable", "no_readable_pages", "synthesis_failed", "synthesis_timed_out", "interrupted", "cancelled", "research_failed"]);
 
 function when(iso: string): string {
   const d = new Date(iso);
@@ -44,7 +48,7 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
   const router = useRouter();
   const { brands } = useApp();
   const status = useAppStatus();
-  const searchConfigured = status ? (status.research?.search.configured ?? false) : null;
+  const search = searchAvailability(status);
   const { state, start, stop, confirm, reload } = useResearch(id);
   const [carousel, setCarousel] = useState<Carousel | null>(null);
   const [carouselFailed, setCarouselFailed] = useState(false);
@@ -179,7 +183,7 @@ export default function ResearchPage({ params }: { params: Promise<{ id: string 
               key={research?.revision ?? 0}
               initialTopic={research?.topic ?? request?.topic ?? carousel?.name ?? ""}
               initialLinks={research?.links ?? request?.links ?? []}
-              searchConfigured={searchConfigured}
+              search={search}
               onStart={begin}
               onCancel={editing ? () => setEditing(false) : undefined}
               editorHref={editorHref}
@@ -232,6 +236,7 @@ function ReadyView({
           <p className="font-semibold break-words">{research.topic}</p>
           <p className="mt-0.5 text-[13px] text-graphite">
             {result.sources.length} {result.sources.length === 1 ? "page" : "pages"} read
+            {result.searchMethod && <>, found with {SEARCH_METHOD[result.searchMethod] ?? "web search"}{research.links.length > 0 && " and your links"}</>}
             {research.finishedAt && <>, {when(research.finishedAt)}</>}
             {designed && <>. Designed from this direction {when(designed.at)}</>}
             {!designed && confirmedHere && <>. Direction confirmed {when(confirmedHere.confirmedAt)}</>}
@@ -243,7 +248,8 @@ function ReadyView({
       </div>
       {result.searchFailure && (
         <p className="mt-3 max-w-[70ch] text-[14px]">
-          {SEARCH_FAILED[result.searchFailure] ?? "Web search failed"}, so only your links were read.
+          {SEARCH_FAILED[result.searchFailure] ?? "Web search failed"},{" "}
+          {result.searchMethod ? `so ${SEARCH_METHOD[result.searchMethod] ?? "another web search"} found the pages instead.` : "so only your links were read."}
           {result.searchFailure === "search_key_refused" && (
             <>
               {" "}

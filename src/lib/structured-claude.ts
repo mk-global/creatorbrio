@@ -8,7 +8,10 @@ import { getClaudePath } from "./claude-path";
  * so both keep the same isolation instead of two copies of it.
  *
  * - its only tools are Read and the structured-output channel; Read is
- *   path-scoped to a per-call working directory outside the repository;
+ *   path-scoped to a per-call working directory outside the repository.
+ *   Research's web search (#256) instead has Claude Code's built-in web
+ *   search as its only tool, and no Read: it returns page addresses, which
+ *   the server then reads itself;
  * - no setting sources, a strict empty MCP configuration and automatic memory
  *   off, so no user-level instruction file, connector or memory reaches it;
  * - no session persistence and never `--resume`;
@@ -20,6 +23,8 @@ import { getClaudePath } from "./claude-path";
  */
 
 export const STRUCTURED_TOOLS = ["Read"] as const;
+/** Claude Code's built-in web search tool, the only tool of research's web-search call (#256). */
+export const WEB_SEARCH_TOOL = "WebSearch";
 /** How long a cancelled or timed-out call gets to exit before it is killed. */
 const KILL_GRACE_MS = 5_000;
 /** The CLI's JSON result is small; anything past this is not a result. */
@@ -28,19 +33,21 @@ const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 /** The CLI arguments for one structured call; callers pin them in tests. */
 export function structuredClaudeArgs(
   workDir: string,
-  options: { systemPrompt: string; schema: unknown; budgetUsd: number | null }
+  options: { systemPrompt: string; schema: unknown; budgetUsd: number | null; tools?: "read" | "web-search" }
 ): string[] {
+  const tools =
+    options.tools === "web-search"
+      ? // The web search tool takes no permission specifier: a bare name is its only rule form.
+        ["--tools", WEB_SEARCH_TOOL, "--allowedTools", WEB_SEARCH_TOOL]
+      : // The leading slash plus an absolute path is the CLI's absolute-path form.
+        ["--tools", ...STRUCTURED_TOOLS, "--allowedTools", `Read(/${workDir}/**)`];
   return [
     "-p",
     "--output-format",
     "json",
     "--system-prompt",
     options.systemPrompt,
-    "--tools",
-    ...STRUCTURED_TOOLS,
-    "--allowedTools",
-    // The leading slash plus an absolute path is the CLI's absolute-path form.
-    `Read(/${workDir}/**)`,
+    ...tools,
     "--json-schema",
     JSON.stringify(options.schema),
     "--no-session-persistence",

@@ -15,7 +15,7 @@ import type { AspectRatio } from "@/types/carousel";
 import type { Template } from "@/types/template";
 import { FormatChoice, SizeChoice } from "./FormatChoice";
 import { useAppStatus } from "@/components/app/useAppStatus";
-import { linksFrom, ResearchFields, researchReady } from "@/components/research/ResearchStart";
+import { linksFrom, ResearchFields, researchReady, searchAvailability } from "@/components/research/ResearchStart";
 
 const EXAMPLES: Record<ProjectFormat, string> = {
   "instagram-carousel": "five pour-over mistakes and how to fix them",
@@ -65,7 +65,7 @@ export function CreateFlow({
   );
   const [links, setLinks] = useState("");
   const status = useAppStatus();
-  const searchConfigured = status ? (status.research?.search.configured ?? false) : null;
+  const search = searchAvailability(status);
   const [templateId, setTemplateId] = useState(initialTemplate?.id ?? "");
   const [about, setAbout] = useState(() => (params.fromIdea ? readIdea() : ""));
   // The idea is now in the form; it is not offered again on the next visit.
@@ -83,7 +83,7 @@ export function CreateFlow({
   const template = available.find((t) => t.id === templateId);
   const chosenSize: AspectRatio = source === "template" && template ? template.aspectRatio : def.sizes.includes(size) ? size : def.defaultSize;
   const derivedName = source === "template" && template ? template.name : nameFrom(about, format);
-  const research = researchReady(about, links, searchConfigured);
+  const research = researchReady(about, links, search);
   const blocked = (source === "template" && !template) || (source === "research" && !research.ok);
 
   const pickFormat = (id: ProjectFormat) => {
@@ -223,7 +223,7 @@ export function CreateFlow({
             </div>
           ) : source === "research" ? (
             <div className="mt-5">
-              <ResearchFields topic={about} onTopic={setAbout} links={links} onLinks={setLinks} searchConfigured={searchConfigured} idPrefix="create-research" />
+              <ResearchFields topic={about} onTopic={setAbout} links={links} onLinks={setLinks} search={search} idPrefix="create-research" />
               {research.reason && <p className="mt-3 text-[13px] text-graphite">{research.reason}</p>}
             </div>
           ) : templatesError ? (

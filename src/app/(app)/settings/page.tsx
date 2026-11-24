@@ -117,21 +117,36 @@ export default function SettingsPage() {
           id="research"
           title="Web search for research"
           status={
-            !status ? checking : status.research?.search.configured ? <span className="tag tag-ok">Set up</span> : <span className="tag tag-neutral">Not set up</span>
+            !status ? (
+              checking
+            ) : status.research?.search.provider === "brave" ? (
+              <span className="tag tag-ok">Brave Search</span>
+            ) : status.research?.search.provider === "claude" ? (
+              <span className="tag tag-ok">Claude web search</span>
+            ) : (
+              <span className="tag tag-neutral">Your links only</span>
+            )
           }
         >
           <p>
-            Optional. Research always reads the links you give it. With a Brave Search API key of your own, it also searches the web for your topic; searches count
-            against your Brave account.
+            Research searches the web for your topic with Claude&apos;s web search, through your Claude Code sign-in, so there is nothing else to set up. It then
+            reads the pages itself, together with any links you give it. Claude&apos;s web search isn&apos;t offered on every Claude Code connection (Amazon Bedrock
+            doesn&apos;t have it, for example); when it isn&apos;t available, research says so and you can add links or use Brave Search.
           </p>
-          {!status?.research?.search.configured && (
+          <p>
+            <strong>Brave Search, optional.</strong> With a Brave Search API key of your own, Brave does the searching and Claude reads what the pages say. Brave adds
+            an independent search index, works where Claude&apos;s web search isn&apos;t available, and searching counts against your Brave allowance instead of your
+            Claude usage. If Brave refuses the key, limits requests or can&apos;t be reached, research uses Claude&apos;s web search instead.
+          </p>
+          {status && !status.research?.search.configured && (
             <div>
-              <p>To set it up, add this line to .env.local in the CreatorBrio folder with your key, then restart CreatorBrio:</p>
+              <p>To add it, put this line in .env.local in the CreatorBrio folder with your key, then restart CreatorBrio:</p>
               <Command>BRAVE_SEARCH_API_KEY=your-key</Command>
             </div>
           )}
           <p>
-            Reading the pages uses your Claude Code sign-in. To cap what one research run may spend, set RESEARCH_MAX_BUDGET_USD in .env.local as well.
+            Searching with Claude and reading the pages use your Claude Code sign-in. To cap what one research run may spend in all, set RESEARCH_MAX_BUDGET_USD in
+            .env.local as well.
           </p>
         </Row>
         <Row
@@ -179,9 +194,9 @@ export default function SettingsPage() {
         <Row title="What leaves this computer">
           <p>When you design by chat, your message, your brand and the project go to Claude through Claude Code. Links you paste are fetched while designing.</p>
           <p>
-            When you research a topic, CreatorBrio fetches the pages itself: your links and, when web search is set up, the pages a search finds. The topic goes to
-            Brave Search when web search is set up. The topic, the project&apos;s format, your brand&apos;s name and style words, and each page&apos;s address, title and
-            text go to Claude through Claude Code.
+            When you research a topic, CreatorBrio fetches the pages itself: your links and the pages a web search finds. To search, the topic goes to Claude through
+            Claude Code for Claude&apos;s web search, or to Brave Search when it is set up (and to Claude too if Brave doesn&apos;t answer). The topic, the
+            project&apos;s format, your brand&apos;s name and style words, and each page&apos;s address, title and text go to Claude through Claude Code.
           </p>
           <p>
             What is kept on this computer is the topic, your links, the findings with the short quotes they cite, what the pages don&apos;t establish and the

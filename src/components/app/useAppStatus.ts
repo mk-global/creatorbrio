@@ -11,8 +11,12 @@ export interface AppStatus {
   claude: { available: boolean };
   imageGeneration: { configured: boolean };
   designAgent?: DesignAgentStatus;
-  /** Topic research (#252): whether web search has a key. Research from the person's links needs none. */
-  research?: { search: { configured: boolean } };
+  /**
+   * Topic research: whether a Brave Search key is set (#252), and which web
+   * search research tries first (#256): Brave, Claude's own web search, or
+   * none. Research from the person's links needs neither.
+   */
+  research?: { search: { configured: boolean; provider?: "brave" | "claude" | null } };
 }
 
 /** What `/api/status` says about this computer, or null until it answers (#175). */

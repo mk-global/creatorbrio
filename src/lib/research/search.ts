@@ -1,9 +1,14 @@
-import type { SearchFailureCode } from "@/types/research";
+import type { SearchFailureCode, WebSearchMethod } from "@/types/research";
 
 /**
- * Web search for topic research (#252): one small provider interface and one
- * adapter, Brave Search, with the person's own key (TD-07; founder decision
- * of 2026-11-23).
+ * Web search for topic research: one small provider interface (#252) and two
+ * adapters. Claude's own web search, through the person's Claude Code
+ * sign-in, needs no other account and is the default (#256; founder decision
+ * of 2026-11-24). Brave Search, with the person's own key, is an optional
+ * enhancement: when a key is set it searches first, and Claude's web search
+ * stands in when Brave refuses the key, limits requests or cannot be reached.
+ * Either way a search only finds page addresses; research reads every page
+ * itself through the source-retrieval boundary.
  *
  * Results are used transiently and only for their page addresses: Brave's
  * terms forbid storing search results, so nothing from a result (title,
@@ -25,22 +30,31 @@ const MAX_QUERY_WORDS = 50;
 /** A result page is small; anything past this is not one. */
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
-export type SearchOutcome = { ok: true; urls: string[] } | { ok: false; code: SearchFailureCode };
+/**
+ * What one search returned. `costUsd` is the model's estimated cost of a
+ * Claude web search, as the CLI reports it; Brave reports none. A search
+ * stopped at the run's spending cap fails as `budget_exceeded`, which ends the
+ * run rather than falling through to the next method.
+ */
+export type SearchOutcome =
+  | { ok: true; urls: string[]; costUsd?: number | null }
+  | { ok: false; code: SearchFailureCode | "budget_exceeded"; costUsd?: number | null };
 
-export interface SearchProvider {
-  readonly name: "brave";
-  search(query: string, signal: AbortSignal): Promise<SearchOutcome>;
+export interface SearchOptions {
+  /** What this search may spend, in US dollars, or null for no cap. Only a Claude web search spends. */
+  budgetUsd?: number | null;
 }
 
-type Fetch = typeof fetch;
+export interface SearchProvider {
+  readonly name: WebSearchMethod;
+  search(query: string, signal: AbortSignal, options?: SearchOptions): Promise<SearchOutcome>;
+}
 
-/** The configured provider, or null when no key is set: research then uses the person's links only. */
-export function configuredSearchProvider(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  fetchImpl: Fetch = fetch
-): SearchProvider | null {
-  const key = env[SEARCH_KEY_ENV]?.trim() ?? "";
-  return key ? braveSearch(key, fetchImpl) : null;
+export type Fetch = typeof fetch;
+
+/** Whether a Brave Search key is set. Never the key or anything derived from it. */
+export function braveKeyConfigured(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  return (env[SEARCH_KEY_ENV]?.trim() ?? "") !== "";
 }
 
 /** The query as Brave accepts it: single-spaced, within its character and word limits. */
@@ -49,7 +63,8 @@ export function searchQuery(topic: string): string {
   return Array.from(words).slice(0, MAX_QUERY_CHARS).join("").trim();
 }
 
-function braveSearch(key: string, fetchImpl: Fetch): SearchProvider {
+/** The Brave Search adapter for one key. */
+export function braveSearch(key: string, fetchImpl: Fetch): SearchProvider {
   return {
     name: "brave",
     async search(query, signal) {
@@ -111,9 +126,17 @@ async function braveRequest(
 export function resultUrls(body: unknown): string[] {
   const results = (body as { web?: { results?: unknown } } | null)?.web?.results;
   if (!Array.isArray(results)) return [];
+  return pageUrls(results.map((result) => (result as { url?: unknown } | null)?.url));
+}
+
+/**
+ * The distinct, well-formed http(s) addresses among `candidates`, in order,
+ * at most `SEARCH_RESULT_COUNT`; anything else is dropped. Both search
+ * methods' addresses pass through it before research reads a page.
+ */
+export function pageUrls(candidates: readonly unknown[]): string[] {
   const urls: string[] = [];
-  for (const result of results) {
-    const raw = (result as { url?: unknown } | null)?.url;
+  for (const raw of candidates) {
     if (typeof raw !== "string" || raw.length > 2048) continue;
     let parsed: URL;
     try {

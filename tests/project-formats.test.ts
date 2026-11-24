@@ -253,8 +253,9 @@ describe("the app status", () => {
   it("reports Claude Code, image generation and the Design Agent profile without paths, URLs or secrets", async () => {
     const body = await (await statusRoute()).json();
     expect(Object.keys(body).sort()).toEqual(["claude", "designAgent", "imageGeneration", "research"]);
-    // Topic research (#252) reports only whether a search key is set.
-    expect(body.research).toEqual({ search: { configured: false } });
+    // Topic research reports whether a Brave key is set (#252) and which web search it tries first (#256):
+    // Claude's own whenever Claude Code is found, so a missing Brave key is not missing setup.
+    expect(body.research).toEqual({ search: { configured: false, provider: body.claude.available ? "claude" : null } });
     expect(typeof body.claude.available).toBe("boolean");
     // No image-service token exists in the run's synthetic home, so a token in the person's own home is never read (#246).
     expect(body.imageGeneration.configured).toBe(false);
@@ -266,7 +267,7 @@ describe("the app status", () => {
     process.env.BRAVE_SEARCH_API_KEY = "BSA-synthetic-status-key";
     try {
       const raw = await (await statusRoute()).text();
-      expect(JSON.parse(raw).research).toEqual({ search: { configured: true } });
+      expect(JSON.parse(raw).research).toEqual({ search: { configured: true, provider: "brave" } });
       expect(raw).not.toContain("BSA-synthetic-status-key");
     } finally {
       delete process.env.BRAVE_SEARCH_API_KEY;

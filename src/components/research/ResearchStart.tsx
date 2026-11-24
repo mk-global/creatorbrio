@@ -2,7 +2,17 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import type { WebSearchMethod } from "@/types/research";
 import type { StartRefusal } from "./useResearch";
+
+/** How research will search the web here (#256): a method, "none" when it cannot, or null while unknown. */
+export type SearchAvailability = WebSearchMethod | "none" | null;
+
+/** The search the app status reports, as the research forms use it. */
+export function searchAvailability(status: { research?: { search: { provider?: WebSearchMethod | null } } } | null): SearchAvailability {
+  if (!status) return null;
+  return status.research?.search.provider ?? "none";
+}
 
 export const MAX_LINKS = 3;
 export const MAX_TOPIC = 500;
@@ -10,6 +20,7 @@ export const MAX_TOPIC = 500;
 /** Failures the person fixes in Settings: where, so a notice can link there. */
 const SETTINGS_LINK: Record<string, { href: string; label: string }> = {
   search_key_refused: { href: "/settings#research", label: "Web search settings" },
+  web_search_unavailable: { href: "/settings#research", label: "Web search settings" },
   budget_setting_invalid: { href: "/settings#research", label: "Research settings" },
   claude_unavailable: { href: "/settings#claude", label: "Claude Code settings" },
 };
@@ -38,23 +49,24 @@ export function linksFrom(text: string): string[] {
 
 /**
  * What to research (#253): a topic and up to three links of the person's own.
- * Without a search key the links are required, and the form says so before
- * anything is sent.
+ * Research searches the web with Claude's own web search, or Brave Search
+ * when it is set up (#256), so links are optional; only when no web search is
+ * possible here are they required, and the form says so before anything is
+ * sent.
  */
 export function ResearchFields({
   topic,
   onTopic,
   links,
   onLinks,
-  searchConfigured,
+  search,
   idPrefix = "research",
 }: {
   topic: string;
   onTopic: (v: string) => void;
   links: string;
   onLinks: (v: string) => void;
-  /** Null while unknown. */
-  searchConfigured: boolean | null;
+  search: SearchAvailability;
   idPrefix?: string;
 }) {
   const count = linksFrom(links).length;
@@ -77,7 +89,7 @@ export function ResearchFields({
       <div>
         <label htmlFor={`${idPrefix}-links`} className="mb-1.5 block text-[14px] font-semibold">
           Your links{" "}
-          <span className="font-normal text-graphite">{searchConfigured === false ? `Required, up to ${MAX_LINKS}` : `Optional, up to ${MAX_LINKS}`}</span>
+          <span className="font-normal text-graphite">{search === "none" ? `Required, up to ${MAX_LINKS}` : `Optional, up to ${MAX_LINKS}`}</span>
         </label>
         <textarea
           id={`${idPrefix}-links`}
@@ -92,31 +104,25 @@ export function ResearchFields({
         <p id={`${idPrefix}-links-hint`} className={`mt-1.5 text-[13px] ${count > MAX_LINKS ? "text-alert" : "text-graphite"}`}>
           {count > MAX_LINKS
             ? `That is ${count} links; research reads at most ${MAX_LINKS} of yours.`
-            : searchConfigured === false
-              ? "Web search is not set up, so research reads only the pages you link. Public pages that show their text without a sign-in work best."
-              : "Pages you trust are read first. CreatorBrio also searches the web with Brave Search."}
+            : search === "none"
+              ? "Research can't search the web here, so it reads only the pages you link. Public pages that show their text without a sign-in work best."
+              : search === "brave"
+                ? "Pages you trust are read first. CreatorBrio also searches the web with Brave Search, and with Claude's web search if Brave doesn't answer."
+                : "Pages you trust are read first. CreatorBrio also searches the web with Claude's web search, through your Claude Code sign-in."}
         </p>
-        {searchConfigured === false && (
-          <p className="mt-1 text-[13px] text-graphite">
-            To search the web too, add your own Brave Search API key.{" "}
-            <Link href="/settings#research" className="font-semibold text-ink underline underline-offset-4">
-              How to set it up
-            </Link>
-          </p>
-        )}
       </div>
     </div>
   );
 }
 
 /** Whether the fields can start research, and why not. A topic the server would refuse for its length stops here, so New project never creates a project for it. */
-export function researchReady(topic: string, links: string, searchConfigured: boolean | null): { ok: boolean; reason: string | null } {
+export function researchReady(topic: string, links: string, search: SearchAvailability): { ok: boolean; reason: string | null } {
   const length = topic.trim().length;
   if (length < 3) return { ok: false, reason: null };
   if (length > MAX_TOPIC) return { ok: false, reason: `The topic can be at most ${MAX_TOPIC} characters; this one is ${length}. Shorten it to research it.` };
   const count = linksFrom(links).length;
   if (count > MAX_LINKS) return { ok: false, reason: null };
-  if (searchConfigured === false && count === 0) return { ok: false, reason: "Add at least one link, or set up web search." };
+  if (search === "none" && count === 0) return { ok: false, reason: "Add at least one link: research can't search the web here." };
   return { ok: true, reason: null };
 }
 
@@ -124,7 +130,7 @@ export function researchReady(topic: string, links: string, searchConfigured: bo
 export function ResearchStart({
   initialTopic,
   initialLinks,
-  searchConfigured,
+  search,
   onStart,
   onCancel,
   editorHref,
@@ -132,7 +138,7 @@ export function ResearchStart({
 }: {
   initialTopic: string;
   initialLinks: string[];
-  searchConfigured: boolean | null;
+  search: SearchAvailability;
   onStart: (topic: string, links: string[]) => Promise<void>;
   onCancel?: () => void;
   editorHref: string;
@@ -141,7 +147,7 @@ export function ResearchStart({
   const [topic, setTopic] = useState(initialTopic);
   const [links, setLinks] = useState(initialLinks.join("\n"));
   const [busy, setBusy] = useState(false);
-  const ready = researchReady(topic, links, searchConfigured);
+  const ready = researchReady(topic, links, search);
   return (
     <form
       className="mt-8"
@@ -152,7 +158,7 @@ export function ResearchStart({
         void onStart(topic.trim(), linksFrom(links)).finally(() => setBusy(false));
       }}
     >
-      <ResearchFields topic={topic} onTopic={setTopic} links={links} onLinks={setLinks} searchConfigured={searchConfigured} />
+      <ResearchFields topic={topic} onTopic={setTopic} links={links} onLinks={setLinks} search={search} />
       {error && (
         <p role="alert" className="mt-6 max-w-[640px] rounded-lg bg-alert-bg px-4 py-3 text-[14px]">
           Research didn&apos;t start: {error.message}
