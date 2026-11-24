@@ -319,6 +319,8 @@ process.stdin.on("end", () => {
   if (scenario === "ok") result({ structured_output: output });
   else if (scenario === "budget") result({ subtype: "error_max_budget_usd", is_error: true });
   else if (scenario === "garbage") process.stdout.write("not json");
+  else if (scenario === "no-search") result({ structured_output: output, modelUsage: { "model-a": { webSearchRequests: 0, costUSD: 0.04 } } });
+  else if (scenario === "searched") result({ structured_output: output, modelUsage: { "model-a": { webSearchRequests: 2 }, "model-b": { webSearchRequests: 1 } } });
   else if (scenario === "denied") result({ structured_output: output, permission_denials: [{ tool_name: "WebSearch", tool_use_id: "t1", tool_input: {} }] });
   else if (scenario === "error") {
     result({ subtype: "error_during_execution", is_error: true });
@@ -524,6 +526,17 @@ describe("Claude's web search", () => {
     expect(logged).not.toContain("a.example");
   });
 
+  it("accepts a call whose reported web search count is above zero, or not reported in the documented shape", async () => {
+    expect(await searchWith("searched", { searched: true, urls: ["https://a.example/one"] })).toMatchObject({ ok: true, urls: ["https://a.example/one"] });
+    expect(fieldsOf(loggedAt("info").find((l) => l.includes('"provider":"claude"'))!)).toMatchObject({ searches: 3 });
+    expect(webSearch.reportedWebSearches(undefined)).toBeNull();
+    expect(webSearch.reportedWebSearches({})).toBeNull();
+    expect(webSearch.reportedWebSearches([{ webSearchRequests: 0 }])).toBeNull();
+    expect(webSearch.reportedWebSearches({ a: { webSearchRequests: 0 }, b: {} })).toBeNull();
+    expect(webSearch.reportedWebSearches({ a: { webSearchRequests: "0" } })).toBeNull();
+    expect(webSearch.reportedWebSearches({ a: { webSearchRequests: 0 }, b: { webSearchRequests: 0 } })).toBe(0);
+  });
+
   it("passes the run's remaining budget as its cap, and reports a stop at the cap as budget_exceeded", async () => {
     expect(await searchWith("budget", { searched: true, urls: [] }, 0.25)).toEqual({ ok: false, code: "budget_exceeded", costUsd: 0.04 });
     const argv: string[] = JSON.parse(await readFile(path.join(fakeDir, "argv.json"), "utf8"));
@@ -533,6 +546,7 @@ describe("Claude's web search", () => {
   it.each([
     ["the model says it could not search", "ok", { searched: false, urls: ["https://made-up.example/page"] }],
     ["the connection denies the web search tool", "denied", { searched: true, urls: ["https://a.example/one"] }],
+    ["the model claims a search the CLI counted none of", "no-search", { searched: true, urls: ["https://a.example/one"] }],
     ["the call fails", "error", { searched: true, urls: [] }],
     ["the reply is not JSON", "garbage", {}],
     ["the output does not match the schema", "ok", { urls: "https://a.example/one" }],
@@ -808,6 +822,16 @@ describe("a research run", () => {
     const research = await settledResearch(carousel.id);
     expect(research.state).toBe("ready");
     expect(research.result).toMatchObject({ searchFailure: "web_search_unavailable" });
+    expect(research.result).not.toHaveProperty("searchMethod");
+    expect(research.result!.sources.map((x) => x.origin)).toEqual(["link"]);
+  });
+
+  it("does not credit a search none of whose pages could be read", async () => {
+    const carousel = await createCarousel("Evenings", "4:5");
+    script({ claude: ["https://gone.example/x"], pages: { "https://mine.example/a": page("https://mine.example/a", PAGE_A) } });
+    await start(carousel.id, { topic: "calmer evenings", links: ["https://mine.example/a"] });
+    const research = await settledResearch(carousel.id);
+    expect(research.state).toBe("ready");
     expect(research.result).not.toHaveProperty("searchMethod");
     expect(research.result!.sources.map((x) => x.origin)).toEqual(["link"]);
   });

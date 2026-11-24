@@ -131,6 +131,8 @@ export interface StructuredCliResult {
   total_cost_usd?: number;
   num_turns?: number;
   permission_denials?: unknown[];
+  /** Usage per model; research's web search reads each model's `webSearchRequests` (#256). Untrusted shape. */
+  modelUsage?: unknown;
 }
 
 export function parseStructuredResult(stdout: string): StructuredCliResult | null {

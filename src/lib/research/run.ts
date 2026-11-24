@@ -506,6 +506,8 @@ async function execute(
       retrievedBy: "source-retrieval",
       origin: page.origin,
     }));
+    // A search is credited only when a page it found was read and used; otherwise only the person's links were.
+    const foundBy = sources.some((source) => source.origin === "search") ? searchMethod : undefined;
     await writeIfCurrent(carouselId, revision, (current) => {
       // Checked inside the write, which nothing can interleave with: a stop answered before this point always wins.
       if (signal.aborted) throw new Failure("cancelled");
@@ -520,7 +522,7 @@ async function execute(
           gaps: synthesis.output.gaps,
           direction: synthesis.output.direction,
           unreadable,
-          ...(searchMethod ? { searchMethod } : {}),
+          ...(foundBy ? { searchMethod: foundBy } : {}),
           ...(searchFailure ? { searchFailure } : {}),
         },
         usage: finish(),
@@ -533,7 +535,7 @@ async function execute(
       outcome,
       ...finish(),
       unreadable: unreadable.length,
-      searchMethod: searchMethod ?? null,
+      searchMethod: foundBy ?? null,
       searchFailure: searchFailure ?? null,
       findings: synthesis.output.findings.length,
       quoted: synthesis.output.findings.filter((f) => f.check === "quoted").length,

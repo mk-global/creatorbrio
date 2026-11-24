@@ -61,7 +61,7 @@ There is no setting to choose one: the configuration decides.
 2. Claude's own web search, whenever Claude Code is available, which a run already requires for synthesis.
 
 Both are adapters of one provider interface (`src/lib/research/search.ts`), and both return only page addresses, filtered the same way: `http` and `https` only, at most 2,048 characters, no duplicates, at most 10.
-`result.searchMethod` records which search found the pages (`brave` or `claude`), and `result.searchFailure` the first failure the run went on past, so the screen always says how the pages were found.
+`result.searchMethod` records which search found the pages (`brave` or `claude`), only when at least one page it found was read and used, and `result.searchFailure` the first failure the run went on past, so the screen always says how the pages were found.
 The record's `searchProvider` is the search the run tried first.
 `GET /api/status` reports whether a Brave key is set and which search research tries first; whether Claude's web search works on the person's connection is only known when research tries it.
 
@@ -92,7 +92,8 @@ The server never trusts those addresses beyond finding pages: it reads each one 
 The same rule as for Brave keeps search results out of storage, so nothing of a search result is kept beyond the pages the server read.
 
 Claude Code's web search is not offered on every connection, for example through Amazon Bedrock, and it is found out by trying.
-A failed or timed-out call, a denied web search tool, a reply that does not match the schema, or the model saying it could not search all end the search as `web_search_unavailable`.
+A failed or timed-out call, a denied web search tool, a reply that does not match the schema, the model saying it could not search, or the CLI reporting zero web search requests for the call (the sum of each model's `webSearchRequests`) all end the search as `web_search_unavailable`.
+Only a reported zero is acted on: when the CLI does not report the count in that shape, the model's answer stands, and the pages are still read and quote-checked by the server.
 A stop at the spending cap ends the whole run as `budget_exceeded`, without another search or synthesis.
 
 ### Reading pages
@@ -213,10 +214,10 @@ Another revision, research confirmed after a plan made without any, and the same
 
 The lines are structured, and an expected outcome is never an error.
 `[research] started` carries the carousel, the revision, the searches it will try in order and the number of links.
-`[research] search` carries the provider, the outcome code, the result count and the duration, with Brave's HTTP status or Claude's estimated cost and number of turns; it has no carousel.
+`[research] search` carries the provider, the outcome code, the result count and the duration, with Brave's HTTP status or Claude's estimated cost, number of turns and reported web search requests; it has no carousel.
 Claude's web search logs a search that worked or was stopped as information, a failed one as a warning, and only an exception of the server's own as an error.
 `[sources] source` is one line per page read, with its host, outcome code, redirect count, size and duration; it has no carousel.
-`[research] synthesis finished` carries the carousel, the outcome code, the cost, the number of turns, the duration, the configured cap and the number of pages.
+`[research] synthesis finished` carries the carousel, the outcome code, the cost, the number of turns, the duration, the cap it ran under (what was left of the run's cap once web search had spent) and the number of pages.
 A synthesis that worked or was stopped is information, an expected failure (Claude exiting with an error or giving an unreadable reply, a reply that fails validation, the time limit, the spending cap or an invalid cap setting, a Claude launch that failed) is a warning, and only an unexpected exception is an error, with the error's name and system code and never its message.
 A failure of the server's own, such as no temporary folder, ends the run as `research_failed`; only a failed launch of Claude ends it as `claude_unavailable`.
 `[research] finished` carries the carousel, the revision, the outcome code, the cost, the duration, the number of search requests and the number of pages read.

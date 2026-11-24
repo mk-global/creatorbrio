@@ -20,10 +20,30 @@ import { SEARCH_RESULT_COUNT, pageUrls, type SearchOptions, type SearchOutcome, 
  *
  * Claude Code's web search is not available on every connection (it is not
  * offered through Amazon Bedrock, for example). That is found out by trying:
- * a denied tool, a failed call, or the model saying it could not search ends
- * as `web_search_unavailable`, and research goes on with the person's links
- * or says what to do instead.
+ * a denied tool, a failed call, the model saying it could not search, or the
+ * CLI reporting that no web search request ran ends as
+ * `web_search_unavailable`, and research goes on with the person's links or
+ * says what to do instead.
  */
+
+/**
+ * How many web search requests the CLI reports for the call: the sum of each
+ * model's `webSearchRequests` in `modelUsage`, or null when that is not
+ * reported in the documented shape. Only a reported zero is acted on, so an
+ * unexpected shape never fails a search that ran.
+ */
+export function reportedWebSearches(modelUsage: unknown): number | null {
+  if (!modelUsage || typeof modelUsage !== "object" || Array.isArray(modelUsage)) return null;
+  const models = Object.values(modelUsage as Record<string, unknown>);
+  if (models.length === 0) return null;
+  let total = 0;
+  for (const model of models) {
+    const count = (model as { webSearchRequests?: unknown } | null)?.webSearchRequests;
+    if (typeof count !== "number" || !Number.isFinite(count) || count < 0) return null;
+    total += count;
+  }
+  return total;
+}
 
 export const WEB_SEARCH_TIMEOUT_MS = 120_000;
 
@@ -64,6 +84,7 @@ async function runWebSearch(query: string, signal: AbortSignal, options: SearchO
   const started = Date.now();
   let outcome: SearchOutcome;
   let turns: number | null = null;
+  let searches: number | null = null;
   let thrown: unknown = null;
   let dir: string | null = null;
   try {
@@ -78,6 +99,7 @@ async function runWebSearch(query: string, signal: AbortSignal, options: SearchO
     const cli = await runStructuredClaude(args, dir, webSearchInput(query), timeoutMs, signal);
     const result = parseStructuredResult(cli.stdout);
     turns = typeof result?.num_turns === "number" ? result.num_turns : null;
+    searches = reportedWebSearches(result?.modelUsage);
     const costUsd = typeof result?.total_cost_usd === "number" ? result.total_cost_usd : null;
     const unavailable: SearchOutcome = { ok: false, code: "web_search_unavailable", costUsd };
     if (cli.startError || cli.cancelled || cli.timedOut) outcome = unavailable;
@@ -90,6 +112,8 @@ async function runWebSearch(query: string, signal: AbortSignal, options: SearchO
       if (!output || typeof output.searched !== "boolean" || !Array.isArray(output.urls)) outcome = unavailable;
       // The model's own word that it could not search only chooses the message; it never makes a source.
       else if (!output.searched) outcome = unavailable;
+      // Nor does its word that it did: addresses from a call in which the CLI counted no web search are not search results.
+      else if (searches === 0) outcome = unavailable;
       else outcome = { ok: true, urls: pageUrls(output.urls), costUsd };
     }
   } catch (err) {
@@ -107,6 +131,7 @@ async function runWebSearch(query: string, signal: AbortSignal, options: SearchO
     results: outcome.ok ? outcome.urls.length : 0,
     costUsd: outcome.costUsd ?? null,
     turns,
+    searches,
     durationMs: Date.now() - started,
   };
   if (thrown) console.error("[research] search", { ...fields, err: thrown instanceof Error ? thrown.name : "unknown" });
