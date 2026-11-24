@@ -49,6 +49,10 @@ It stays local-first and open source, and later serves a hosted edition and mobi
   The founder reduced that milestone on 2026-11-23 (FD-K): the contained profile stays dark, opt-in and not qualified, the default profile runs under local trust, and M1 closes on its merged implementation, a fix for the slide preview's outside requests and verification of the core workflows.
 - Self-hosted publishing is bring-your-own-app by founder decision (FD-D), replacing the review's open question on publishing distribution.
 
+## Parked future concepts
+
+- [Research Intelligence Engine](future/RESEARCH-INTELLIGENCE.md) ([tracking issue #230](https://github.com/mk-global/creatorbrio/issues/230)): multi-source audience signal discovery, brand-specific opportunity scoring and measured creative experiments. **FUTURE / PARKED; no implementation authorized.** This extends the research and insights vision without changing the approved/proposed phase sequence, current architecture or milestone scope.
+
 ## Authority and change control
 
 - Present facts: merged code and the architecture documentation win over these documents.
